@@ -1,0 +1,6 @@
+# Review Notes
+
+## Summary
+
+The implementer missed AC 2.1, so the verdict is `RESULT: reject` and Developer
+must add the missing test before the next round.

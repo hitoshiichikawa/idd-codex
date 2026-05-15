@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init"}
+this is not json at all and should not break the stream
+{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":"2026-05-15T05:00:00Z"}}
+{"type":"result","subtype":"success","is_error":false}

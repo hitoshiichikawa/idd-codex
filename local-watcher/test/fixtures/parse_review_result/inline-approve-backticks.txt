@@ -1,0 +1,6 @@
+# Review Notes
+
+## Summary
+
+The implementer covered all ACs, so the verdict is `RESULT: approve` and the
+PjM stage should proceed. No further action required.

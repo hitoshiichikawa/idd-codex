@@ -1,0 +1,6 @@
+# Review Notes
+
+## Summary
+
+Some loose draft used uppercase tokens like RESULT: APPROVE or RESULT: Approve
+which must NOT be accepted by the parser (Req 1.7 lowercase only).

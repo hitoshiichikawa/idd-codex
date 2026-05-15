@@ -1,0 +1,12 @@
+# Review Notes
+
+## Draft considerations
+
+The reviewer first thought `RESULT: approve` was appropriate but the AC 3.2
+revealed a boundary violation. Final verdict below.
+
+## Summary
+
+Boundary violation in module X.
+
+RESULT: reject

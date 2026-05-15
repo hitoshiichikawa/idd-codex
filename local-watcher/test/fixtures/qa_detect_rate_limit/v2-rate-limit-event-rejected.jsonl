@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","tools":["Read","Edit"],"model":"gpt-5.5"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Working on it"}]}}
+{"type":"rate_limit_event","timestamp":"2026-05-15T01:00:00Z","rate_limit_info":{"status":"rejected","resetsAt":"2026-05-15T05:00:00Z","tier":"5h"}}
+{"type":"result","subtype":"error","is_error":true,"api_error_status":429,"error":"rate_limited"}

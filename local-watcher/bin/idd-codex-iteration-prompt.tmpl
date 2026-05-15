@@ -1,0 +1,147 @@
+# =============================================================================
+# idd-codex PR Iteration Mode prompt template (#26)
+#
+# 用途: `codex-needs-iteration` ラベル付き PR を fresh context の Codex で反復対応する
+# 配置先: ~/bin/idd-codex-iteration-prompt.tmpl（idd-codex-issue-watcher.sh が ITERATION_TEMPLATE で参照）
+# 依存  : gh / git / jq（Codex が呼び出す）
+# 関連  : local-watcher/bin/idd-codex-issue-watcher.sh の process_pr_iteration / pi_build_iteration_prompt
+#         repo-template/.codex/agents/developer.md「PR Iteration モード（#26）」節
+#
+# プレースホルダ（idd-codex-issue-watcher.sh の awk 置換で展開される）:
+#   {{PR_NUMBER}}, {{PR_TITLE}}, {{PR_URL}}, {{HEAD_REF}}, {{BASE_REF}},
+#   {{ROUND}}, {{MAX_ROUNDS}}, {{ISSUE_NUMBER}}, {{SPEC_DIR}},
+#   {{LINE_COMMENTS_JSON}}, {{GENERAL_COMMENTS_JSON}},
+#   {{REQUIREMENTS_MD}}, {{REPO}}
+#
+# NOTE (#97): PR diff の inline 埋め込みは廃止しました（MAX_ARG_STRLEN = 131,072 B
+# 超過時に execve() が E2BIG を返す問題を回避するため）。Iteration 役割は
+# 本 prompt の「現在の diff の取得」節の指示に従って自身で取得してください。
+# =============================================================================
+あなたは idd-codex の **PR Iteration Mode** で起動された Developer エージェントです。
+以下の PR のレビューコメントに 1 round で対応し、必要なら修正 commit を head branch に
+push して、各レビュースレッドに返信してください。
+
+## 対象 PR
+
+- Repo  : {{REPO}}
+- Number: #{{PR_NUMBER}}
+- Title : {{PR_TITLE}}
+- URL   : {{PR_URL}}
+- Head  : {{HEAD_REF}}  ← このブランチに watcher が checkout 済み
+- Base  : {{BASE_REF}}
+- Iteration: round {{ROUND}} / {{MAX_ROUNDS}}
+
+## 関連 Issue（存在する場合のみ）
+
+- Issue #{{ISSUE_NUMBER}}
+- Spec dir: {{SPEC_DIR}}
+- requirements.md は本プロンプト末尾に添付（添付がない場合は spec が無い PR）
+
+## 最新 review の line コメント（JSON 配列）
+
+各要素のスキーマ: `{ id, path, line, user, body }`
+
+```json
+{{LINE_COMMENTS_JSON}}
+```
+
+## PR の一般コメント (Conversation タブ、JSON 配列)
+
+各要素のスキーマ: `{ id, user, body, url, created_at }`
+
+watcher が事前に **(a) 自分自身の自動投稿（着手表明 / エスカレ等の hidden marker
+`<!-- idd-codex:... -->` を含むコメント）**、**(b) 過去 round で対応済みのもの（PR body の
+`last-run` TS より前に作成されたコメント）**、**(c) GitHub system 由来の event-style
+コメント** を除外しています。さらにコメント件数が `PI_GENERAL_MAX_COMMENTS`（既定 50）を
+超える場合は古いものから自動 truncate されます（truncate された分は次 round 以降または
+人間レビュワーに委ねられます）。
+
+本節の JSON が空配列でない場合、各コメントを精読し、対応すべきと判断したものに対して
+**修正 commit または返信** を行ってください。`@codex` mention の有無に関係なく、
+本節に含まれるコメントは（人間レビュワーが Codex に取り込んで欲しい指摘として残したものと
+みなして）すべて取り扱い対象です。
+
+```json
+{{GENERAL_COMMENTS_JSON}}
+```
+
+## 現在の diff の取得（Iteration 役割が Bash で実行）
+
+prompt には差分本文を埋め込みません（Issue #97: 大差分時の `Argument list too long`
+回避のため）。head branch は watcher が既に checkout 済みなので、着手直後に **Bash
+ツールで** 以下を実行し、全体把握 → 必要箇所のファイル単位詳細の順で差分を取得して
+ください:
+
+1. 全体把握（変更ファイル一覧と統計）:
+   ```bash
+   git diff --stat {{BASE_REF}}..{{HEAD_REF}}
+   git log --oneline {{BASE_REF}}..{{HEAD_REF}}
+   ```
+2. ファイル単位の詳細差分（必要に応じて変更ファイルごとに実行）:
+   ```bash
+   git diff {{BASE_REF}}..{{HEAD_REF}} -- <path>
+   ```
+3. ローカル ref が無い場合や PR API 経由で取得したい場合は `gh` を使う:
+   ```bash
+   gh pr diff {{PR_NUMBER}} --repo {{REPO}}
+   ```
+4. 差分が空または取得できなかった場合は、line コメント本文と一般コメント本文、および
+   `requirements.md` の AC を頼りに判断する（fallback メッセージは prompt に含めない）。
+
+## requirements.md（関連 Issue がある場合のみ）
+
+```markdown
+{{REQUIREMENTS_MD}}
+```
+
+---
+
+## あなたの責務（厳守）
+
+1. **head branch を origin と同期**:
+   - `git fetch origin {{HEAD_REF}}`
+   - `git merge --ff-only origin/{{HEAD_REF}}`
+   - **fast-forward が失敗したら作業を中止して `exit 1`**（後続 PR 処理を止めない）
+2. **各 line コメントを精読**し、妥当な指摘には**修正 commit を積む**
+   - コメント内容と diff を照らし合わせて、指摘の妥当性を判断する
+   - 不要 / 対応しない場合も、スレッドに「なぜ対応しないか」を返信する
+3. **修正 commit は通常 commit + 通常 push のみ**
+   - `git push origin HEAD:{{HEAD_REF}}`
+   - **force push は絶対禁止**（`--force` / `--force-with-lease` のいずれも使用しない）
+   - push 失敗時はリトライせず `exit 1` する（リモート先行 = WARN 扱いで次サイクル待ち）
+4. **line コメントへの返信は同一 review thread に投稿**:
+   ```bash
+   gh api -X POST \
+     "/repos/{{REPO}}/pulls/{{PR_NUMBER}}/comments/<COMMENT_ID>/replies" \
+     -f body="<返信本文>"
+   ```
+   - **1 line comment = 1 reply の 1:1 返信を厳守**（まとめ返信は不可）
+   - 返信本文には「何を修正したか」または「なぜ対応しないか」を明記する
+5. **general コメントへの返信は同一 PR の一般コメントとして投稿**:
+   ```bash
+   gh pr comment {{PR_NUMBER}} --repo {{REPO}} --body "@<元コメント著者>\n> <引用>\n\n<返信本文>"
+   ```
+   - 引用 quoting で元コメントとリンクすることで、誰の指摘への返信かが明示される
+   - `@codex` mention の有無は判断材料にしない（mention の有無に関わらず watcher が事前に
+     対象コメントを抽出済み）
+6. **修正不要時は commit / push を行わず、返信コメントの投稿のみで完了**
+   - すべてのコメントが「対応しない理由の返信」だけで足りるなら、push なしで `exit 0` にする
+7. **返信 API がエラーを返したら WARN として後続コメントの処理は継続**
+   - 全件成功なら `exit 0`、push に失敗したら `exit 1`
+8. **すべての処理が成功したら `exit 0`** で終了する
+
+## 禁止事項（厳守）
+
+- `git push --force` / `git push --force-with-lease`（force push 全般）
+- `main` ブランチへの直接 push
+- `requirements.md` / `design.md` / `tasks.md` の書き換え（矛盾は返信本文で提起）
+- レビュースレッドの resolve / unresolve（`resolveReviewThread` GraphQL も含めて禁止、人間の運用判断を尊重）
+- 修正スコープを大幅に超える新規ファイル追加（必要なら返信で提案に留める）
+- `--resume` / `--continue` / `--session-id` 等で過去セッションを引き継ぐこと（fresh context が前提）
+
+## 補足
+
+- 本プロセスは fresh context で起動されているため、前回 iteration の会話履歴は残っていません
+- 修正の影響範囲は line コメントが指摘する範囲に限定し、無関係なリファクタは行わないこと
+- requirements.md / design.md / tasks.md と矛盾するレビュー指摘があった場合は、返信本文で
+  「設計と矛盾するため取り込まない / Issue で再提起を推奨」と明記してから先に進む

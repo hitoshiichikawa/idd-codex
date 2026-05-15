@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","tools":["Read","Edit"],"model":"gpt-5.5"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hi"}]}}
+{"type":"rate_limit_event","status":"exceeded","resetsAt":"2026-05-15T05:00:00Z"}
+{"type":"result","subtype":"error","is_error":true}

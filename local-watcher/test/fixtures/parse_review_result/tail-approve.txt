@@ -1,0 +1,20 @@
+# Review Notes
+
+<!-- idd-codex:review round=1 model=gpt-5.5 timestamp=2026-04-30T00:00:00Z -->
+
+## Reviewed Scope
+- Branch: codex/issue-99-impl-sample
+- HEAD commit: deadbeef
+- Compared to: main..HEAD
+
+## Verified Requirements
+- 1.1 — sample test
+- 1.2 — sample test
+
+## Findings
+なし
+
+## Summary
+all green.
+
+RESULT: approve

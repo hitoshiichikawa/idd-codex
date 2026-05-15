@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  idd-codex local watcher launchd agent (macOS)
+
+  配置先 : ~/Library/LaunchAgents/com.local.idd-codex-issue-watcher.plist
+  登録   : launchctl load  ~/Library/LaunchAgents/com.local.idd-codex-issue-watcher.plist
+  起動   : launchctl start com.local.idd-codex-issue-watcher
+  停止   : launchctl unload ~/Library/LaunchAgents/com.local.idd-codex-issue-watcher.plist
+
+  注意:
+    - 下記の ProgramArguments にフルパスを書くか、shell 経由で $HOME を展開する
+      形にしておくと、launchd でも PATH 問題にハマりにくい
+    - PATH は Homebrew (/opt/homebrew/bin) と /usr/local/bin を含めておくこと
+    - StartInterval は秒単位。2 分 = 120 秒
+    - REPO / REPO_DIR は EnvironmentVariables で指定する（スクリプトはこれを受け取る）
+
+  複数リポジトリ運用:
+    このファイルを repo ごとにコピーして、Label / REPO / REPO_DIR / StandardOut/ErrorPath
+    を書き換えれば 1 ホストで何個でも並行稼働できる。lock / log は自動で repo ごとに分離される。
+    例:
+      com.local.idd-codex-issue-watcher-repo-a.plist
+      com.local.idd-codex-issue-watcher-repo-b.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.local.idd-codex-issue-watcher</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>bash</string>
+    <string>-lc</string>
+    <string>$HOME/bin/idd-codex-issue-watcher.sh</string>
+  </array>
+
+  <key>StartInterval</key>
+  <integer>120</integer>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/idd-codex-issue-watcher.stdout.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/tmp/idd-codex-issue-watcher.stderr.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>LANG</key>
+    <string>ja_JP.UTF-8</string>
+    <!-- 対象リポジトリ（このファイルをコピーして repo ごとに書き換える） -->
+    <key>REPO</key>
+    <string>owner/your-repo</string>
+    <key>REPO_DIR</key>
+    <string>/Users/you/work/your-repo</string>
+  </dict>
+
+  <!-- ネットワーク到達後に起動（スリープ復帰時など） -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>NetworkState</key>
+    <true/>
+  </dict>
+</dict>
+</plist>

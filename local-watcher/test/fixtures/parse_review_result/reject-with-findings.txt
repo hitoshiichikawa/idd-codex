@@ -1,0 +1,21 @@
+# Review Notes
+
+## Findings
+
+### Finding 1
+- **Target**: 1.1（必須）
+- **Category**: AC 未カバー
+- **Detail**: foo
+- **Required Action**: add test
+
+### Finding 2
+- **Target**: boundary:Watcher
+- **Category**: boundary 逸脱
+- **Detail**: bar
+- **Required Action**: revert
+
+## Summary
+
+reject summary line.
+
+RESULT: reject

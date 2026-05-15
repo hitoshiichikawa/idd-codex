@@ -1,0 +1,13 @@
+# Review Notes
+
+## Draft considerations
+
+Initially the reviewer hypothesised `RESULT: reject` because of a missing test,
+but on closer inspection the test exists in another file. After verification
+the final verdict is below.
+
+## Summary
+
+All ACs covered.
+
+RESULT: approve

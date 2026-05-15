@@ -1,0 +1,20 @@
+# Review Notes
+
+## Findings
+
+### Finding 1
+- **Target**: 1.2
+- **Category**: AC 未カバー
+- **Detail**: missing
+- **Required Action**: add coverage
+
+### Finding 2
+- **Target**: boundary:Watcher
+- **Category**: boundary 逸脱
+- **Detail**: out-of-scope edit
+- **Required Action**: revert
+
+## Summary
+two issues remain.
+
+RESULT: reject

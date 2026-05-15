@@ -1,0 +1,7 @@
+# Review Notes
+
+## Summary
+
+> RESULT: reject
+
+The blockquote-decorated RESULT line should still be detected (Req 1.2).
