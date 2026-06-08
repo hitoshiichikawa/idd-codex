@@ -8,8 +8,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CORE_UTILS_SH="$SCRIPT_DIR/../bin/modules/core_utils.sh"
-PR_REVIEWER_SH="$SCRIPT_DIR/../bin/modules/pr-reviewer.sh"
+CORE_UTILS_SH="$SCRIPT_DIR/../bin/idd-codex-modules/core_utils.sh"
+PR_REVIEWER_SH="$SCRIPT_DIR/../bin/idd-codex-modules/pr-reviewer.sh"
 
 if [ ! -f "$CORE_UTILS_SH" ]; then
   echo "ERROR: cannot find core_utils.sh at $CORE_UTILS_SH" >&2

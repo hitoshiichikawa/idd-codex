@@ -8,8 +8,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CORE_UTILS_SH="$SCRIPT_DIR/../bin/modules/core_utils.sh"
-MERGE_QUEUE_SH="$SCRIPT_DIR/../bin/modules/merge-queue.sh"
+CORE_UTILS_SH="$SCRIPT_DIR/../bin/idd-codex-modules/core_utils.sh"
+MERGE_QUEUE_SH="$SCRIPT_DIR/../bin/idd-codex-modules/merge-queue.sh"
 
 if [ ! -f "$CORE_UTILS_SH" ]; then
   echo "ERROR: cannot find core_utils.sh at $CORE_UTILS_SH" >&2

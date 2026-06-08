@@ -53,7 +53,7 @@
 
 <!-- stage-a-verify -->
 ```sh
-shellcheck local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/bin/modules/pr-reviewer.sh local-watcher/bin/modules/merge-queue.sh install.sh setup.sh .github/scripts/*.sh &&
+shellcheck local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/bin/idd-codex-modules/pr-reviewer.sh local-watcher/bin/idd-codex-modules/merge-queue.sh install.sh setup.sh .github/scripts/*.sh &&
   diff -r .codex/agents repo-template/.codex/agents &&
   diff -r .codex/rules repo-template/.codex/rules &&
   bash local-watcher/test/pr_reviewer_approval_signal_test.sh &&
