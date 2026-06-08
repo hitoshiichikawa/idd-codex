@@ -695,7 +695,7 @@ watcher は 1 つの codex-auto-dev Issue を処理するごとに、その 1 �
 出力例（1 行 / key=value は固定順）:
 
 ```
-[2026-05-26 12:00:00] [owner/repo] run-summary: issue=#239 mode=impl stages=A,B,C reviewer=independent:approve:r1 stage-a-verify=success scaffolding=ok errors=no result=codex-ready-for-review
+[2026-05-26 12:00:00] [owner/repo] run-summary: issue=#239 mode=impl stages=A,B,C reviewer=independent:approve:r1 stage-a-verify=success scaffolding=ok errors=no degraded-events=none warnings=none result=codex-ready-for-review
 ```
 
 代表的な grep 例:
@@ -705,10 +705,13 @@ watcher は 1 つの codex-auto-dev Issue を処理するごとに、その 1 �
 grep 'run-summary:' $HOME/.idd-codex/issue-watcher/cron.log
 
 # degraded（劣化）サイクルだけ抽出（Reviewer degraded / scaffolding 欠落 / errors 検出）
-grep -E 'run-summary:.*(reviewer=degraded|scaffolding=missing|errors=yes)' $HOME/.idd-codex/issue-watcher/cron.log
+grep -E 'run-summary:.*(reviewer=degraded|scaffolding=missing|errors=yes|degraded-events=collab_spawn_failed)' $HOME/.idd-codex/issue-watcher/cron.log
+
+# collab subagent spawn failure（Codex CLI / collab router 起因疑い）だけ抽出
+grep 'degraded-events=.*collab_spawn_failed' $HOME/.idd-codex/issue-watcher/cron.log
 ```
 
-key=value の出現順は固定（`issue mode stages reviewer stage-a-verify scaffolding errors result`）で、
+key=value の出現順は固定（`issue mode stages reviewer stage-a-verify scaffolding errors degraded-events warnings result`）で、
 value は空白を含まない ASCII 識別子です。`stages` はカンマ区切りの実行順集合で、`A'`（Stage A
 やり直し）は `Ap`、`B'`（round 2）は `Bp` と表記して区切り衝突を避けます。各 key が取りうる
 value の語彙は以下のとおりです:
@@ -722,7 +725,17 @@ value の語彙は以下のとおりです:
 | `stage-a-verify` | `success` / `round1` / `round2` / `skip` / `disabled` / `n/a` | Stage A Verify Gate の結果・round |
 | `scaffolding` | `ok` / `missing` / `unknown` | worktree の `.codex/agents` `.codex/rules` 有無 |
 | `errors` | `no` / `yes` | degraded 兆候の検出有無 |
+| `degraded-events` | `none` / `collab_spawn_failed(stage=<stage>,role=<role>,reason=no_thread_with_id,fallback=<yes\|retry\|failed>,degraded=yes,repeated=<yes\|no>)`（複数時は `;` 区切り） | structured degraded event。collab subagent spawn failure では stage / agent role / failure reason / fallback / degraded 判定を保持 |
+| `warnings` | `none` / `collab_spawn_repeated`（複数時は `,` 区切り） | 同一 run 内で繰り返された degraded warning |
 | `result` | `codex-ready-for-review` / `codex-needs-iteration` / `codex-failed` / `hold` / `unknown` | 最終遷移 |
+
+`collab_spawn_failed` は Codex CLI / collab router 側で `collab spawn failed: no thread with id`
+が出たことを示します。`fallback=yes` は Codex CLI 側の継続経路により stage の exit code が 0
+だったものの、run 全体は degraded として扱うべきことを表します。`fallback=retry` は idd-codex
+wrapper が同一 stage / role の失敗後に bounded retry（初回失敗後 1 回まで）へ進んだこと、
+`fallback=failed` は retry 後または fallback 不能で通常の失敗処理に委譲されたことを表します。
+Issue log には同じ事象が `collab-spawn degraded event` / `collab-spawn fallback start` /
+`collab-spawn fallback result` / `collab-spawn repeated warning` prefix で残ります。
 
 ### Step 3-B. GitHub Actions 方式について
 

@@ -1,0 +1,3 @@
+{"type":"event","message":"collab spawn failed: no thread with id thread-pm-1 while starting product-manager subagent"}
+{"type":"event","message":"collab spawn failed: no thread with id thread-pm-2 while starting product-manager subagent"}
+{"type":"result","is_error":false}

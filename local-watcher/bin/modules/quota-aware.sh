@@ -9,6 +9,7 @@
 #   以降の Quota Resume Processor が reset+grace 経過した Issue からラベルを除去して
 #   通常 pickup ループに戻す。
 #   - qa_detect_rate_limit  : stream-json を fold して quota 枯渇イベントを検出
+#   - qa_detect_collab_spawn_failures : collab subagent spawn failure を検出
 #   - qa_run_codex_stage   : Stage 実行 wrapper（tee + 検出 + exit 99 sentinel）
 #   - qa_persist_reset_time : reset 時刻の永続化（Issue 番号 keyed JSON）
 #   - qa_load_reset_time    : reset 時刻の読み出し（移行期は本文 marker フォールバック）
@@ -193,6 +194,150 @@ qa_extract_usage_limit_reset_epoch() {
   return 0
 }
 
+qa_sanitize_summary_token() {
+  printf '%s' "${1:-unknown}" | tr -c 'A-Za-z0-9_.=+/-' '_'
+}
+
+qa_infer_collab_agent_role() {
+  local stage_label="${1:-}"
+  local line="${2:-}"
+  local lower
+  lower=$(printf '%s %s' "$stage_label" "$line" | tr '[:upper:]' '[:lower:]')
+
+  case "$lower" in
+    *product-manager*|*"product manager"*|*" role pm "*|*" agent pm "*)
+      printf '%s\n' "ProductManager"
+      ;;
+    *project-manager*|*"project manager"*|*pjm*|*stagec*)
+      printf '%s\n' "ProjectManager"
+      ;;
+    *reviewer*|*pertask-rev*|*per-task-rev*)
+      printf '%s\n' "Reviewer"
+      ;;
+    *developer*|*implementer*|*pertask-impl*|*per-task-impl*|*stagea-prime*|*stagea-redo*)
+      printf '%s\n' "Developer"
+      ;;
+    *architect*)
+      printf '%s\n' "Architect"
+      ;;
+    *debugger*)
+      printf '%s\n' "Debugger"
+      ;;
+    *triage*)
+      printf '%s\n' "Triage"
+      ;;
+    *stagea*)
+      printf '%s\n' "StageA-PM-Developer"
+      ;;
+    *)
+      printf '%s\n' "unknown"
+      ;;
+  esac
+}
+
+qa_collab_mark_seen() {
+  local key="$1"
+  QA_COLLAB_SPAWN_SEEN_KEYS="${QA_COLLAB_SPAWN_SEEN_KEYS:-}"
+  case "|${QA_COLLAB_SPAWN_SEEN_KEYS}|" in
+    *"|${key}|"*) return 1 ;;
+    *)
+      if [ -z "$QA_COLLAB_SPAWN_SEEN_KEYS" ]; then
+        QA_COLLAB_SPAWN_SEEN_KEYS="$key"
+      else
+        QA_COLLAB_SPAWN_SEEN_KEYS="${QA_COLLAB_SPAWN_SEEN_KEYS}|${key}"
+      fi
+      return 0
+      ;;
+  esac
+}
+
+qa_collab_set_repeated_flag() {
+  QA_COLLAB_SPAWN_TOTAL_COUNT="${QA_COLLAB_SPAWN_TOTAL_COUNT:-0}"
+  if [ "$QA_COLLAB_SPAWN_TOTAL_COUNT" -gt 0 ]; then
+    QA_COLLAB_REPEATED_FLAG="yes"
+  else
+    QA_COLLAB_REPEATED_FLAG="no"
+  fi
+  QA_COLLAB_SPAWN_TOTAL_COUNT=$((QA_COLLAB_SPAWN_TOTAL_COUNT + 1))
+}
+
+# Codex CLI / collab router 由来の `collab spawn failed: no thread with id` を検出し、
+# Issue log と run-summary の双方へ operator-observable な degraded event を残す。
+#
+# Args:
+#   $1 = stage label
+#   $2 = stream log file（当該 codex attempt の stdout/stderr tee 先）
+#   $3 = codex rc
+#   $4 = attempt number
+#   $5 = max attempts
+#   $6 = fallback status（retry-scheduled / degraded-success / failed）
+# Side effects:
+#   QA_COLLAB_LAST_COUNT / QA_COLLAB_LAST_ROLES を更新
+qa_detect_collab_spawn_failures() {
+  local stage_label="$1"
+  local stream_file="$2"
+  local codex_rc="$3"
+  local attempt="$4"
+  local max_attempts="$5"
+  local fallback_status="$6"
+
+  QA_COLLAB_LAST_COUNT=0
+  QA_COLLAB_LAST_ROLES=""
+
+  [ -r "$stream_file" ] || return 0
+
+  local match line_no line role role_token stage_token repeated key fallback degraded
+  while IFS= read -r match; do
+    [ -n "$match" ] || continue
+    line_no="${match%%:*}"
+    line="${match#*:}"
+    role=$(qa_infer_collab_agent_role "$stage_label" "$line")
+    role_token=$(qa_sanitize_summary_token "$role")
+    stage_token=$(qa_sanitize_summary_token "$stage_label")
+    key="${stage_token}:${role_token}"
+    qa_collab_set_repeated_flag
+    repeated="${QA_COLLAB_REPEATED_FLAG:-no}"
+    qa_collab_mark_seen "$key" || true
+
+    fallback="no"
+    case "$fallback_status" in
+      retry-scheduled) fallback="retry" ;;
+      degraded-success) fallback="yes" ;;
+      failed) fallback="failed" ;;
+    esac
+    degraded="yes"
+
+    QA_COLLAB_LAST_COUNT=$((QA_COLLAB_LAST_COUNT + 1))
+    case ",${QA_COLLAB_LAST_ROLES}," in
+      *",${role_token},"*) : ;;
+      *)
+        if [ -z "$QA_COLLAB_LAST_ROLES" ]; then
+          QA_COLLAB_LAST_ROLES="$role_token"
+        else
+          QA_COLLAB_LAST_ROLES="${QA_COLLAB_LAST_ROLES},${role_token}"
+        fi
+        ;;
+    esac
+
+    qa_warn "collab-spawn degraded event stage=${stage_token} role=${role_token} reason=no_thread_with_id fallback=${fallback} degraded=${degraded} repeated=${repeated} attempt=${attempt}/${max_attempts} line=${line_no} upstream=codex-cli-or-collab-router"
+    if [ "$repeated" = "yes" ]; then
+      qa_warn "collab-spawn repeated warning stage=${stage_token} role=${role_token} reason=no_thread_with_id action=fallback-or-fail"
+    fi
+    if declare -F rs_record_degraded_event >/dev/null 2>&1; then
+      rs_record_degraded_event "collab_spawn_failed" "$stage_token" "$role_token" "no_thread_with_id" "$fallback" "$degraded" "$repeated" || true
+    elif declare -F rs_record_error >/dev/null 2>&1; then
+      rs_record_error "collab_spawn_failed" || true
+    fi
+  done < <(grep -Ein 'collab spawn failed:[[:space:]]*no thread with id' "$stream_file" 2>/dev/null || true)
+
+  if [ "$QA_COLLAB_LAST_COUNT" -gt 0 ] && [ "$codex_rc" -eq 0 ]; then
+    qa_warn "collab-spawn fallback result=degraded-success stage=$(qa_sanitize_summary_token "$stage_label") roles=${QA_COLLAB_LAST_ROLES:-unknown} reason=no_thread_with_id fallback=codex-cli-continuation degraded=yes"
+  elif [ "$QA_COLLAB_LAST_COUNT" -gt 0 ] && [ "$fallback_status" = "failed" ]; then
+    qa_warn "collab-spawn fallback result=failed stage=$(qa_sanitize_summary_token "$stage_label") roles=${QA_COLLAB_LAST_ROLES:-unknown} reason=no_thread_with_id fallback=failed degraded=yes codex_rc=${codex_rc}"
+  fi
+  return 0
+}
+
 # 既存 6 stage の codex 呼び出しを横断ラップする Stage Wrapper（Req 1.1, 1.2,
 # 2.1, NFR 2.1）。
 #
@@ -228,17 +373,53 @@ qa_run_codex_stage() {
   : > "$detect_file"
   qa_log "stage start label=$stage_label"
 
-  # set -e / pipefail 配下で個別の非 0 exit を握り潰すため、PIPESTATUS を即座に
-  # 配列コピーしてから判断する。`|| true` は PIPESTATUS を 0 で上書きしてしまう
-  # ため使えない（Issue #104 で発覚 / 既存 Issue #66 実装の latent bug 修正）。
-  # set +e/-e で囲って pipefail 起因の即時 exit を一時的に抑止し、
-  # PIPESTATUS[0] = codex 本体 exit code を確実に取り出す。
-  local codex_rc=0
-  set +e
-  "$@" 2>&1 | tee -a "$LOG" | qa_detect_rate_limit > "$detect_file"
-  local _qa_pipestatus=("${PIPESTATUS[@]}")
-  set -e
-  codex_rc="${_qa_pipestatus[0]:-0}"
+  local codex_rc=0 attempt=1 max_attempts=2 retry_after_collab="false"
+  local stream_file="${reset_file}.stream"
+  : > "$stream_file"
+
+  while [ "$attempt" -le "$max_attempts" ]; do
+    : > "$detect_file"
+    : > "$stream_file"
+
+    # set -e / pipefail 配下で個別の非 0 exit を握り潰すため、PIPESTATUS を即座に
+    # 配列コピーしてから判断する。`|| true` は PIPESTATUS を 0 で上書きしてしまう
+    # ため使えない（Issue #104 で発覚 / 既存 Issue #66 実装の latent bug 修正）。
+    # set +e/-e で囲って pipefail 起因の即時 exit を一時的に抑止し、
+    # PIPESTATUS[0] = codex 本体 exit code を確実に取り出す。
+    set +e
+    "$@" 2>&1 | tee -a "$LOG" "$stream_file" | qa_detect_rate_limit > "$detect_file"
+    local _qa_pipestatus=("${PIPESTATUS[@]}")
+    set -e
+    codex_rc="${_qa_pipestatus[0]:-0}"
+
+    local _fallback_status="failed"
+    if [ "$codex_rc" -eq 0 ]; then
+      _fallback_status="degraded-success"
+    elif [ "$attempt" -lt "$max_attempts" ]; then
+      _fallback_status="retry-scheduled"
+    fi
+    qa_detect_collab_spawn_failures "$stage_label" "$stream_file" "$codex_rc" "$attempt" "$max_attempts" "$_fallback_status"
+
+    if [ -s "$detect_file" ]; then
+      break
+    fi
+
+    if [ "${QA_COLLAB_LAST_COUNT:-0}" -gt 0 ] && [ "$codex_rc" -ne 0 ] && [ "$attempt" -lt "$max_attempts" ]; then
+      retry_after_collab="true"
+      qa_warn "collab-spawn fallback start stage=$(qa_sanitize_summary_token "$stage_label") roles=${QA_COLLAB_LAST_ROLES:-unknown} reason=no_thread_with_id action=bounded-retry next_attempt=$((attempt + 1))/${max_attempts}"
+      attempt=$((attempt + 1))
+      continue
+    fi
+    break
+  done
+
+  if [ "$retry_after_collab" = "true" ]; then
+    if [ "$codex_rc" -eq 0 ]; then
+      qa_warn "collab-spawn fallback result=success stage=$(qa_sanitize_summary_token "$stage_label") reason=bounded-retry degraded=yes"
+    else
+      qa_warn "collab-spawn fallback result=failed stage=$(qa_sanitize_summary_token "$stage_label") reason=bounded-retry degraded=yes codex_rc=${codex_rc}"
+    fi
+  fi
 
   # 検出 TSV を解釈する。
   # 優先順位:
@@ -258,7 +439,7 @@ qa_run_codex_stage() {
       _epoch=$(printf '%s' "$_epoch" | tr -d '[:space:]')
       printf '%s\n' "$_epoch" > "$reset_file"
       qa_log "stage detected exceeded label=$stage_label path=${_path} reset_epoch=$_epoch"
-      rm -f "$detect_file"
+      rm -f "$detect_file" "$stream_file"
       return 99
     fi
 
@@ -277,7 +458,7 @@ qa_run_codex_stage() {
       if [[ "$_usage_epoch" =~ ^[0-9]+$ ]]; then
         printf '%s\n' "$_usage_epoch" > "$reset_file"
         qa_log "stage detected exceeded label=$stage_label path=usage_limit_fatal reset_epoch=$_usage_epoch"
-        rm -f "$detect_file"
+        rm -f "$detect_file" "$stream_file"
         return 99
       fi
     fi
@@ -289,7 +470,7 @@ qa_run_codex_stage() {
     qa_warn "stage detected without reset label=$stage_label path=${_path} (既存フローに委譲 / codex_rc=$codex_rc)"
     : > "$reset_file"
   fi
-  rm -f "$detect_file"
+  rm -f "$detect_file" "$stream_file"
   return "$codex_rc"
 }
 

@@ -18,6 +18,7 @@
 #   - rs_record_reviewer         : Reviewer の独立起動・verdict・round を記録
 #   - rs_record_sav              : stage-a-verify の結果・round を記録
 #   - rs_record_error            : degraded 兆候の検出を記録（errors=yes へ）
+#   - rs_record_degraded_event   : structured degraded event を run summary に蓄積
 #   - rs_scan_degraded_log       : LOG から degraded 兆候を grep し errors を更新（fail-open）
 #   - rs_set_result              : 最終遷移を記録（ready / iteration / failed / hold）
 #   - rs_emit                    : 蓄積状態を `run-summary:` 1 行に整形出力（EXIT trap から呼ぶ）
@@ -69,6 +70,8 @@ rs_init() {
   RUN_SUMMARY_SAV='n/a'           # stage-a-verify= 既定（非該当 / 未実行）
   RUN_SUMMARY_SCAFFOLDING='unknown' # scaffolding= 既定（未判定）
   RUN_SUMMARY_ERRORS='no'         # errors= 既定（兆候なし）
+  RUN_SUMMARY_DEGRADED_EVENTS=''  # degraded-events= 内部蓄積（空=none として emit）
+  RUN_SUMMARY_WARNINGS=''         # warnings= 内部蓄積（空=none として emit）
   RUN_SUMMARY_RESULT='unknown'    # result= 既定（最終遷移未確定）
   return 0
 }
@@ -198,6 +201,59 @@ rs_record_error() {
   return 0
 }
 
+# ─── rs_sanitize_token ───
+#
+# run-summary の value に埋め込む token を空白なし ASCII へ正規化する。
+# structured event は grep / awk で扱うため空白・区切り文字を `_` に寄せる。
+rs_sanitize_token() {
+  printf '%s' "${1:-unknown}" | tr -c 'A-Za-z0-9_.=+/-' '_'
+}
+
+# ─── rs_record_degraded_event ───
+#
+# structured degraded event を run summary に蓄積する。既存 key は変更せず、rs_emit が末尾に
+# `degraded-events=` / `warnings=` を追加する。副作用は RUN_SUMMARY_* 変数代入のみ。
+# Args:
+#   $1 = event type（例: collab_spawn_failed）
+#   $2 = stage label
+#   $3 = agent role
+#   $4 = failure reason
+#   $5 = fallback 実施有無 / 種別
+#   $6 = final output degraded 判定
+#   $7 = repeated warning 有無
+rs_record_degraded_event() {
+  local event_type stage role reason fallback degraded repeated event
+  event_type=$(rs_sanitize_token "${1:-unknown}")
+  stage=$(rs_sanitize_token "${2:-unknown}")
+  role=$(rs_sanitize_token "${3:-unknown}")
+  reason=$(rs_sanitize_token "${4:-unknown}")
+  fallback=$(rs_sanitize_token "${5:-unknown}")
+  degraded=$(rs_sanitize_token "${6:-unknown}")
+  repeated=$(rs_sanitize_token "${7:-no}")
+
+  event="${event_type}(stage=${stage},role=${role},reason=${reason},fallback=${fallback},degraded=${degraded},repeated=${repeated})"
+  if [ -z "${RUN_SUMMARY_DEGRADED_EVENTS:-}" ]; then
+    RUN_SUMMARY_DEGRADED_EVENTS="$event"
+  else
+    RUN_SUMMARY_DEGRADED_EVENTS="${RUN_SUMMARY_DEGRADED_EVENTS};${event}"
+  fi
+  RUN_SUMMARY_ERRORS='yes'
+
+  if [ "$repeated" = "yes" ]; then
+    case ",${RUN_SUMMARY_WARNINGS:-}," in
+      *,collab_spawn_repeated,*) : ;;
+      *)
+        if [ -z "${RUN_SUMMARY_WARNINGS:-}" ]; then
+          RUN_SUMMARY_WARNINGS='collab_spawn_repeated'
+        else
+          RUN_SUMMARY_WARNINGS="${RUN_SUMMARY_WARNINGS},collab_spawn_repeated"
+        fi
+        ;;
+    esac
+  fi
+  return 0
+}
+
 # ─── rs_scan_degraded_log ───
 #
 # ${LOG}（または引数の logfile）を grep し、degraded 兆候パターン
@@ -250,7 +306,7 @@ rs_emit() {
     false|0|no|off) return 0 ;;
   esac
 
-  local ts repo issue mode stages reviewer sav scaffolding errors result
+  local ts repo issue mode stages reviewer sav scaffolding errors degraded_events warnings result
   ts="$(date '+%F %T' 2>/dev/null)" || ts='?'
   repo="${REPO:-?}"
   issue="${RUN_SUMMARY_ISSUE:-#?}"
@@ -262,8 +318,12 @@ rs_emit() {
   sav="${RUN_SUMMARY_SAV:-n/a}"
   scaffolding="${RUN_SUMMARY_SCAFFOLDING:-unknown}"
   errors="${RUN_SUMMARY_ERRORS:-no}"
+  degraded_events="${RUN_SUMMARY_DEGRADED_EVENTS:-}"
+  [ -z "$degraded_events" ] && degraded_events='none'
+  warnings="${RUN_SUMMARY_WARNINGS:-}"
+  [ -z "$warnings" ] && warnings='none'
   result="${RUN_SUMMARY_RESULT:-unknown}"
 
-  echo "[${ts}] [${repo}] run-summary: issue=${issue} mode=${mode} stages=${stages} reviewer=${reviewer} stage-a-verify=${sav} scaffolding=${scaffolding} errors=${errors} result=${result}" || true
+  echo "[${ts}] [${repo}] run-summary: issue=${issue} mode=${mode} stages=${stages} reviewer=${reviewer} stage-a-verify=${sav} scaffolding=${scaffolding} errors=${errors} degraded-events=${degraded_events} warnings=${warnings} result=${result}" || true
   return 0
 }
