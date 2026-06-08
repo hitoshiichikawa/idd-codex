@@ -41,9 +41,9 @@ Product Manager が `requirements.md` を書き終える前に、このゲート
   （`When` / `If` / `While` / `Where` / `The <system> shall` のいずれかで始まる文が含まれる）
 - **実装語彙の混入チェック**: DB 名・フレームワーク名・API パターン等の技術用語が混入していないか scan
 
-### `/goal` による自動ループ運用（Codex v2.1.139+）
+### `/goal` による自動ループ運用（Codex CLI v2.1.139+）
 
-Codex v2.1.139 以降では、上記 3 つの Mechanical Checks を `/goal` の完了条件として
+Codex CLI v2.1.139 以降では、上記 3 つの Mechanical Checks を `/goal` の完了条件として
 宣言し、未達なら自動で次ターンを実行する運用が可能です。**v2.1.139 未満の環境では本節
 全体をスキップし、後述の「レビュー・ループ」節の従来手順（Mechanical Checks → 判断レビュー
 → 最大 2 パス）をそのまま適用してください**（後方互換）。
@@ -83,7 +83,7 @@ requirements.md の全要件見出しが numeric ID であり、各要件に EAR
 - Mechanical Checks を先に実施、続いて判断レビュー
 - 問題が draft 内で閉じるなら修正して再レビュー
 - **最大 2 パス**で確定するか、人間エスカレーションを選ぶ（無限ループを避ける）
-  - Codex v2.1.139+ では上記「`/goal` による自動ループ運用」節の手順で Mechanical Checks 部分を自動収束させる
+  - Codex CLI v2.1.139+ では上記「`/goal` による自動ループ運用」節の手順で Mechanical Checks 部分を自動収束させる
   - v2.1.139 未満では本節の手順をそのまま実行する（従来挙動と完全一致）
 - ゲート通過後に `requirements.md` を確定させる
 

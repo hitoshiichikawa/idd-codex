@@ -9,7 +9,15 @@
 - Title : {{TITLE}}
 - URL   : {{URL}}
 
-Issue 本文と既存コメントは `gh issue view {{NUMBER}} --comments` で取得してください。
+Issue の取得は次の順で行ってください。
+
+1. **本文（必須）**: `gh issue view {{NUMBER}}` で本文を取得する。
+2. **コメント（あれば）**: `gh issue view {{NUMBER}} --comments` で取得する。
+
+> 注意: `gh issue view {{NUMBER}} --comments` は **コメントが 0 件の Issue では空文字を返します**
+> （`gh` の仕様。no-TTY 環境では本文も表示されない）。空出力を「取得失敗」とみなして同じ
+> コマンドを何度も再試行しないこと。コメントが空なら本文（手順 1）のみで判定して構いません。
+
 すでに人間がコメントで回答済みの論点は、決定済みとして除外すること。
 
 ## 「致命的に人間の判断が必要」と判定する基準（status 判定）
@@ -46,6 +54,22 @@ tasks をまとめた設計 PR を先行作成し、人間の merge を経てか
 この判定は `status` の判定とは独立です。`status: codex-needs-decisions` でも `needs_architect` は
 通常どおり判定してください（人間確認後の再 Triage 時に利用されます）。
 
+## Issue 本文の `## 関連` / 依存表現の精査
+
+Issue 本文に `## 関連` セクション（英語 repo では `## Related`）がある場合、その配下を
+精査して依存・親子関係を把握してください。canonical 記法と互換 alias は `.codex/rules/issue-dependency.md`
+の定義に従います:
+
+- `Depends on: #N` / `前提依存: #N` / `Blocked by: #N` — 当該 Issue が他の Issue にブロックされる状態
+- `Parent: #N` / `親 Issue: #N` / `Umbrella: #N` — 親 Issue（umbrella 含む）への参照
+- `Split from: #N` / `分割元: #N` — 元 Issue を分割した結果として生まれたことを示す履歴
+- `Sibling: #N` / `Related: #N` — 兄弟 Issue / 関連参照（informational）
+
+`Depends on:` で参照される Issue がまだ open / 未着手の場合、当該 Issue は事前依存が
+未解決の可能性があるため、`rationale` に「Depends on: #N が未解決の可能性」として記述する
+ことを推奨します（人間判断の論点として扱える）。本 Triage プロンプトの判定ロジック自体は
+変更せず、依存表現の読み取り指針のみを追加します。
+
 ## 出力形式
 
 結果を以下の JSON スキーマで `{{FILE}}` に書き込んでください。
@@ -68,6 +92,10 @@ tasks をまとめた設計 PR を先行作成し、人間の merge を経てか
       "impact": "この決定が実装・運用に与える影響",
       "recommendation": "Codex の推奨とその理由"
     }
+  ],
+  "edit_paths": [
+    "local-watcher/",
+    "README.md"
   ]
 }
 ```
@@ -75,4 +103,20 @@ tasks をまとめた設計 PR を先行作成し、人間の merge を経てか
 - `status` が `ready` の場合、`decisions` は空配列にすること
 - `needs_architect` が `false` の場合でも `architect_reason` には「軽微な修正のため不要」など根拠を残すこと
 - JSON 以外の文字列を出力しないこと（シェル側で jq パースに失敗します）
-- `{{FILE}}` はシェルやファイル編集機能を使って作成・上書きすること
+- `{{FILE}}` への書き込みは Write ツールを使うこと
+
+## edit_paths の出力指示（Phase E）
+
+Triage の判定に加えて、当該 Issue を実装した場合に **編集される可能性が高い top-level
+path** を JSON 配列 `edit_paths` として出力してください。
+
+- 要素はリポジトリルートからの相対パスで、ディレクトリは末尾 `/` 付き、ファイルは `/` なし
+  （例: `local-watcher/`, `README.md`, `docs/`）
+- top-level（1 段目）のみ。サブパスや行番号は不要
+- Issue 本文に明示記載がある場合は確度高、推測でしかない場合は除外
+- 確信が持てない場合は空配列 `[]` を返してください（omit や null は不可）
+- 推定見込みであり 100% 正確である必要はない（過剰列挙より厳選を優先）
+
+本フィールドは Path Overlap Checker (Phase E) が hot file 競合予防のために利用します。
+既存 5 keys（`status` / `needs_architect` / `architect_reason` / `rationale` / `decisions`）の
+位置・型・意味は変更しないこと。

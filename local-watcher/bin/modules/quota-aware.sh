@@ -1,0 +1,588 @@
+#!/usr/bin/env bash
+# quota-aware.sh — watcher の Quota-Aware 待機制御プロセッサモジュール
+#
+# 用途:
+#   idd-codex-issue-watcher.sh から切り出した quota 枯渇検出・待機制御プロセッサを集約する。
+#   Codex Max の 5 時間ローリング quota 超過を Stage 実行中の codex CLI が出す
+#   `rate_limit_event` / synthetic 429 で検知し、当該 Issue を `codex-needs-quota-wait`
+#   状態にして reset 予定時刻を repo slug 単位の $LOG_DIR 配下に永続化する。次サイクル
+#   以降の Quota Resume Processor が reset+grace 経過した Issue からラベルを除去して
+#   通常 pickup ループに戻す。
+#   - qa_detect_rate_limit  : stream-json を fold して quota 枯渇イベントを検出
+#   - qa_run_codex_stage   : Stage 実行 wrapper（tee + 検出 + exit 99 sentinel）
+#   - qa_persist_reset_time : reset 時刻の永続化（Issue 番号 keyed JSON）
+#   - qa_load_reset_time    : reset 時刻の読み出し（移行期は本文 marker フォールバック）
+#   - qa_build_escalation_comment / build_partial_escalation_comment : 状況コメント生成
+#   - qa_handle_quota_exceeded : quota 検出時のラベル付与・コメント投稿・永続化
+#   - process_quota_resume  : Resume Processor（全 Processor 先頭で起動）
+#
+# 配置先:
+#   $HOME/bin/modules/quota-aware.sh（install.sh が local-watcher/bin/modules/ から配置する）
+#
+# 依存:
+#   - 本モジュールは idd-codex-issue-watcher.sh 本体から `source` される前提（単体起動しない）。
+#   - `set -euo pipefail` は本体側で宣言済みのため、本モジュールでは宣言せず関数定義のみを持つ。
+#   - ロガー（qa_log / qa_warn / qa_error / qa_format_iso8601）は core_utils.sh にあるため
+#     本モジュールでは再定義しない。
+#   - グローバル変数（$REPO / $QUOTA_AWARE_ENABLED / $LABEL_NEEDS_QUOTA_WAIT / reset 永続化先
+#     パス等）は本体冒頭の Config ブロックで定義済み。bash の遅延束縛により呼び出し時に解決される。
+#   - 外部 CLI: gh / jq / date / codex。
+#
+# セットアップ参照先:
+#   README.md（ディレクトリ構成・modules 化 migration note） / install.sh（配置ロジック）
+#   設計参照: docs/specs/66-feat-watcher-codex-max-quota-rate-limit/design.md
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Quota-Aware Watcher Helpers (#66)
+#   Codex Max の 5 時間ローリング quota 超過を、Stage 実行中の codex CLI が出す
+#   `rate_limit_event` (status=exceeded) JSON で検知する。検知時は当該 Issue を
+#   `codex-needs-quota-wait` 状態にし、reset 予定時刻を repo slug 単位で分離済みの $LOG_DIR
+#   配下のローカルファイル（Issue 番号 keyed JSON）に永続化する（#169。Issue body の
+#   read-modify-write を廃止し lost update を解消。移行期は本文 marker をフォールバック
+#   読取）。次サイクル以降の Quota Resume Processor が reset+grace 経過した Issue
+#   からラベルを除去して通常 pickup ループに戻す。
+#
+#   QUOTA_AWARE_ENABLED=false（明示 opt-out）では本セクションの全関数は呼ばれるが、
+#   gate 早期 return で副作用を一切起こさない。Stage Wrapper も `"$@"` 素通しで
+#   本機能導入前と 100% 互換（Req 1.1, NFR 2.1）。#112 でデフォルトは true に反転。
+#
+#   設計参照: docs/specs/66-feat-watcher-codex-max-quota-rate-limit/design.md
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# stdin の stream-json（1 行 1 JSON）を fold し、quota 枯渇イベントを検出して
+# `<detection_path>\t<reset_epoch>` 形式の TSV を 1 検出 1 行で stdout に出力する
+# （Req 1.1〜1.4, 2.1〜2.2, 3.1〜3.4, 5.1〜5.4 / Issue #66 Req 2.x との後方互換）。
+#
+# 検出経路（detection_path フィールド値）:
+#   - `rate_limit_event_v2`  : 現行 Codex CLI スキーマ
+#                              `type==rate_limit_event` かつ
+#                              `rate_limit_info.status == "rejected"`
+#                              （Issue #104 Bug 1 / Req 1.1）
+#   - `rate_limit_event_v1`  : 旧スキーマ
+#                              `type==rate_limit_event` かつ `status == "exceeded"`
+#                              （Req 2.1 / Issue #66 互換維持）
+#   - `synthetic_429_result` : quota 枯渇直撃時の synthetic result 行
+#                              `type==result` かつ `is_error == true` かつ
+#                              `api_error_status == 429`
+#                              （Issue #104 Bug 2 / Req 3.1）
+#
+# Reset 時刻フィールド探索順（現行 / 旧スキーマ揺れと synthetic 429 同居を許容）:
+#   1) .rate_limit_info.resetsAt / .resets_at / .reset_at  （現行スキーマ ネスト位置 / Req 1.3）
+#   2) .resetsAt / .reset_at / .resets_at                  （旧スキーマ top-level / Req 2.2）
+#   値の型が数値ならそのまま epoch、ISO 8601 文字列なら `fromdateiso8601` で epoch 化。
+#   いずれも取得できなければ空（呼び出し側で reset 欠落 fallback / Req 1.4, 3.2）。
+#
+# 出力契約:
+#   - 1 検出 1 行: `<detection_path>\t<epoch_or_empty>`
+#   - 解析失敗（非 JSON / schema 違い）の行は無視して継続（Req 2.5 / Issue #66）
+#   - allowed のみ / 通常 result（is_error:false）は無視（Req 3.4）
+#   - 同一 stream に複数検出があっても全件出力（呼び出し側で `tail -1` 等を選択）
+#
+# 実装メモ: jq は default だと stdin を "concatenated JSON" として一括 parse する
+# ため、無効な 1 行があると stream 全体が fatal で止まる。stream を停止させない
+# 要件（Req 2.5）を満たすため、`-R`（raw input）で 1 行ずつ受け取り、各行を
+# `try fromjson catch null` で個別 parse する。
+qa_detect_rate_limit() {
+  jq -R -r '
+    # 入力 1 行を JSON object に折りたたむ。fromjson 失敗 / 非 object は捨てる。
+    . as $line
+    | (try ($line | fromjson) catch null)
+    | select(type == "object") as $j
+
+    # detection_path を 3 経路で識別（先頭で優先度を決定し、最初に match した
+    # 経路を採用）。マッチしなければ empty で当該行を捨てる。
+    | (
+        if ($j.type? == "rate_limit_event")
+           and (($j.rate_limit_info? // {}).status? == "rejected") then
+          "rate_limit_event_v2"
+        elif ($j.type? == "rate_limit_event")
+             and ($j.status? == "exceeded") then
+          "rate_limit_event_v1"
+        elif ($j.type? == "result")
+             and ($j.is_error? == true)
+             and ($j.api_error_status? == 429) then
+          "synthetic_429_result"
+        else
+          empty
+        end
+      ) as $path
+
+    # reset epoch 候補値: 現行スキーマ ネスト → 旧スキーマ top-level の順で探索。
+    # 値が無ければ null を bind（empty を bind すると jq 仕様により当該行が消える）。
+    | (
+        ($j.rate_limit_info? // {})
+        | (.resetsAt // .resets_at // .reset_at // null)
+      ) as $nested
+    | (
+        $j
+        | (.resetsAt // .reset_at // .resets_at // null)
+      ) as $top
+    | (if $nested != null then $nested else $top end) as $raw
+
+    # epoch 化: number はそのまま floor、string は ISO 8601 → epoch、それ以外は空。
+    | (
+        if $raw == null then ""
+        elif ($raw | type) == "number" then ($raw | floor | tostring)
+        elif ($raw | type) == "string" then
+          (try ($raw | fromdateiso8601 | tostring)
+            catch (try ($raw | tonumber | floor | tostring) catch ""))
+        else "" end
+      ) as $epoch_str
+
+    # 出力: <detection_path>\t<epoch_or_empty>
+    | "\($path)\t\($epoch_str)"
+  ' 2>/dev/null
+}
+
+# 既存 6 stage の codex 呼び出しを横断ラップする Stage Wrapper（Req 1.1, 1.2,
+# 2.1, NFR 2.1）。
+#
+# 引数: <stage_label> <reset_file> -- codex <codex args...>
+# Returns:
+#   0     : codex 正常終了 + quota 検出なし（既存挙動互換）
+#   99    : quota 検出（reset epoch が $reset_file に書かれている）
+#   N≠0,99: codex 自体の非ゼロ exit（quota 以外の失敗、既存フロー委譲）
+#
+# 副作用:
+#   - ${LOG}（呼び出し側で設定済み）に stream 出力を追記
+#   - $reset_file は空（quota 検出なし）または epoch 1 行
+qa_run_codex_stage() {
+  local stage_label="$1"
+  local reset_file="$2"
+  shift 2
+  # 引数 separator '--' を skip
+  if [ "${1:-}" = "--" ]; then
+    shift
+  fi
+
+  # opt-out: 既存挙動の素通し実行。tee も解析も走らない（Req 1.1, NFR 2.1）。
+  if [ "$QUOTA_AWARE_ENABLED" != "true" ]; then
+    "$@"
+    return $?
+  fi
+
+  # opt-in: stream-json を tee で 2 系統に分岐
+  #   系統 1: 既存 $LOG への append（観測ログを破壊しない）
+  #   系統 2: qa_detect_rate_limit への pipe → 検出 TSV を中間ファイルに書き出し
+  : > "$reset_file"
+  local detect_file="${reset_file}.detect"
+  : > "$detect_file"
+  qa_log "stage start label=$stage_label"
+
+  # set -e / pipefail 配下で個別の非 0 exit を握り潰すため、PIPESTATUS を即座に
+  # 配列コピーしてから判断する。`|| true` は PIPESTATUS を 0 で上書きしてしまう
+  # ため使えない（Issue #104 で発覚 / 既存 Issue #66 実装の latent bug 修正）。
+  # set +e/-e で囲って pipefail 起因の即時 exit を一時的に抑止し、
+  # PIPESTATUS[0] = codex 本体 exit code を確実に取り出す。
+  local codex_rc=0
+  set +e
+  "$@" 2>&1 | tee -a "$LOG" | qa_detect_rate_limit > "$detect_file"
+  local _qa_pipestatus=("${PIPESTATUS[@]}")
+  set -e
+  codex_rc="${_qa_pipestatus[0]:-0}"
+
+  # 検出 TSV を解釈する。
+  # 優先順位:
+  #   1) epoch を持つ検出のうち最新行を採用 → exit 99 経路（reset 永続化に必要）
+  #   2) 1 が無く epoch なし検出のみある場合 → 既存フロー fallback + warn
+  #      （quota 枯渇は事実だが reset 不明では Resume Processor が機能しないため、
+  #      codex_rc を透過。Stage C は別途 PR 実在 verify で虚偽成功を防ぐ /
+  #      Req 1.4 / Req 3.2 / Issue #66 後方互換）
+  #   3) 検出ゼロ → codex_rc 透過
+  if [ -s "$detect_file" ]; then
+    local _epoch_line _path _epoch
+    _epoch_line=$(awk -F '\t' 'NF >= 2 && $2 ~ /^[0-9]+$/ { last = $0 } END { print last }' "$detect_file")
+    if [ -n "$_epoch_line" ]; then
+      _path="${_epoch_line%%$'\t'*}"
+      _epoch="${_epoch_line#*$'\t'}"
+      _epoch=$(printf '%s' "$_epoch" | tr -d '[:space:]')
+      printf '%s\n' "$_epoch" > "$reset_file"
+      qa_log "stage detected exceeded label=$stage_label path=${_path} reset_epoch=$_epoch"
+      rm -f "$detect_file"
+      return 99
+    fi
+
+    # epoch 付き検出ゼロだが、検出経路だけは観測できたケース
+    local _last_line
+    _last_line=$(tail -1 "$detect_file")
+    _path="${_last_line%%$'\t'*}"
+    qa_warn "stage detected without reset label=$stage_label path=${_path} (既存フローに委譲 / codex_rc=$codex_rc)"
+    : > "$reset_file"
+  fi
+  rm -f "$detect_file"
+  return "$codex_rc"
+}
+
+# reset 予定時刻のローカル永続化ファイル（#169）。
+# Issue body の read-modify-write（lost update リスクあり）を廃止し、repo slug 単位で
+# 分離済みの $LOG_DIR 配下に Issue 番号 keyed の JSON で永続化する（Req 1.1〜1.4, 2.x）。
+# JSON 形状: { "<issue_number>": <reset_epoch_int>, ... }（1 Issue 最新値 1 件 / NFR 4.1）。
+# $LOG_DIR は repo ごとに分離されているため、本ファイルに他 repo の値は混在しない（Req 1.4）。
+QUOTA_RESET_STATE_FILE="${QUOTA_RESET_STATE_FILE:-$LOG_DIR/quota-reset-times.json}"
+
+# reset 予定時刻をローカルファイルへ Issue 番号 keyed で永続化する（Req 1.1〜1.4, 2.1, 2.3,
+# 4.1, 4.2, NFR 4.1）。Issue body への書き込み（gh issue edit --body 相当）は一切行わない
+# （Req 1.2, 1.3）。書込はアトミック（temp file → mv）で破損リスクを抑える。
+#
+# Args: $1 = issue number, $2 = reset epoch (integer)
+# Return: 0 = persisted, 1 = failure (warn only, do not fail caller / Req 4.2)
+qa_persist_reset_time() {
+  local issue_number="$1"
+  local epoch="$2"
+
+  # 不正な epoch（数値以外）は永続化しない（malformed 値を書き込まない / NFR 4.1 整合）
+  if ! [[ "$epoch" =~ ^[0-9]+$ ]]; then
+    return 1
+  fi
+
+  # 永続化先ディレクトリを確保（$LOG_DIR は通常起動時に mkdir 済みだが防御的に）
+  local state_dir
+  state_dir=$(dirname "$QUOTA_RESET_STATE_FILE")
+  if ! mkdir -p "$state_dir" 2>/dev/null; then
+    return 1
+  fi
+
+  # 既存ファイルを基に Issue 番号 key を upsert する。ファイル不在 / 破損時は空 object から
+  # 初期化（Req 4.5 の破損耐性は読取側で担保するが、書込時も破損を引きずらない）。
+  local base_json="{}"
+  if [ -f "$QUOTA_RESET_STATE_FILE" ]; then
+    local existing
+    if existing=$(jq -e '.' "$QUOTA_RESET_STATE_FILE" 2>/dev/null); then
+      base_json="$existing"
+    fi
+  fi
+
+  # アトミック書込: temp file に出力 → mv で置換（同一 Issue・同一 epoch を複数回実行しても
+  # 1 件の最新値に収束 / NFR 4.1）。temp file は同一ディレクトリに作り mv を atomic に保つ。
+  local tmp_file
+  if ! tmp_file=$(mktemp "${QUOTA_RESET_STATE_FILE}.XXXXXX" 2>/dev/null); then
+    return 1
+  fi
+  if ! printf '%s' "$base_json" | jq \
+      --arg num "$issue_number" \
+      --argjson epoch "$epoch" \
+      '. + {($num): $epoch}' > "$tmp_file" 2>/dev/null; then
+    rm -f "$tmp_file"
+    return 1
+  fi
+  if ! mv -f "$tmp_file" "$QUOTA_RESET_STATE_FILE" 2>/dev/null; then
+    rm -f "$tmp_file"
+    return 1
+  fi
+  return 0
+}
+
+# Issue 番号に対応する reset epoch を返す（Req 3.1〜3.4, 4.3, 4.4, 4.5）。
+# 読取順: 1) ローカルファイル（優先 / Req 3.1, 3.3） 2) Issue body の hidden marker
+# `<!-- idd-codex:quota-reset:<epoch>:v1 -->`（移行期フォールバック / Req 3.2, 3.4）。
+# 破損ファイル / 不正値 / 双方不在いずれの場合も数値以外を返さず return 1（Req 4.4, 4.5）。
+#
+# Args: $1 = issue number
+# Stdout: epoch (integer) on success, empty on failure
+# Return: 0 = found, 1 = absent or malformed (caller must skip removal / Req 4.4)
+qa_load_reset_time() {
+  local issue_number="$1"
+
+  # 1) ローカルファイル優先（Req 3.1, 3.3）。破損ファイルは jq -e が非 0 で抜け、
+  #    フォールバックに進む（Req 4.5: malformed を数値として返さない）。
+  if [ -f "$QUOTA_RESET_STATE_FILE" ]; then
+    local local_epoch
+    local_epoch=$(jq -er --arg num "$issue_number" \
+      '.[$num] | select(type == "number") | floor | tostring' \
+      "$QUOTA_RESET_STATE_FILE" 2>/dev/null)
+    if [[ "$local_epoch" =~ ^[0-9]+$ ]]; then
+      printf '%s' "$local_epoch"
+      return 0
+    fi
+  fi
+
+  # 2) フォールバック: Issue body の hidden marker（移行期 / 本変更デプロイ前に
+  #    永続化済みの Issue 向け / Req 3.2, 3.4）。
+  local body
+  if ! body=$(gh issue view "$issue_number" --repo "$REPO" --json body --jq '.body' 2>/dev/null); then
+    return 1
+  fi
+  local epoch
+  epoch=$(printf '%s' "$body" \
+    | sed -nE 's/.*<!-- idd-codex:quota-reset:([0-9]+):v1 -->.*/\1/p' \
+    | tail -1)
+  if [[ "$epoch" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$epoch"
+    return 0
+  fi
+  return 1
+}
+
+# escalation コメント本文を組み立てる（design.md 「Escalation Comment Template」を逐語使用）。
+# Args: $1 = stage label, $2 = epoch, $3 = ISO 8601 string
+# Stdout: コメント本文（markdown）
+qa_build_escalation_comment() {
+  local stage_label="$1" epoch="$2" iso8601="$3"
+  cat <<EOF
+## ⏸️ Codex Max quota exceeded（quota wait）
+
+watcher が \`${stage_label}\` 実行中に Codex CLI から \`rate_limit_event (status=exceeded)\` を検知しました。
+当該 Issue を一時的に **\`codex-needs-quota-wait\`** 状態にしています。Codex Max の 5 時間ローリング quota
+が reset された後、watcher が自動的に通常 pickup ループへ戻します。
+
+### 検知情報
+
+- 検知 Stage: \`${stage_label}\`
+- reset 予定時刻 (UNIX epoch): \`${epoch}\`
+- reset 予定時刻 (ISO 8601): \`${iso8601}\`
+- 適用 grace 秒数: \`${QUOTA_RESUME_GRACE_SEC}\` 秒（reset 後この秒数を経過するまで pickup を抑止）
+
+### 自動復帰の条件
+
+- 次サイクルの Quota Resume Processor が、現在時刻が \`reset 予定時刻 + grace\` を超えていることを
+  検知すると、\`codex-needs-quota-wait\` ラベルを自動除去します
+- ラベル除去後の cron tick で Dispatcher が通常 pickup 候補として再選定します
+- \`codex-failed\` ラベルは付与していません（quota 起因と他失敗の混同を避けるため、Req 3.2）
+
+### 手動介入したい場合
+
+- 即時再開: \`codex-needs-quota-wait\` ラベルを手動で外すと次サイクルで pickup されます
+- quota 起因でないと判断する場合: \`codex-needs-quota-wait\` を \`codex-failed\` に手動付け替えしてください
+  （reset 予定時刻は watcher 環境内のローカルファイルに保持されており、Issue body の編集は不要です）
+
+---
+
+_本コメントは Quota-Aware Watcher（Issue #66）が自動投稿しました。_
+EOF
+}
+
+# ─── build_partial_escalation_comment <status_code> <impl_notes_path> <tasks_md_path> <branch> ───
+#
+# Partial Status Gate (#148) のエスカレーションコメント本文を組み立てる純粋関数。
+# 副作用なし。本関数は stdout に markdown 本文を出力するのみで、`gh issue comment` 呼出は
+# 呼出側（handle_partial_status / mark_issue_needs_decisions）の責務。
+#
+# 入力:
+#   $1 = status_code         ("partial_blocked" または "partial_overrun")
+#   $2 = impl_notes_path     (Halt 理由抽出元 / impl-notes.md)
+#   $3 = tasks_md_path       (残タスク fallback / tasks.md)
+#   $4 = branch              (push 済み branch 名)
+#
+# 出力構造（Req 4.1〜4.5 / NFR 2.2 をすべてカバー）:
+#   1. 識別 HTML コメント `<!-- idd-codex:partial-status:STATUS -->`（本文先頭 / NFR 2.2）
+#   2. h2 タイトル（status code 別の固定文言）
+#   3. ## 検知情報（status / branch / Issue 番号）
+#   4. ## Halt 理由 — impl-notes.md `## Partial Halt Reason` セクションを引用
+#   5. ## Push 済み commit 一覧 — git log --oneline ${BASE_BRANCH}..HEAD
+#   6. ## 残タスク一覧 — impl-notes.md `## Pending Tasks` セクション優先、なければ tasks.md
+#      の `- [ ]` 行を fallback 抽出
+#   7. ## 推奨アクション — 固定リスト（依存 Issue 先行 / Issue 分割 / 手動続行）
+#   8. ## 次の手順 — `codex-needs-decisions` 除去で次サイクル自動 pickup される旨
+#   9. footer — 本コメントが #148 由来である旨
+#
+# Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, NFR 2.2
+build_partial_escalation_comment() {
+  local status_code="$1"
+  local impl_notes_path="$2"
+  local tasks_md_path="$3"
+  local branch="$4"
+
+  # ── status 別のタイトル ──
+  local title
+  case "$status_code" in
+    partial_blocked)
+      title="⏸️ Developer が partial_blocked を報告しました（外部依存で進行不能）"
+      ;;
+    partial_overrun)
+      title="⏸️ Developer が partial_overrun を報告しました（turn budget 残量不足）"
+      ;;
+    *)
+      title="⏸️ Developer が partial 状態を報告しました（${status_code}）"
+      ;;
+  esac
+
+  # ── Halt 理由抽出（impl-notes.md の `## Partial Halt Reason` セクション本文） ──
+  # awk で「## Partial Halt Reason」見出しから次の `## ` 見出しまでを抽出
+  # （見出し行自体は含めない / 末尾の空行も保持）。ファイル不在時は空文字。
+  local halt_reason=""
+  if [ -f "$impl_notes_path" ]; then
+    halt_reason=$(awk '
+      /^## Partial Halt Reason[[:space:]]*$/ { in_section=1; next }
+      in_section && /^## / { exit }
+      in_section { print }
+    ' "$impl_notes_path" 2>/dev/null || true)
+  fi
+  if [ -z "$halt_reason" ]; then
+    halt_reason="(impl-notes.md に \`## Partial Halt Reason\` セクションが見つかりませんでした)"
+  fi
+
+  # ── push 済み commit 一覧（${BASE_BRANCH}..HEAD） ──
+  # git log は REPO_DIR で実行する前提（呼出側の `cd` 不要設計のため明示）。失敗時は空文字。
+  local commit_list=""
+  if [ -n "${REPO_DIR:-}" ] && [ -d "$REPO_DIR/.git" ]; then
+    commit_list=$(git -C "$REPO_DIR" log --oneline "${BASE_BRANCH}..HEAD" 2>/dev/null || true)
+  fi
+  if [ -z "$commit_list" ]; then
+    commit_list="(${BASE_BRANCH}..HEAD に commit がありません / または git log 取得に失敗しました)"
+  fi
+
+  # ── 残タスク一覧（impl-notes.md `## Pending Tasks` 優先、なければ tasks.md fallback） ──
+  local pending=""
+  if [ -f "$impl_notes_path" ]; then
+    pending=$(awk '
+      /^## Pending Tasks[[:space:]]*$/ { in_section=1; next }
+      in_section && /^## / { exit }
+      in_section { print }
+    ' "$impl_notes_path" 2>/dev/null || true)
+  fi
+  if [ -z "$pending" ] && [ -f "$tasks_md_path" ]; then
+    # fallback: tasks.md の `- [ ]` 未完了行を抽出（`- [ ]*` deferrable も含む）
+    pending=$(grep -E '^- \[ \]\*? ' "$tasks_md_path" 2>/dev/null || true)
+  fi
+  if [ -z "$pending" ]; then
+    pending="(残タスクが特定できませんでした。\`${SPEC_DIR_REL:-docs/specs/<N>-<slug>}/tasks.md\` を直接確認してください)"
+  fi
+
+  # ── 本文組立（heredoc） ──
+  cat <<EOF
+<!-- idd-codex:partial-status:${status_code} -->
+
+## ${title}
+
+watcher が Stage A 完了直後の Partial Status Gate (#148) で Developer の自己宣言を検出しました。
+当該 Issue は \`codex-needs-decisions\` 状態に切り替わり、人間判断（依存解消 / Issue 分割 / 手動続行）を
+仰ぐフローに入ります。Reviewer は **起動されません**。
+
+### 検知情報
+
+- 報告された status code: \`${status_code}\`
+- 対象 branch: \`${branch}\`
+- 対象 Issue: #${NUMBER:-(unknown)}
+
+## Halt 理由
+
+${halt_reason}
+
+## Push 済み commit 一覧
+
+\`\`\`
+${commit_list}
+\`\`\`
+
+## 残タスク一覧
+
+\`\`\`
+${pending}
+\`\`\`
+
+## 推奨アクション
+
+partial の種別に応じて以下のいずれかを選択してください:
+
+- **依存 Issue を先に進める**: \`partial_blocked\` で halt 理由が「未 merge の依存 Issue」の
+  場合は、当該 Issue を先に解決後、本 Issue の \`codex-needs-decisions\` を除去して再 pickup させる
+- **Issue を分割する**: 残タスクが本 Issue の本来 scope を超えていると判断した場合、サブ Issue
+  を起票して残タスクを移送し、本 Issue は close または scope を縮小して continue
+- **手動で続行する**: \`partial_overrun\` で turn budget 不足だった場合、当該 branch を手動
+  checkout して残タスクを実装し、commit + push 後に \`codex-needs-decisions\` を除去する
+
+## 次の手順
+
+人間判断で対処方針を決めた後、Issue から \`codex-needs-decisions\` ラベルを除去してください。
+次の watcher サイクルで本 Issue は通常 pickup 候補として再評価され、自動進行が再開されます。
+
+---
+
+_本コメントは Partial Status Gate (#148) が自動投稿しました。_
+EOF
+}
+
+# quota 検知時の副作用（永続化 → ラベル付け替え → escalation コメント → ログ）を
+# 1 関数で原子的に実行する（Req 3.1, 3.2, 3.3, 3.4, 3.7, 4.1, NFR 1.1, 1.2）。
+# `codex-failed` は **付与しない**（Req 3.2）。
+#
+# Args: $1 = issue number, $2 = stage label, $3 = reset epoch
+# Return: 0 always（副作用失敗は warn でログ、呼び出し側はラベル付与済み前提で続行）
+qa_handle_quota_exceeded() {
+  local issue_number="$1" stage_label="$2" epoch="$3"
+  local iso8601
+  iso8601=$(qa_format_iso8601 "$epoch")
+
+  # 1. 永続化（失敗してもラベル付与に進む。次 tick で再判定可能）
+  #    NFR 2.1, 2.2: 成功 / 失敗を Issue 番号 + reset epoch 付きで $LOG_DIR ログに残し、
+  #    grep による事後検索を可能にする。
+  if qa_persist_reset_time "$issue_number" "$epoch"; then
+    qa_log "reset persisted issue=#$issue_number stage=$stage_label reset_epoch=$epoch file=$QUOTA_RESET_STATE_FILE"
+  else
+    qa_warn "issue=$issue_number stage=$stage_label reset_epoch=$epoch reset 永続化に失敗（ラベル付与は継続）"
+  fi
+
+  # 2. ラベル付け替え（codex-claimed / codex-picked-up を除去 → codex-needs-quota-wait 付与。
+  #    codex-failed は付与しない / Req 3.2）
+  if ! gh issue edit "$issue_number" --repo "$REPO" \
+      --remove-label "$LABEL_CLAIMED" \
+      --remove-label "$LABEL_PICKED" \
+      --add-label "$LABEL_NEEDS_QUOTA_WAIT" >/dev/null 2>&1; then
+    qa_warn "issue=$issue_number stage=$stage_label ラベル付け替えに失敗"
+  fi
+
+  # 3. escalation コメント
+  local comment_body
+  comment_body=$(qa_build_escalation_comment "$stage_label" "$epoch" "$iso8601")
+  if ! gh issue comment "$issue_number" --repo "$REPO" --body "$comment_body" >/dev/null 2>&1; then
+    qa_warn "issue=$issue_number stage=$stage_label escalation コメント投稿に失敗"
+  fi
+
+  # 4. ログ（NFR 1.1, 1.2 / grep 可能形式）
+  qa_log "exceeded issue=#$issue_number stage=$stage_label reset_epoch=$epoch reset_iso=$iso8601 grace_sec=$QUOTA_RESUME_GRACE_SEC"
+  return 0
+}
+
+# Quota Resume Processor: cron tick 冒頭で `codex-needs-quota-wait` 付き Issue を走査し、
+# reset+grace 経過分のラベルを自動除去する（Req 5.1〜5.6, NFR 3.1〜3.3）。
+#
+# - opt-out 時は即時 return 0（NFR 2.1）
+# - 0 件時は API 1 回で return 0（NFR 3.1）
+# - 各 Issue で reset 取得失敗 / 不正値はラベル維持（Req 4.4）
+# - API 失敗は warn 吸収して return 0 を保証（Req 5.6）
+process_quota_resume() {
+  if [ "$QUOTA_AWARE_ENABLED" != "true" ]; then
+    return 0
+  fi
+  qa_log "Resume Processor 開始 (grace=${QUOTA_RESUME_GRACE_SEC}s)"
+
+  local issues_json
+  if ! issues_json=$(gh issue list --repo "$REPO" \
+        --label "$LABEL_NEEDS_QUOTA_WAIT" --state open \
+        --json number --limit 50 2>/dev/null); then
+    qa_warn "codex-needs-quota-wait Issue 取得に失敗（後続 Processor 継続）"
+    return 0
+  fi
+
+  local count
+  count=$(printf '%s' "$issues_json" | jq 'length' 2>/dev/null || echo 0)
+  if [ "$count" -eq 0 ]; then
+    qa_log "対象 Issue なし"
+    return 0
+  fi
+
+  local now_epoch
+  now_epoch=$(date -u +%s)
+
+  local issue_number reset_epoch threshold
+  while IFS= read -r issue_number; do
+    [ -z "$issue_number" ] && continue
+    if ! reset_epoch=$(qa_load_reset_time "$issue_number"); then
+      qa_warn "issue=$issue_number reset 時刻読み出し失敗 → ラベル維持（Req 4.4）"
+      continue
+    fi
+    threshold=$((reset_epoch + QUOTA_RESUME_GRACE_SEC))
+    if [ "$now_epoch" -lt "$threshold" ]; then
+      qa_log "issue=#$issue_number waiting reset_epoch=$reset_epoch now=$now_epoch wait_sec=$((threshold - now_epoch))"
+      continue
+    fi
+    if gh issue edit "$issue_number" --repo "$REPO" \
+        --remove-label "$LABEL_NEEDS_QUOTA_WAIT" >/dev/null 2>&1; then
+      qa_log "resumed issue=#$issue_number reset_epoch=$reset_epoch reset_iso=$(qa_format_iso8601 "$reset_epoch") elapsed_sec=$((now_epoch - reset_epoch))"
+    else
+      qa_warn "issue=$issue_number ラベル除去に失敗（次サイクルで再評価）"
+    fi
+  done < <(printf '%s' "$issues_json" | jq -r '.[].number')
+
+  return 0
+}

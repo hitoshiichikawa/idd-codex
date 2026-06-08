@@ -82,12 +82,12 @@ Architect の直後に呼ばれます。`docs/specs/<番号>-<slug>/` 配下の 
    >
    > - 問題なければ **merge** してください。merge 後に Issue から `codex-awaiting-design-review` ラベルを外すと、次回のポーリングで Developer が自動起動し、実装 PR が別途作成されます
    > - 修正が必要な場合: PR に直接 commit / suggest-edit / line comment で指摘してください
-   > - **`codex-needs-iteration` ラベルでの自動反復**（idd-codex 側で `PR_ITERATION_DESIGN_ENABLED=true` 有効時）: line コメント / 一般コメント（mention 不要）を残してから `codex-needs-iteration` ラベルを付与すると、watcher が次サイクルで Architect 役割の iteration を起動し、`docs/specs/<N>-<slug>/` 配下の spec 群を更新する。成功時は `codex-awaiting-design-review` に自動遷移
+   > - **`codex-needs-iteration` ラベルでの自動反復**（#112 以降 `PR_ITERATION_DESIGN_ENABLED=true` がデフォルト有効。`=false` を明示している watcher 環境ではこのフローは無効）: line コメント / 一般コメント（mention 不要）を残してから `codex-needs-iteration` ラベルを付与すると、watcher が次サイクルで Architect 役割の iteration を起動し、`docs/specs/<N>-<slug>/` 配下の spec 群を更新する。成功時は `codex-awaiting-design-review` に自動遷移
    > - 一般コメントの自動除外規約（idd-codex 側で適用）: watcher 自身の自動投稿（着手表明 / エスカレ等の hidden marker `<!-- idd-codex:... -->` を含むコメント）と、過去 round で対応済みのコメント（PR body の `last-run` TS より前に作成されたもの）は prompt から除外される。`@codex` mention は不要
    > - ⚠ `codex-needs-iteration` ラベルは **必ずこの PR に付与** してください（**Issue ではなく PR に**）。Issue へ誤付与すると watcher が当該 Issue の pickup を抑止します
    > - 設計をやり直したい場合: PR を close し、この Issue から `codex-awaiting-design-review` ラベルを外すと再 Triage されます
    >
-   > _注: watcher で `DESIGN_REVIEW_RELEASE_ENABLED=true` を有効化している場合、設計 PR merge 後数分以内に Issue から `codex-awaiting-design-review` が自動除去され、ステータスコメントが投稿されます。手動でのラベル除去は不要です。_
+   > _注: watcher の `DESIGN_REVIEW_RELEASE_ENABLED`（#112 以降デフォルト `true`）が有効な場合、設計 PR merge 後数分以内に Issue から `codex-awaiting-design-review` が自動除去され、ステータスコメントが投稿されます。手動でのラベル除去は不要です。`DESIGN_REVIEW_RELEASE_ENABLED=false` を明示している watcher 環境では手動でラベル除去が必要です。_
 
 ## 1 PR = design or impl のどちらか（混在禁止）
 
@@ -195,7 +195,7 @@ Refs #<issue-number>
 
 ---
 
-🤖 この PR は idd-codex ワークフローにより Codex が自動生成しました。
+🤖 この PR は idd-codex ワークフローにより Codex CLI が自動生成しました。
 設計レビューゲート: PM → Architect が完了した段階です。merge 後に Issue から `codex-awaiting-design-review` ラベルを外すと実装が自動開始します。
 ```
 
@@ -226,7 +226,75 @@ Developer の後に呼ばれます。実装コードとテストを含む本命�
    > - レビュー反復を回す場合は **この PR に** `codex-needs-iteration` ラベルを付与してください（**Issue ではなく PR に**。Issue へ誤付与すると watcher が当該 Issue の pickup を抑止します）
 5. PR に `needs-review` ラベルを付与（存在する場合）
 
+## 実装 PR 本文の `Refs` / `Closes` 使い分け（auto-close 事故防止）
+
+implementation モードの PR 本文「対応 Issue」セクションでは、Issue を auto-close すべきかどうかを
+`tasks.md` の最上位タスクの残存件数で機械的に判別し、`Refs #N`（部分実装 PR）または
+`Closes #N`（最終 PR / design-less impl）を使い分けます。
+
+> **design-review モードとの関係**: design-review モードは前述「設計 PR 本文の遵守事項
+> （auto-close 事故防止）」節（本ファイル上部、`Closes` / `Fixes` / `Resolves` 等の使用を
+> 全面禁止）の通り、**常に `Refs` 固定**です。implementation モードは本サブ節の判別ロジックで
+> `Refs` / `Closes` を使い分けます（混同しないこと）。
+
+### 判定ロジック（疑似コード）
+
+```
+if exists("docs/specs/<N>-<slug>/tasks.md"):
+    remaining = count_lines_matching("^- \[ \]\*? [0-9]+\. ", tasks.md)
+    remaining_after_this_pr = remaining - (この PR で完了予定の最上位タスク数)
+    if remaining_after_this_pr > 0:
+        → 「対応 Issue」に `Refs #<N>` を採用（部分実装 PR）
+    else:
+        → 「対応 Issue」に `Closes #<N>` を採用（最終 PR）
+else (design-less impl: tasks.md 不在):
+    → 「対応 Issue」に `Closes #<N>` を採用（単一 PR で完了）
+```
+
+### 判定 regex の正本参照
+
+判定 regex `^- \[ \]\*? [0-9]+\. ` の正本は **`.codex/rules/tasks-generation.md` の Budget
+overflow count 抽出 regex** です。この regex は `tasks.md` の **最上位 numeric ID 未チェック
+タスク**（`- [ ] 1. <名前>` / `- [ ]* 3. <名前>` 等）のみにマッチします。`- [x] 1.` 完了済み、
+`- [ ] 1.1` 子タスク、`### 1.` markdown header はマッチしません。
+
+watcher 側のガード（`stage_checkpoint_find_impl_pr` 内 `sc_tasks_unchecked_count`）も同一 regex を
+採用しており、PjM 判定と watcher 判定がドリフトしない設計です。
+
+### 判定実行例（bash スニペット）
+
+```bash
+# tasks.md の残存タスク件数を取得
+TASKS_MD="docs/specs/<N>-<slug>/tasks.md"
+if [ -f "$TASKS_MD" ]; then
+  REMAINING=$(grep -cE '^- \[ \]\*? [0-9]+\. ' "$TASKS_MD" 2>/dev/null) || REMAINING=0
+  # 当 PR で完了予定の最上位タスク数を差し引く（人間 or PjM が個別判断）
+  COMPLETED_IN_THIS_PR=<当 PR で完了予定件数>
+  REMAINING_AFTER=$(( REMAINING - COMPLETED_IN_THIS_PR ))
+  if [ "$REMAINING_AFTER" -gt 0 ]; then
+    LINK_KIND="Refs"   # 部分実装 PR
+  else
+    LINK_KIND="Closes" # 最終 PR
+  fi
+else
+  LINK_KIND="Closes"   # design-less impl
+fi
+```
+
+### 確認事項への 1 行記載例
+
+PR 本文の「確認事項 / レビュワーへの依頼」セクションに、判定根拠を 1 行記載してください
+（レビュワーが判定が正しいかを目視確認できるようにするため）:
+
+- 部分実装 PR の場合: `部分実装 PR: 残 X 件のため Refs を採用`
+- 最終 PR の場合: `最終 PR: tasks.md 全完了のため Closes を採用`
+- design-less impl の場合: `design-less impl: 単一 PR で完了のため Closes を採用`
+
 ## 実装 PR 本文テンプレート
+
+<!-- 「対応 Issue」セクションの `<Refs|Closes #<issue-number>>` プレースホルダは、前述
+     「実装 PR 本文の `Refs` / `Closes` 使い分け」節の判定ロジックで決定する。
+     判定根拠は「確認事項」セクションに 1 行記載する。 -->
 
 ```markdown
 ## 概要
@@ -235,7 +303,7 @@ Developer の後に呼ばれます。実装コードとテストを含む本命�
 
 ## 対応 Issue
 
-Closes #<issue-number>
+<Refs|Closes #<issue-number>>
 
 ## 関連 PR
 
@@ -270,7 +338,7 @@ Closes #<issue-number>
 
 ---
 
-🤖 この PR は idd-codex ワークフローにより Codex が自動生成しました。
+🤖 この PR は idd-codex ワークフローにより Codex CLI が自動生成しました。
 関連 Issue での決定事項の履歴は #<issue-number> のコメントを参照してください。
 ```
 

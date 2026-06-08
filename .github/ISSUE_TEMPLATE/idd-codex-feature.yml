@@ -1,5 +1,5 @@
 name: 機能要望・改善（idd-codex 自動開発）
-description: Codex に自動開発を依頼する Issue テンプレート。PM エージェントが誤解なくキャッチできる順序で質問を並べています
+description: Codex CLI に自動開発を依頼する Issue テンプレート。PM エージェントが誤解なくキャッチできる順序で質問を並べています
 title: ""
 labels: ["codex-auto-dev"]
 body:

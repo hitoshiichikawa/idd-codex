@@ -41,25 +41,6 @@ IDD_CODEX_REPO_URL="${IDD_CODEX_REPO_URL:-https://github.com/hitoshiichikawa/idd
 IDD_CODEX_BRANCH="${IDD_CODEX_BRANCH:-main}"
 IDD_CODEX_DIR="${IDD_CODEX_DIR:-$HOME/.idd-codex}"
 
-if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
-  cat <<'HELP'
-idd-codex bootstrap installer
-
-Usage:
-  bash setup.sh --repo /path/to/your-project --local
-  bash setup.sh --all --repo /path/to/your-project
-  bash setup.sh --help
-
-Environment:
-  IDD_CODEX_REPO_URL   clone source URL
-  IDD_CODEX_BRANCH     branch or tag to checkout
-  IDD_CODEX_DIR        local clone directory
-
-All other options are forwarded to install.sh after idd-codex is cloned or updated.
-HELP
-  exit 0
-fi
-
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # sudo 実行の検知と警告
 #   idd-codex は $HOME 配下にユーザースコープで配置するため sudo は不要。

@@ -7,9 +7,10 @@
 #       検証観点（Req と対応付け）:
 #         - ahead == 0 (通常成功) → return 0、副作用なし
 #           (Req 1.3, 2.3, 3.3, 5.1, NFR 1.1)
-#         - ahead > 0 + 自動 push リトライ成功 → return 0、qa_warn 発火、
-#           gh issue comment 投稿、mark_issue_failed 未呼出
-#           (Req 1.2, 4.1, 4.2, 4.3, NFR 2.1, 2.2)
+#         - ahead > 0 + 自動 push リトライ成功 → return 0、gh issue comment は
+#           投稿しない（#248 で抑止）、成功 info 行に Issue 番号 / stage 識別子 /
+#           branch / 復旧 commit 数を含める、mark_issue_failed 未呼出
+#           (Req 1.1, 1.2, 1.3, 2.1, 2.2, 2.3, 2.4, NFR 2.1, 2.2, 3.1)
 #         - ahead > 0 + 自動 push リトライ失敗 → return 1、mark_issue_failed 呼出、
 #           虚偽の成功メッセージなし、stage 識別子が正しく伝搬
 #           (Req 1.2, 4.1, 4.4, 4.5, 4.6, NFR 2.3)
@@ -27,9 +28,16 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WATCHER_SH="$SCRIPT_DIR/../bin/idd-codex-issue-watcher.sh"
+# #177 Part 1 で低レベル共通ユーティリティ（qa_log 等のロガーを含む）は
+# modules/core_utils.sh へ分離された。関数抽出の探索元に core_utils.sh も含める。
+CORE_UTILS_SH="$SCRIPT_DIR/../bin/modules/core_utils.sh"
 
 if [ ! -f "$WATCHER_SH" ]; then
   echo "ERROR: cannot find idd-codex-issue-watcher.sh at $WATCHER_SH" >&2
+  exit 2
+fi
+if [ ! -f "$CORE_UTILS_SH" ]; then
+  echo "ERROR: cannot find core_utils.sh at $CORE_UTILS_SH" >&2
   exit 2
 fi
 
@@ -42,7 +50,7 @@ extract_function() {
     $0 == fn { in_fn = 1 }
     in_fn { print }
     in_fn && $0 == "}" { in_fn = 0 }
-  ' "$script"
+  ' "$script" "$CORE_UTILS_SH"
 }
 
 # qa_log / qa_warn / qa_error は verify_pushed_or_retry 内部で呼ばれる
@@ -215,7 +223,8 @@ LOG_SIZE_AHEAD0=$(wc -l < "$LOG" | tr -d ' ')
 assert_eq "Case 1 (ahead==0): \$LOG 行数 0（副作用なし / Req 5.1）" "0" "$LOG_SIZE_AHEAD0"
 
 # ─────────────────────────────────────────────────────────────────
-# Case 2: ahead > 0 + 自動 push 成功 (Req 4.1, 4.2, 4.3, NFR 2.1, 2.2)
+# Case 2: ahead > 0 + 自動 push 成功 (Req 1.1, 1.2, 1.3, 2.1〜2.4, NFR 2.1, 2.2, 3.1)
+# #248: 成功時の Issue コメント投稿は抑止され、info 行のみが記録される。
 # ─────────────────────────────────────────────────────────────────
 WORK=$(setup_work_with_upstream "case2")
 add_local_commit "$WORK" 2  # 2 commits 未 push
@@ -228,25 +237,38 @@ pushd "$WORK" >/dev/null
 verify_pushed_or_retry "stageA-push-missing" "work-branch" "Stage A" >/dev/null 2>&1 || rc=$?
 popd >/dev/null
 
-assert_eq "Case 2 (push 成功): rc=0 (Req 4.2)" "0" "$rc"
-assert_eq "Case 2 (push 成功): mark_issue_failed 未呼出 (Req 4.2)" "" "$LAST_MARK_FAILED_STAGE"
-assert_contains "Case 2 (push 成功): gh issue comment が #106 を含む (NFR 2.2)" \
-  "106" "$LAST_GH_ARGS"
-assert_contains "Case 2 (push 成功): gh comment body に stageA-push-missing (NFR 2.2)" \
-  "stageA-push-missing" "$LAST_GH_COMMENT_BODY"
-assert_contains "Case 2 (push 成功): gh comment body に commit 数 2 (NFR 2.2)" \
-  "復旧 commit 数: 2" "$LAST_GH_COMMENT_BODY"
+assert_eq "Case 2 (push 成功): rc=0 (Req 1.3)" "0" "$rc"
+assert_eq "Case 2 (push 成功): mark_issue_failed 未呼出 (Req 1.4)" "" "$LAST_MARK_FAILED_STAGE"
+# #248 Req 1.1: 成功時は Issue コメントを投稿しない（gh stub が一切呼ばれない）
+assert_eq "Case 2 (push 成功): gh issue comment 未投稿 / LAST_GH_ARGS 空 (Req 1.1)" \
+  "" "$LAST_GH_ARGS"
+assert_eq "Case 2 (push 成功): gh comment body 空 (Req 1.1)" \
+  "" "$LAST_GH_COMMENT_BODY"
 
-# WARN ログ ahead= が \$LOG に記録されているか (Req 1.2 / NFR 2.1) — stderr は捨てたので
-# qa_warn 出力は \$LOG に直接書き込まれないが、verify_pushed_or_retry の echo 行で
-# "auto-push retry" を含む log 行があることを確認する。
-if grep -q "auto-push retry" "$LOG"; then
-  echo "PASS: Case 2 (push 成功): \$LOG に auto-push retry 行 (Req 1.2 / NFR 2.1)"
-  PASS_COUNT=$((PASS_COUNT + 1))
-else
-  echo "FAIL: Case 2 (push 成功): \$LOG に auto-push retry 行が無い"
+# Req 1.2 / 2.1〜2.4 / NFR 3.1: 成功 info 行が \$LOG に 1 件記録され、その行に
+# Issue 番号 / stage 識別子 / branch / 復旧 commit 数（ahead 数）が含まれる。
+# 成功 info 行（"自動 push リトライ成功" を含む行）を 1 行だけ抽出して検査する
+# （NFR 3.1: 単一行形式で機械的に grep できること）。
+SUCCESS_LINE=$(grep "自動 push リトライ成功" "$LOG" || true)
+assert_contains "Case 2 (push 成功): 成功 info 行に Issue 番号 #106 (Req 2.1)" \
+  "issue=#106" "$SUCCESS_LINE"
+assert_contains "Case 2 (push 成功): 成功 info 行に stage 識別子 (Req 2.2)" \
+  "stage_id=stageA-push-missing" "$SUCCESS_LINE"
+assert_contains "Case 2 (push 成功): 成功 info 行に branch (Req 2.3)" \
+  "branch=work-branch" "$SUCCESS_LINE"
+assert_contains "Case 2 (push 成功): 成功 info 行に復旧 commit 数 2 (Req 2.4)" \
+  "recovered_commits=2" "$SUCCESS_LINE"
+# NFR 3.1: 成功 info 行は単一行（複数行に分割しない）
+SUCCESS_LINE_COUNT=$(grep -c "自動 push リトライ成功" "$LOG" || true)
+assert_eq "Case 2 (push 成功): 成功 info 行は 1 行のみ (NFR 3.1)" "1" "$SUCCESS_LINE_COUNT"
+# Req 1.1 補足: 成功 info 行に「push 漏れ」原因示唆文言を含めない
+if grep -q "push 漏れ" "$LOG"; then
+  echo "FAIL: Case 2 (push 成功): \$LOG に「push 漏れ」誤原因示唆文言が残存 (#248)"
   cat "$LOG" >&2
   FAIL_COUNT=$((FAIL_COUNT + 1))
+else
+  echo "PASS: Case 2 (push 成功): \$LOG に「push 漏れ」文言なし (#248)"
+  PASS_COUNT=$((PASS_COUNT + 1))
 fi
 
 # bare 側に commit が伝播していることを git で確認
