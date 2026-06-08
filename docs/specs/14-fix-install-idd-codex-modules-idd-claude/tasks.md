@@ -34,7 +34,7 @@
   - 旧 `$HOME/bin/modules/` を idd-codex の配置先として説明する記述を残さず、必要な場合は「idd-codex は旧 directory の削除・idd-claude 復旧を代行しない」として扱う。
   - _Requirements: 1.5, 3.1, 3.2, 3.5, 4.1, 4.2_
 
-- [ ] 6. root / repo-template rules の module path 例示を byte 一致で同期する
+- [x] 6. root / repo-template rules の module path 例示を byte 一致で同期する
   - `.codex/rules/tasks-generation.md` と `repo-template/.codex/rules/tasks-generation.md` の verify 例を `local-watcher/bin/idd-codex-modules/*.sh` へ更新する。
   - `.codex/rules/design-review-gate.md` と `repo-template/.codex/rules/design-review-gate.md` の `stage-a-verify.sh` 参照を `local-watcher/bin/idd-codex-modules/stage-a-verify.sh` へ更新する。
   - 更新後に `diff -r .codex/rules repo-template/.codex/rules` が空であることを確認する。
