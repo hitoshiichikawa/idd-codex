@@ -614,7 +614,7 @@ codex_reasoning_effort_for_stage() {
     Reviewer*|reviewer*|per-task-reviewer-*|StageB*)
       printf '%s\n' "$REVIEWER_REASONING_EFFORT"
       ;;
-    Debugger*|debugger*|StageA-prime-blocked|StageA-prime-blocked)
+    Debugger*|debugger*|StageA-prime-blocked)
       printf '%s\n' "$DEBUGGER_REASONING_EFFORT"
       ;;
     AutoRebase*|auto-rebase*)
@@ -8375,7 +8375,7 @@ _dispatcher_run() {
   local issues
   issues=$(jq -c -n \
     --argjson limit "$DISPATCH_LIMIT" \
-    --arg codex-hotfix "$LABEL_HOTFIX" \
+    --arg hotfix "$LABEL_HOTFIX" \
     --slurpfile hf <(printf '%s' "$hotfix_issues") \
     --slurpfile al <(printf '%s' "$all_issues") '
     ([ $hf[0][]?, $al[0][]? ])
@@ -8508,7 +8508,7 @@ _dispatcher_run() {
     # _slot_acquire で取得した lock fd は subshell が引き続き保持する。
     ( _slot_run_issue "$slot" "$issue" ) &
     local pid=$!
-    _DISPATCHER_SLOT_PIDS[$slot]=$pid
+    _DISPATCHER_SLOT_PIDS[slot]=$pid
 
     # 親 Dispatcher 側の fd を解放する。これにより、Dispatcher が同 slot を再
     # acquire しようとしたとき、subshell が lock を保持している間は flock -n が
