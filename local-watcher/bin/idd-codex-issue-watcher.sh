@@ -6718,6 +6718,22 @@ _parallel_validate_slots() {
   return 0
 }
 
+# dispatcher が machine-readable な slot id を消費する直前に検証する。
+# slot worktree / log path / Issue コメントへ壊れた slot 名を展開しないため、
+# 既存の slot domain（1..PARALLEL_SLOTS の正整数）だけを許可する。
+_dispatcher_validate_slot_id() {
+  local slot="$1"
+  if [[ ! "$slot" =~ ^[1-9][0-9]*$ ]]; then
+    dispatcher_error "invalid slot id detected before dispatch: '${slot//$'\n'/\\n}'"
+    return 1
+  fi
+  if [ "$slot" -gt "$PARALLEL_SLOTS" ]; then
+    dispatcher_error "slot id out of range before dispatch: '$slot' (PARALLEL_SLOTS=$PARALLEL_SLOTS)"
+    return 1
+  fi
+  return 0
+}
+
 # ─── Phase C: Slot Runner ───
 #
 # 1 Issue を 1 つの slot worktree で処理する Worker。Dispatcher から
@@ -8299,7 +8315,9 @@ _dispatcher_wait_for_slot_progress() {
 # 空き slot を探す（reap → 1..PARALLEL_SLOTS で _slot_acquire）。
 # 戻り値: 0 = 取得成功（slot 番号を stdout に echo） / 1 = 全 slot busy
 _dispatcher_find_free_slot() {
-  _dispatcher_reap_finished_slots
+  # 本関数は stdout を slot 番号の return channel として使うため、reap 時に
+  # 発生しうる completion log は stderr へ逃がす。
+  _dispatcher_reap_finished_slots >&2
   local n
   for ((n=1; n<=PARALLEL_SLOTS; n++)); do
     # 既に PID マップに載っている slot は busy
@@ -8483,6 +8501,14 @@ _dispatcher_run() {
       # state も GitHub 状態も変更しない / NFR 1.1）。dispatch 経路は阻害しない。
       po_check_busy_wait "$issue_number" "空き slot 不足（先行 Issue 処理中 / 別インスタンス稼働）" || true
       continue
+    fi
+
+    if ! _dispatcher_validate_slot_id "$slot"; then
+      # 壊れた slot id を使って worktree path / slot log path / Issue コメントを
+      # 作らない。取得済み lock がある可能性は数値検証後にしか安全に扱えないため、
+      # invalid 時はプロセス終了で fd を解放できるようサイクルごと fail closed する。
+      dispatcher_error "Issue #${issue_number}: invalid slot id のため dispatcher サイクルを中止"
+      return 1
     fi
 
     # dispatch に成功する見込み（空き slot を確保）。多忙サイクル待ちの連続見送り
