@@ -22,7 +22,7 @@
 #   - sh_doctor_run                            : doctor 統合: 全項目集約 + full/degraded 一覧レポート
 #
 # 配置先:
-#   $HOME/bin/modules/scaffolding-health.sh（install.sh が local-watcher/bin/modules/ から配置する）
+#   $HOME/bin/idd-codex-modules/scaffolding-health.sh（install.sh が local-watcher/bin/idd-codex-modules/ から配置する）
 #
 # 依存:
 #   - 本モジュールは idd-codex-issue-watcher.sh 本体から `source` される前提（単体起動しない）。

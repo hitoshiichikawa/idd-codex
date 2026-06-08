@@ -30,7 +30,7 @@
 #   value は ASCII 固定・空白を含めない（grep / awk 抽出の robustness）。
 #
 # 配置先:
-#   $HOME/bin/modules/run-summary.sh（install.sh が local-watcher/bin/modules/ から配置する）
+#   $HOME/bin/idd-codex-modules/run-summary.sh（install.sh が local-watcher/bin/idd-codex-modules/ から配置する）
 #
 # 依存:
 #   - 本モジュールは idd-codex-issue-watcher.sh 本体から `source` される前提（単体起動しない）。
