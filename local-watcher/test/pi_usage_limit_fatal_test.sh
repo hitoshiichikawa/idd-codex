@@ -10,7 +10,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PR_ITERATION_SH="$SCRIPT_DIR/../bin/modules/pr-iteration.sh"
+PR_ITERATION_SH="$SCRIPT_DIR/../bin/idd-codex-modules/pr-iteration.sh"
 FIXTURE_DIR="$SCRIPT_DIR/fixtures/pi_usage_limit_fatal"
 
 if [ ! -f "$PR_ITERATION_SH" ]; then

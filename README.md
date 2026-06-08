@@ -65,7 +65,7 @@ idd-codex/
 └── local-watcher/                   # ローカル PC に配置するファイル
     ├── bin/
     │   ├── idd-codex-issue-watcher.sh         # Issue 監視＋Codex CLI 起動シェル（本体）
-    │   ├── modules/                 # idd-codex-issue-watcher.sh が起動時に source するモジュール群
+    │   ├── idd-codex-modules/       # idd-codex-issue-watcher.sh が起動時に source するモジュール群
     │   │   ├── core_utils.sh        #   低レベル共通ユーティリティ・ロガー（#177 Part 1）
     │   │   ├── quota-aware.sh       #   クォータ待機制御プロセッサ（#180 Part 2）
     │   │   ├── merge-queue.sh       #   マージキュー制御＋再チェックプロセッサ（#180 Part 2）
@@ -79,11 +79,12 @@ idd-codex/
 ```
 
 > **モジュール構成について**: `idd-codex-issue-watcher.sh` は約 1 万行を超えたため、責務単位で
-> `modules/*.sh` に段階的に分割している（#177 Part 1 で `core_utils.sh`、#180 Part 2 で
+> `idd-codex-modules/*.sh` に段階的に分割している（#177 Part 1 で `core_utils.sh`、#180 Part 2 で
 > 3 プロセッサ、#181 Part 3 で `promote-pipeline.sh` / `pr-iteration.sh` /
 > `stage-a-verify.sh` の 3 プロセッサ）。本体は起動時にスクリプトディレクトリ基準（`BASH_SOURCE`）で
-> `modules/` 配下を `source` する。`install.sh` が `local-watcher/bin/modules/*.sh` を
-> `$HOME/bin/modules/` へ冪等配置する。必須モジュールが欠落していると本体は起動時に
+> `idd-codex-modules/` 配下を `source` する。`install.sh --local` が
+> `local-watcher/bin/idd-codex-modules/*.sh` を `$HOME/bin/idd-codex-modules/` へ冪等配置する。
+> 必須モジュールが欠落していると本体は起動時に
 > 欠落名を stderr に出して `exit 1` で安全停止する（silent fail させない）。
 > 環境変数名・exit code・ログ書式・ラベル遷移・cron 登録文字列は分割前と完全に同一の
 > 差分等価リファクタリングであり、運用者の cron / launchd 設定変更は不要。
@@ -534,12 +535,12 @@ gh api -X PUT repos/owner/repo/branches/main/protection \
 
 ```bash
 # 手動の場合
-mkdir -p ~/bin ~/bin/modules ~/.idd-codex/issue-watcher/logs
+mkdir -p ~/bin ~/bin/idd-codex-modules ~/.idd-codex/issue-watcher/logs
 cp ~/.idd-codex/local-watcher/bin/idd-codex-issue-watcher.sh  ~/bin/
 cp ~/.idd-codex/local-watcher/bin/idd-codex-triage-prompt.tmpl ~/bin/
-# モジュール（#177 Part 1 以降）: idd-codex-issue-watcher.sh は同階層 modules/ から
+# モジュール（#177 Part 1 以降）: idd-codex-issue-watcher.sh は同階層 idd-codex-modules/ から
 # core_utils.sh 等を source する。欠落すると起動時に exit 1 で停止するため必ずコピーする。
-cp ~/.idd-codex/local-watcher/bin/modules/*.sh ~/bin/modules/
+cp ~/.idd-codex/local-watcher/bin/idd-codex-modules/*.sh ~/bin/idd-codex-modules/
 chmod +x ~/bin/idd-codex-issue-watcher.sh
 ```
 
@@ -2220,9 +2221,9 @@ cron / launchd の watcher 起動行に `PR_REVIEWER_ENABLED=true` と使用ツ�
   読みもせず（`${...:-default}` 解決のみで `process_pr_reviewer` が早期 return）、挙動は
   本機能導入前と等価です。既存 env var（`REPO` / `REPO_DIR` / `BASE_BRANCH` /
   `PR_ITERATION_ENABLED` / `LABEL_NEEDS_ITERATION` 等）の名前・意味・既定値は変更していません。
-- **⚠️ merge 後の再配置が必要**: 本機能は新規モジュール `modules/pr-reviewer.sh` を追加します。
+- **⚠️ merge 後の再配置が必要**: 本機能は新規モジュール `idd-codex-modules/pr-reviewer.sh` を追加します。
   既存 watcher を使っている場合は merge 後に `cd ~/.idd-codex && git pull && ./install.sh --local`
-  を再実行して `$HOME/bin/modules/` を更新してください（未配置だと REQUIRED_MODULES の
+  を再実行して `$HOME/bin/idd-codex-modules/` を更新してください（未配置だと REQUIRED_MODULES の
   ローダが起動時にエラーで停止します）。
 - **`codex-needs-iteration` ラベルの共有**: PR Reviewer が付与する `codex-needs-iteration` は既存 PR
   Iteration Processor (#26) と同一ラベルです。PR Reviewer は `codex-needs-iteration` 付与までを

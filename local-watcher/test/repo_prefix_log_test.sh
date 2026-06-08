@@ -31,11 +31,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WATCHER_SH="$SCRIPT_DIR/../bin/idd-codex-issue-watcher.sh"
 # #177 Part 1 で低レベル共通ユーティリティ（qa_log / mq_log / pi_log / drr_log 等の
 # ロガーを含む）は modules/core_utils.sh へ分離された。関数抽出の探索元に core_utils.sh も含める。
-CORE_UTILS_SH="$SCRIPT_DIR/../bin/modules/core_utils.sh"
+CORE_UTILS_SH="$SCRIPT_DIR/../bin/idd-codex-modules/core_utils.sh"
 # #180 Part 2 で merge-queue-recheck 専用ロガー（mqr_log / mqr_warn / mqr_error）は
 # modules/merge-queue.sh へ分離された（core_utils.sh には無く本体由来だったため）。
 # 関数抽出の探索元に merge-queue.sh も含める。
-MERGE_QUEUE_SH="$SCRIPT_DIR/../bin/modules/merge-queue.sh"
+MERGE_QUEUE_SH="$SCRIPT_DIR/../bin/idd-codex-modules/merge-queue.sh"
 
 if [ ! -f "$WATCHER_SH" ]; then
   echo "ERROR: cannot find idd-codex-issue-watcher.sh at $WATCHER_SH" >&2

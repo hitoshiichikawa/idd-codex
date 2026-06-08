@@ -18,10 +18,10 @@
 # 配置先: local-watcher/test/module_loader_missing_test.sh
 # 依存:   bash 4+
 # 実行:   bash local-watcher/test/module_loader_missing_test.sh
-# 前提:   idd-codex-issue-watcher.sh 本体と modules/ 一式を一時ディレクトリへコピーし、
-#         BASH_SOURCE 基準のローダが一時コピー側の modules/ を解決することを利用する。
+# 前提:   idd-codex-issue-watcher.sh 本体と idd-codex-modules/ 一式を一時ディレクトリへコピーし、
+#         BASH_SOURCE 基準のローダが一時コピー側の idd-codex-modules/ を解決することを利用する。
 #         ローダは flock / cd "$REPO_DIR" / git fetch より前に走るため、欠落時は
-#         git・ロック等の副作用に到達せず exit 1 する。本体側の実 modules/ は
+#         git・ロック等の副作用に到達せず exit 1 する。本体側の実 idd-codex-modules/ は
 #         一切変更しない（一時コピーのみ操作する）。
 
 set -euo pipefail
@@ -29,14 +29,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="$SCRIPT_DIR/../bin"
 WATCHER_SH="$BIN_DIR/idd-codex-issue-watcher.sh"
-MODULES_DIR="$BIN_DIR/modules"
+MODULES_DIR="$BIN_DIR/idd-codex-modules"
 
 if [ ! -f "$WATCHER_SH" ]; then
   echo "ERROR: cannot find idd-codex-issue-watcher.sh at $WATCHER_SH" >&2
   exit 2
 fi
 if [ ! -d "$MODULES_DIR" ]; then
-  echo "ERROR: cannot find modules dir at $MODULES_DIR" >&2
+  echo "ERROR: cannot find idd-codex-modules dir at $MODULES_DIR" >&2
   exit 2
 fi
 
@@ -82,12 +82,12 @@ assert_not_contains() {
   fi
 }
 
-# 一時ディレクトリに本体 + modules/ をコピーする。
+# 一時ディレクトリに本体 + idd-codex-modules/ をコピーする。
 TMPROOT=$(mktemp -d)
 trap 'rm -rf "$TMPROOT"' EXIT
 cp "$WATCHER_SH" "$TMPROOT/idd-codex-issue-watcher.sh"
-mkdir -p "$TMPROOT/modules"
-cp "$MODULES_DIR"/*.sh "$TMPROOT/modules/"
+mkdir -p "$TMPROOT/idd-codex-modules"
+cp "$MODULES_DIR"/*.sh "$TMPROOT/idd-codex-modules/"
 
 # watcher 本体は loader 到達前に必須コマンドの存在も検査する。モジュール欠落の
 # テストに絞るため、一時 PATH に副作用のない stub を置く。
@@ -119,7 +119,7 @@ echo "--- module loader missing-module cases (Req 4.2, 4.4, NFR 3.1) ---"
 # Case 1: quota-aware.sh を欠落させる → exit 1 + 欠落名を含む stderr
 # cwd 非依存を担保するため、watcher のあるディレクトリとは別の cwd から起動する。
 # ─────────────────────────────────────────────────────────────────
-rm -f "$TMPROOT/modules/quota-aware.sh"
+rm -f "$TMPROOT/idd-codex-modules/quota-aware.sh"
 
 OTHER_CWD=$(mktemp -d)
 rc=0
@@ -131,6 +131,8 @@ rmdir "$OTHER_CWD" 2>/dev/null || true
 assert_eq "Case 1: 欠落モジュールで exit 1 (Req 4.4 / NFR 3.1)" "1" "$rc"
 assert_contains "Case 1: stderr に欠落モジュール名 quota-aware.sh (Req 4.4 / NFR 3.1)" \
   "quota-aware.sh" "$OUT"
+assert_contains "Case 1: stderr に新 module directory idd-codex-modules (Req 2.4 / NFR 3.1)" \
+  "idd-codex-modules" "$OUT"
 assert_contains "Case 1: stderr に '必須モジュールが見つかりません' (NFR 3.1)" \
   "必須モジュールが見つかりません" "$OUT"
 
@@ -138,8 +140,8 @@ assert_contains "Case 1: stderr に '必須モジュールが見つかりませ�
 # Case 2: merge-queue.sh を欠落させる → 欠落名は merge-queue.sh
 # ─────────────────────────────────────────────────────────────────
 # quota-aware.sh を戻し、別のモジュールを欠落させる
-cp "$MODULES_DIR/quota-aware.sh" "$TMPROOT/modules/quota-aware.sh"
-rm -f "$TMPROOT/modules/merge-queue.sh"
+cp "$MODULES_DIR/quota-aware.sh" "$TMPROOT/idd-codex-modules/quota-aware.sh"
+rm -f "$TMPROOT/idd-codex-modules/merge-queue.sh"
 
 rc=0
 OUT=$(REPO=owner/test REPO_DIR=/tmp/idd-loader-test-nonexistent \
@@ -157,7 +159,7 @@ assert_not_contains "Case 2: 健全な quota-aware.sh は欠落エラーに含�
 # Case 3: 全モジュールが揃っている → ローダ起因の欠落エラーは出さない
 # （後続の git 失敗等で非 0 終了しうるが、欠落メッセージは出ない）
 # ─────────────────────────────────────────────────────────────────
-cp "$MODULES_DIR/merge-queue.sh" "$TMPROOT/modules/merge-queue.sh"
+cp "$MODULES_DIR/merge-queue.sh" "$TMPROOT/idd-codex-modules/merge-queue.sh"
 
 rc=0
 OUT=$(REPO=owner/test REPO_DIR=/tmp/idd-loader-test-nonexistent \

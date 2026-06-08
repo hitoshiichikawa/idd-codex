@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# 用途: local-watcher/bin/modules/pr-iteration.sh の PR Iteration 一般コメント
+# 用途: local-watcher/bin/idd-codex-modules/pr-iteration.sh の PR Iteration 一般コメント
 #       自己投稿フィルタ (pi_general_filter_self) を fixture で検証するスモークテスト。
 #       Issue #2 で追加。
 #
@@ -17,7 +17,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PR_ITERATION_SH="$SCRIPT_DIR/../bin/modules/pr-iteration.sh"
+PR_ITERATION_SH="$SCRIPT_DIR/../bin/idd-codex-modules/pr-iteration.sh"
 
 if [ ! -f "$PR_ITERATION_SH" ]; then
   echo "ERROR: cannot find pr-iteration.sh at $PR_ITERATION_SH" >&2

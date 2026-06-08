@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# 用途: local-watcher/bin/modules/promote-pipeline.sh の Issue #187（codex-awaiting-slot
+# 用途: local-watcher/bin/idd-codex-modules/promote-pipeline.sh の Issue #187（codex-awaiting-slot
 #       付与失敗時も見送り理由コメントを投稿する）で組み替えた
 #       po_apply_awaiting_slot を fixture で検証するスモークテスト。
 #
@@ -23,7 +23,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROMOTE_PIPELINE_SH="$SCRIPT_DIR/../bin/modules/promote-pipeline.sh"
+PROMOTE_PIPELINE_SH="$SCRIPT_DIR/../bin/idd-codex-modules/promote-pipeline.sh"
 
 if [ ! -f "$PROMOTE_PIPELINE_SH" ]; then
   echo "ERROR: cannot find promote-pipeline.sh at $PROMOTE_PIPELINE_SH" >&2

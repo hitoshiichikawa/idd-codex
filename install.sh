@@ -1231,13 +1231,13 @@ if $INSTALL_LOCAL; then
   copy_glob_to_homebin "$LOCAL_WATCHER_DIR/bin" "*.sh"   "$HOME/bin" --executable
   copy_glob_to_homebin "$LOCAL_WATCHER_DIR/bin" "*.tmpl" "$HOME/bin"
 
-  # local-watcher/bin/modules/ 配下の *.sh を $HOME/bin/modules/ へ配置（#177 Part 1）。
-  # idd-codex-issue-watcher.sh の動的モジュールローダ（REQUIRED_MODULES）が同階層 modules/ を source する。
+  # local-watcher/bin/idd-codex-modules/ 配下の *.sh を $HOME/bin/idd-codex-modules/ へ配置（#177 Part 1）。
+  # idd-codex-issue-watcher.sh の動的モジュールローダ（REQUIRED_MODULES）が同階層 idd-codex-modules/ を source する。
   # 必須モジュール（core_utils.sh 等）が欠落すると watcher は起動時に exit 1 で停止するため、
   # 本体 *.sh と同じタイミングで冪等配置する。新規モジュール追加時も install.sh 改修は不要。
-  if [ -d "$LOCAL_WATCHER_DIR/bin/modules" ]; then
-    ensure_dir "$HOME/bin/modules"
-    copy_glob_to_homebin "$LOCAL_WATCHER_DIR/bin/modules" "*.sh" "$HOME/bin/modules" --executable
+  if [ -d "$LOCAL_WATCHER_DIR/bin/idd-codex-modules" ]; then
+    ensure_dir "$HOME/bin/idd-codex-modules"
+    copy_glob_to_homebin "$LOCAL_WATCHER_DIR/bin/idd-codex-modules" "*.sh" "$HOME/bin/idd-codex-modules" --executable
   fi
 
   # Optional Codex PreToolUse Guard Hook (#294)。

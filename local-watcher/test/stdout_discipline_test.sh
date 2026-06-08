@@ -12,8 +12,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="$SCRIPT_DIR/../bin"
 WATCHER_SH="$BIN_DIR/idd-codex-issue-watcher.sh"
-CORE_UTILS_SH="$BIN_DIR/modules/core_utils.sh"
-PROMOTE_PIPELINE_SH="$BIN_DIR/modules/promote-pipeline.sh"
+CORE_UTILS_SH="$BIN_DIR/idd-codex-modules/core_utils.sh"
+PROMOTE_PIPELINE_SH="$BIN_DIR/idd-codex-modules/promote-pipeline.sh"
 
 PASS_COUNT=0
 FAIL_COUNT=0

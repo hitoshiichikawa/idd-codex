@@ -673,12 +673,12 @@ codex_exec_prompt() {
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # モジュール動的ロード基盤（#177 Part 1）
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 本体と同階層の modules/ から必須モジュール（低レベル共通ユーティリティ等）を source する。
-# install.sh が local-watcher/bin/modules/ → $HOME/bin/modules/ に配置する。
+# 本体と同階層の idd-codex-modules/ から必須モジュール（低レベル共通ユーティリティ等）を source する。
+# install.sh が local-watcher/bin/idd-codex-modules/ → $HOME/bin/idd-codex-modules/ に配置する。
 # 必須モジュールが欠落していたら、復旧手順を添えて exit 1 で安全停止する（silent fail を作らない）。
 # 配置先解決は $HOME 直書きせず BASH_SOURCE 基準にし、開発 repo 直実行（local-watcher/bin/）と
 # インストール後（$HOME/bin/）の双方で同一ロジックが効くようにする。
-IDD_MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)/modules"
+IDD_MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)/idd-codex-modules"
 # source 順序は機能的に任意（bash の遅延束縛で前方参照は呼び出し時に解決される）が、
 # 可読性のため最も低レベルな core_utils.sh を先頭に置き、以降は #180 Part 2 で切り出した
 # 3 プロセッサ（quota-aware / merge-queue / auto-rebase）、#181 Part 3 で切り出した
@@ -689,7 +689,7 @@ for _idd_mod in "${REQUIRED_MODULES[@]}"; do
   _idd_mod_path="$IDD_MODULE_DIR/$_idd_mod"
   if [ ! -f "$_idd_mod_path" ]; then
     echo "Error: 必須モジュールが見つかりません: $_idd_mod_path" >&2
-    echo "  install.sh --local を再実行して modules/ を配置してください。" >&2
+    echo "  install.sh --local を再実行して idd-codex-modules/ を配置してください。" >&2
     exit 1
   fi
   # shellcheck source=/dev/null

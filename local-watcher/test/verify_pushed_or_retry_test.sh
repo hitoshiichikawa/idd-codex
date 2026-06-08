@@ -30,7 +30,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WATCHER_SH="$SCRIPT_DIR/../bin/idd-codex-issue-watcher.sh"
 # #177 Part 1 で低レベル共通ユーティリティ（qa_log 等のロガーを含む）は
 # modules/core_utils.sh へ分離された。関数抽出の探索元に core_utils.sh も含める。
-CORE_UTILS_SH="$SCRIPT_DIR/../bin/modules/core_utils.sh"
+CORE_UTILS_SH="$SCRIPT_DIR/../bin/idd-codex-modules/core_utils.sh"
 
 if [ ! -f "$WATCHER_SH" ]; then
   echo "ERROR: cannot find idd-codex-issue-watcher.sh at $WATCHER_SH" >&2
