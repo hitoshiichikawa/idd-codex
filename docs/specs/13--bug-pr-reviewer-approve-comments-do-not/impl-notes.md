@@ -25,5 +25,13 @@
 
 - 採用方針: 既存の function extraction pattern で PR Reviewer / Merge Queue の approval signal helper を mock `gh` 配下の shell test として固定する。
 - 重要な判断: PR Reviewer 側は approve / iteration / mixed verdict と formal review success / failure fallback を `pr_run_review_for_pr` 経由で検証し、mixed は formal approval なし + iteration label に倒す。
+- 重要な判断: formal review failure fallback では stderr WARN を捕捉し、失敗理由、fallback 継続、tool、sha が operator-visible に残ることを検証する。
 - 重要な判断: Merge Queue 側は `reviewDecision == APPROVED`、current-SHA approve marker、old-SHA approve marker、current-SHA iteration / reject marker、comments API failure、approved selection の source 付与を検証する。
+- 残存課題: なし。
+
+### Task 5
+
+- 採用方針: README の Merge Queue / PR Reviewer 説明に、GitHub formal review と current-SHA idd-codex marker fallback の両経路を追加した。
+- 重要な判断: old-SHA approve marker、current-SHA iteration / reject marker、comments API failure は承認 signal として扱わないことを明記した。
+- 重要な判断: formal review が権限や API failure で投稿できない場合も watcher cycle は失敗させず、WARN と marker fallback で運用者が診断できることを説明した。
 - 残存課題: なし。

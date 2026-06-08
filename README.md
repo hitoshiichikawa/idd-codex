@@ -1357,11 +1357,24 @@ force push し、conflict が発生するものには `codex-needs-rebase` ラ�
 
 ### 対象 PR の判定
 
-- 1 件以上の approving review が付いている open PR
+- 1 件以上の approving review が付いている open PR、または current head SHA に紐づく
+  idd-codex PR Reviewer approve marker がある open PR
 - `codex-needs-rebase` / `codex-failed` ラベルが付いていない
 - draft 状態ではない
 - **head branch が `MERGE_QUEUE_HEAD_PATTERN` に合致**（デフォルト `^codex/`、自動生成 PR のみ）
 - **head repo owner が base repo owner と同一**（fork PR を除外）
+
+PR Reviewer Processor が `VERDICT: approve` を検出した場合、可能なら `gh pr review --approve`
+で GitHub formal review を投稿します。権限、self-review 制約、API failure などで formal review
+を作れない場合でも、同じ review comment に current head SHA 付きの idd-codex marker を残します。
+Merge Queue は GitHub `reviewDecision == "APPROVED"` と current-SHA idd-codex approve marker の
+両方を承認 signal として扱い、PR 単位ログに approval source（`github` / `idd-codex-marker`）を
+出します。
+
+approve marker は PR の current head SHA に紐づきます。head が更新された後に残った old-SHA
+approve marker は stale として扱われ、Merge Queue の承認 signal には使われません。current-SHA の
+`codex-needs-iteration` / reject marker、コメント取得 API failure、malformed marker も安全側で
+not-approved として扱います。
 
 ### 挙動
 
@@ -2162,10 +2175,13 @@ PR を伴わない Issue 単体は `gh pr list` の対象外のため自然に�
 5. **コメント投稿**: 成功時はレビュー結果テキストを PR コメントとして 1 回投稿します
    （`agy` は `--output-format json` のため最終 message を `jq` 抽出）。非ゼロ終了 / 空出力は
    `## 自動レビューエラー`（exec-failed、stderr 先頭 1KB 抜粋付き）コメントを投稿します。
-6. **VERDICT 検出 → ラベル付与**: レビュー結果テキストを `PR_REVIEWER_ITERATION_PATTERN`
+6. **VERDICT 検出 → approve signal / ラベル付与**: レビュー結果テキストを
+   `^[[:space:]]*VERDICT:[[:space:]]*approve[[:space:]]*$` と `PR_REVIEWER_ITERATION_PATTERN`
    （既定 `^[[:space:]]*VERDICT:[[:space:]]*codex-needs-iteration[[:space:]]*$`）で `grep -E -i`
-   照合し、1 件以上一致したら `codex-needs-iteration` ラベルを付与（既付与なら冪等 no-op）。
-   検出件数とパターンはログに記録します。
+   照合します。approve のみなら GitHub formal review 投稿を試行し、失敗時は WARN に理由を残して
+   current-SHA marker fallback を継続します。iteration のみなら `codex-needs-iteration` ラベルを
+   付与します（既付与なら冪等 no-op）。approve と iteration が混在した場合は安全側で approve
+   signal を公開せず、iteration 扱いにします。検出件数とパターンはログに記録します。
 
 ### `VERDICT:` token による決定論的なラベル判定
 
@@ -2189,6 +2205,12 @@ watcher は対象 PR の既存コメント群を `gh api .../issues/<n>/comments
 属性は照合に使わない）。PR の head コミットが更新され `headRefOid` が変われば、新しい SHA に
 対する処理として**新規実行**されます。これにより、同一 PR・同一 SHA に対して watcher を複数回
 起動しても観測可能な副作用（コメント / ラベル）は 1 回分に保たれます（冪等性）。
+
+`VERDICT: approve` の review marker は Merge Queue の fallback approval signal としても使われます。
+GitHub formal review が作れなかった場合でも watcher cycle は失敗させず、operator-visible WARN に
+formal review が使われなかった理由を出し、current head SHA の marker approval を後段へ渡します。
+old-SHA marker は stale として無効なため、PR の head が更新された後は PR Reviewer が再レビューし、
+新しい SHA の verdict を出す必要があります。
 
 ### 環境変数
 
