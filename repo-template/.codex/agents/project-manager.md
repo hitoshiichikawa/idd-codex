@@ -228,9 +228,12 @@ Developer の後に呼ばれます。実装コードとテストを含む本命�
 
 ## 実装 PR 本文の `Refs` / `Closes` 使い分け（auto-close 事故防止）
 
-implementation モードの PR 本文「対応 Issue」セクションでは、Issue を auto-close すべきかどうかを
-`tasks.md` の最上位タスクの残存件数で機械的に判別し、`Refs #N`（部分実装 PR）または
-`Closes #N`（最終 PR / design-less impl）を使い分けます。
+implementation モードの PR 本文「対応 Issue」セクションでは、まず branch model を判定します。
+`BASE_BRANCH != PROMOTION_TARGET_BRANCH` の multi-branch / Gitflow 運用では、release 前に
+Issue を open のまま残すため、最終 PR / design-less impl を含めて **常に `Refs #N`** を使います。
+single-branch 運用では、Issue を auto-close すべきかどうかを `tasks.md` の最上位タスクの
+残存件数で機械的に判別し、`Refs #N`（部分実装 PR）または `Closes #N`（最終 PR /
+design-less impl）を使い分けます。
 
 > **design-review モードとの関係**: design-review モードは前述「設計 PR 本文の遵守事項
 > （auto-close 事故防止）」節（本ファイル上部、`Closes` / `Fixes` / `Resolves` 等の使用を
@@ -240,7 +243,12 @@ implementation モードの PR 本文「対応 Issue」セクションでは、I
 ### 判定ロジック（疑似コード）
 
 ```
-if exists("docs/specs/<N>-<slug>/tasks.md"):
+resolved_base = 呼び出し元プロンプトに記載された resolved base
+promotion_target = PROMOTION_TARGET_BRANCH が分かる場合はその値、未指定なら repository default / release branch（通常 main）
+
+if resolved_base != promotion_target:
+    → 「対応 Issue」に `Refs #<N>` を採用（multi-branch。最終 PR / design-less impl でも auto-close しない）
+else if exists("docs/specs/<N>-<slug>/tasks.md"):
     remaining = count_lines_matching("^- \[ \]\*? [0-9]+\. ", tasks.md)
     remaining_after_this_pr = remaining - (この PR で完了予定の最上位タスク数)
     if remaining_after_this_pr > 0:
@@ -265,8 +273,12 @@ watcher 側のガード（`stage_checkpoint_find_impl_pr` 内 `sc_tasks_unchecke
 
 ```bash
 # tasks.md の残存タスク件数を取得
+RESOLVED_BASE="<resolved-base>"
+PROMOTION_TARGET="${PROMOTION_TARGET_BRANCH:-main}"
 TASKS_MD="docs/specs/<N>-<slug>/tasks.md"
-if [ -f "$TASKS_MD" ]; then
+if [ "$RESOLVED_BASE" != "$PROMOTION_TARGET" ]; then
+  LINK_KIND="Refs"   # multi-branch / Gitflow: release close まで Issue を open 維持
+elif [ -f "$TASKS_MD" ]; then
   REMAINING=$(grep -cE '^- \[ \]\*? [0-9]+\. ' "$TASKS_MD" 2>/dev/null) || REMAINING=0
   # 当 PR で完了予定の最上位タスク数を差し引く（人間 or PjM が個別判断）
   COMPLETED_IN_THIS_PR=<当 PR で完了予定件数>
@@ -289,6 +301,7 @@ PR 本文の「確認事項 / レビュワーへの依頼」セクションに�
 - 部分実装 PR の場合: `部分実装 PR: 残 X 件のため Refs を採用`
 - 最終 PR の場合: `最終 PR: tasks.md 全完了のため Closes を採用`
 - design-less impl の場合: `design-less impl: 単一 PR で完了のため Closes を採用`
+- multi-branch の場合: `multi-branch: base=<resolved-base> / promotion=<target> のため Refs を採用`
 
 ## 実装 PR 本文テンプレート
 

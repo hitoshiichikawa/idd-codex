@@ -887,6 +887,10 @@ Architect が `tasks.md` を複数タスクに分割した spec では、turn �
 - **最終 PR**（`tasks.md` の全最上位タスクが本 PR の merge で完了するケース、または
   design-less impl で単一 PR で完了するケース）: PR 本文は `Closes #<issue-number>` で書く。
   merge と同時に Issue が auto-close される
+- **multi-branch / Gitflow 例外**（`BASE_BRANCH != PROMOTION_TARGET_BRANCH`）:
+  最終 PR / design-less impl でも PR 本文は `Refs #<issue-number>` で書く。`BASE_BRANCH`
+  merge 時点では Issue を open のまま `codex-staged-for-release` として扱い、release branch /
+  repository default branch 到達時の release close policy に Issue close を委ねる
 - **判定根拠の明示**: PjM は判定根拠（残未チェックタスク件数 or design-less impl 判定）を
   PR 本文の「確認事項」セクションに 1 行記載する
 
@@ -1123,7 +1127,7 @@ Multi-branch（gitflow 系: `BASE_BRANCH=develop` 等）運用での補助フロ
 ```
 codex-ready-for-review (PR 作成済)
    ↓ 人間が PR を develop に merge（GitHub auto-close は default branch でしか発火しないため Issue は open のまま）
-   ↓ 人間 もしくは future automation が codex-staged-for-release を付与
+   ↓ 人間 もしくは Promote Pipeline が codex-staged-for-release を付与
 codex-staged-for-release (develop merge 済 / main 到達待ち)
    ↓ release PR で develop → main を merge
    ↓ GitHub auto-close が発火して Issue は close（codex-staged-for-release は実質的に意味を失う）
@@ -1136,7 +1140,10 @@ codex-auto-dev 候補から除外する（`-label:codex-staged-for-release`）�
 GitHub auto-close が PR merge と同時に発火するため、本ラベルは使う必要がない。なお
 `develop` への merge 検知に伴う **自動付与** / `main` 到達時の **自動除去** は、Issue #100 では
 Out of Scope だったが、**[Phase B Promote Pipeline (#15)](#promote-pipeline-processor-phase-b)** で
-`PROMOTE_PIPELINE_ENABLED=true` 明示時に自動付与・自動除去・自動 revert を実装している
+`PROMOTE_PIPELINE_ENABLED=true` 明示時に自動付与・自動除去・自動 revert を実装している。
+自動付与は GitHub closing keyword だけに依存せず、同一 repo の managed PR
+（`codex/issue-<N>-impl-*` branch、または `codex/` branch + PR title の Issue 表記）からも
+対象 Issue を解決できるため、Gitflow の `Refs #N` 運用と併用できる
 （次節「Phase B: Promote Pipeline 補助フロー」を参照）。
 
 ### Phase B: Promote Pipeline 補助フロー（`PROMOTE_PIPELINE_ENABLED=true` 時のみ）
@@ -1540,7 +1547,8 @@ Phase A により `BASE_BRANCH` に merge された変更を System Test（ST）
 
 ### 目的
 
-- approved PR の `BASE_BRANCH` merge 後 → `codex-staged-for-release` 自動付与
+- approved PR の `BASE_BRANCH` merge 後 → closing refs / managed PR の branch・title・body reference
+  から対象 Issue を解決し、`codex-staged-for-release` 自動付与
 - `codex-staged-for-release` 付き Issue の ST check-run を watcher サイクル内でポーリング
 - ST success → ラベル除去 + 昇格対象集合へ（`PROMOTE_MODE` に応じて昇格タイミング制御）
 - ST failure → `git revert -m 1` + Issue reopen + `codex-st-failed` 付与（fail-continue 維持）
@@ -1550,6 +1558,7 @@ Phase A により `BASE_BRANCH` に merge された変更を System Test（ST）
 - `BASE_BRANCH != PROMOTION_TARGET_BRANCH` の 2-branch model リポジトリのみ
 - single-branch（`BASE_BRANCH` 未設定 = `main` のみ）リポジトリでは no-op
 - fork PR は自動 promote / 自動 revert 対象から除外（NFR 2.4）
+- unmanaged PR の body plain reference だけでは `codex-staged-for-release` 自動付与対象にしない
 
 ### タイミング
 
@@ -1608,7 +1617,7 @@ Phase B の判断・操作結果は `[$REPO] promote-pipeline:` prefix と以下
 | 識別語 | 意味 |
 |---|---|
 | `promote-pipeline: サマリ:` | サイクル終了時のサマリ行 |
-| `issue=#N action=label-add label=codex-staged-for-release source=auto` | 自動付与（Req 2.1.1） |
+| `issue=#N action=label-add label=codex-staged-for-release source=auto resolver_sources=... prs=...` | 自動付与（Req 2.1.1）。`resolver_sources` は `closing-ref` / `head` / `title` / `body-plain` 等 |
 | `issue=#N ST=success action=label-remove+promote-queued` | ST success による除去 |
 | `issue=#N ST=success mode=on-demand action=hold-label-await-human-trigger` | on-demand mode の hold |
 | `issue=#N ST=failure action=revert+label-add+label-remove+reopen+comment` | ST failure による revert |
@@ -1630,6 +1639,10 @@ Phase B 導入による後方互換性は以下のとおり保証されます:
   があります。opt-in 前に `BASE_BRANCH` の Branch Protection 設定を確認してください
 - **既存 `codex-staged-for-release`（#100）との互換性**: 手動付与と自動付与で同一ラベルを共有します
   （Req 2.1.2）。source 区別を必要とする運用は本フェーズの対象外です
+- **Gitflow no-closing-keyword 運用**: `BASE_BRANCH != PROMOTION_TARGET_BRANCH` の implementation
+  PR は `Refs #N` を使ってよく、Phase B は closing keyword なしでも managed PR の branch /
+  title / body plain reference から Issue を解決します。unmanaged PR の body plain reference と
+  fork PR は安全側で除外します
 - **Force push の不使用**: revert は `--force-with-lease`、promote は fast-forward push のみ。
   `--force`（無条件）は一切使用しません（NFR 2.1, 2.2）
 - **新ラベル `codex-st-failed` 追加**: 既存 12 ラベルの定義（名前・色・description）は変更しません
@@ -5052,8 +5065,12 @@ PjM agent (design-review モード) は `gh pr create` 前後に PR 本文を gr
 Issue に `codex-failed` を付与します。詳細は `.codex/agents/project-manager.md` の
 「設計 PR 本文の遵守事項」「自己点検: auto-close キーワードの禁止」節を参照してください。
 
-> 注: **実装 PR では `Closes #<issue-number>` を引き続き許容**します（impl PR は merge 時に
-> Issue を close するのが正しい挙動のため）。本規約は **設計 PR に限定**した抑止です。
+> 注: **single-branch の実装 PR では `Closes #<issue-number>` を引き続き許容**します
+> （impl PR は merge 時に Issue を close するのが正しい挙動のため）。一方で
+> `BASE_BRANCH != PROMOTION_TARGET_BRANCH` の multi-branch / Gitflow 実装 PR では、
+> 最終 PR / design-less impl でも `Refs #<issue-number>` を使い、release close まで
+> Issue を open に保ちます。本規約は **設計 PR では常に `Refs` 固定**、
+> **実装 PR では branch model に応じて使い分け**という扱いです。
 
 #### フェーズ 2: 人間による設計レビュー
 
