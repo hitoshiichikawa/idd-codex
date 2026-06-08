@@ -13,7 +13,7 @@
   - 旧 `$HOME/bin/modules/` の削除や idd-claude module 復旧は実装しない。
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 3.1, 3.4, 4.3, 4.4_
 
-- [ ] 3. watcher の module loader を `idd-codex-modules/` 解決へ変更する
+- [x] 3. watcher の module loader を `idd-codex-modules/` 解決へ変更する
   - `IDD_MODULE_DIR` を watcher 本体同階層の `idd-codex-modules` に変更し、repo 直実行と `$HOME/bin` インストール後の双方で `BASH_SOURCE` 基準の同一ロジックを維持する。
   - loader 周辺コメントを新 directory 名へ更新する。
   - missing module エラーと復旧案内を `idd-codex-modules/` に合わせる。
