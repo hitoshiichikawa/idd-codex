@@ -61,38 +61,64 @@ task_block() {
   _task_id="$1"
   _file="$2"
   awk -v task_id="$_task_id" '
-    $0 ~ "^- \\[ \\]\\*? " task_id "([. ]|$)" { in_task = 1; print; next }
-    in_task && /^- \[ \]\*? [0-9]+(\.[0-9]+)*\.? / { exit }
+    $0 ~ "^- \\[[ x]\\]\\*? " task_id "([. ]|$)" { in_task = 1; print; next }
+    in_task && /^- \[[ x]\]\*? [0-9]+(\.[0-9]+)*\.? / { exit }
     in_task { print }
   ' "$_file"
+}
+
+block_has_annotation_id() {
+  _block="$1"
+  _key="$2"
+  _expected="$3"
+  printf '%s\n' "$_block" | grep -Eq "_${_key}:_?[^0-9]*(.*, )?${_expected}([^0-9]|$)"
 }
 
 block_has_requirements() {
   _block="$1"
   _expected="$2"
-  printf '%s\n' "$_block" | grep -Eq "_Requirements:([^0-9]|.*, )${_expected}([^0-9]|$)"
-}
-
-block_has_test_work() {
-  _block="$1"
-  printf '%s\n' "$_block" | grep -Eiq '(regression|failure path|safety fallback|shell-level).*(test|fixture)|テスト'
+  block_has_annotation_id "$_block" "Requirements" "$_expected"
 }
 
 block_has_depends() {
   _block="$1"
   _expected="$2"
-  printf '%s\n' "$_block" | grep -Eq "_Depends:([^0-9]|.*, )${_expected}([^0-9]|$)"
+  block_has_annotation_id "$_block" "Depends" "$_expected"
+}
+
+block_has_test_term() {
+  _block="$1"
+  _term="$2"
+  printf '%s\n' "$_block" | grep -Eiq "${_term}.*(test|fixture|テスト)"
+}
+
+block_has_required_test_work() {
+  _block="$1"
+  block_has_test_term "$_block" "regression coverage" \
+    && block_has_test_term "$_block" "failure path" \
+    && block_has_test_term "$_block" "safety fallback" \
+    && block_has_test_term "$_block" "shell-level"
+}
+
+block_mentions_deferred_test_work() {
+  _block="$1"
+  printf '%s\n' "$_block" | grep -Eiq '(defer|deferred|後続 task|task 2)'
+}
+
+block_has_coverage_requirements() {
+  _block="$1"
+  block_has_requirements "$_block" "2\\.1" \
+    && block_has_requirements "$_block" "2\\.2" \
+    && block_has_requirements "$_block" "2\\.3" \
+    && block_has_requirements "$_block" "2\\.4"
 }
 
 validate_same_task_coverage() {
   _file="$1"
   _task_1=$(task_block "1" "$_file")
 
-  if block_has_requirements "$_task_1" "2\\.1" \
-      && block_has_requirements "$_task_1" "2\\.2" \
-      && block_has_requirements "$_task_1" "2\\.3" \
-      && block_has_requirements "$_task_1" "2\\.4" \
-      && block_has_test_work "$_task_1"; then
+  if block_has_coverage_requirements "$_task_1" \
+      && block_has_required_test_work "$_task_1"; then
     return 0
   fi
   return 1
@@ -109,11 +135,23 @@ validate_deferred_coverage() {
       || block_has_requirements "$_task_1" "2\\.4"; then
     return 1
   fi
-  if block_has_requirements "$_task_2" "2\\.1" \
-      && block_has_requirements "$_task_2" "2\\.2" \
-      && block_has_requirements "$_task_2" "2\\.3" \
-      && block_has_requirements "$_task_2" "2\\.4" \
-      && block_has_test_work "$_task_2" \
+  if block_has_coverage_requirements "$_task_2" \
+      && block_has_required_test_work "$_task_2" \
+      && block_has_depends "$_task_2" "1"; then
+    return 0
+  fi
+  return 1
+}
+
+validate_invalid_deferred_ac() {
+  _file="$1"
+  _task_1=$(task_block "1" "$_file")
+  _task_2=$(task_block "2" "$_file")
+
+  if block_has_coverage_requirements "$_task_1" \
+      && block_mentions_deferred_test_work "$_task_1" \
+      && block_has_coverage_requirements "$_task_2" \
+      && block_has_required_test_work "$_task_2" \
       && block_has_depends "$_task_2" "1"; then
     return 0
   fi
@@ -150,11 +188,59 @@ expect_invalid() {
   _kind="$2"
   _file="$3"
   case "$_kind" in
-    deferred)
-      if validate_deferred_coverage "$_file"; then
-        record_fail "$_name" "invalid deferred fixture unexpectedly satisfied contract"
-      else
+    deferred-ac)
+      if validate_invalid_deferred_ac "$_file" && ! validate_deferred_coverage "$_file"; then
         record_ok "$_name"
+      else
+        record_fail "$_name" "invalid deferred fixture did not expose prior-task coverage AC"
+      fi
+      ;;
+    *)
+      record_fail "$_name" "unknown fixture kind: $_kind"
+      ;;
+  esac
+}
+
+expect_invalid_as_same_task() {
+  _name="$1"
+  _file="$2"
+  if validate_same_task_coverage "$_file"; then
+    record_fail "$_name" "invalid deferred fixture unexpectedly satisfied same-task coverage contract"
+  else
+    record_ok "$_name"
+  fi
+}
+
+expect_invalid_as_deferred() {
+  _name="$1"
+  _file="$2"
+  if validate_deferred_coverage "$_file"; then
+    record_fail "$_name" "invalid deferred fixture unexpectedly satisfied deferred coverage contract"
+  else
+    record_ok "$_name"
+  fi
+}
+
+expect_valid_as_not_invalid() {
+  _name="$1"
+  _file="$2"
+  if validate_invalid_deferred_ac "$_file"; then
+    record_fail "$_name" "valid fixture unexpectedly matched invalid deferred AC shape"
+  else
+    record_ok "$_name"
+  fi
+}
+
+expect_invalid_kind() {
+  _name="$1"
+  _kind="$2"
+  _file="$3"
+  case "$_kind" in
+    deferred-ac)
+      if validate_invalid_deferred_ac "$_file"; then
+        record_ok "$_name"
+      else
+        record_fail "$_name" "invalid deferred fixture did not match expected invalid shape"
       fi
       ;;
     *)
@@ -202,10 +288,20 @@ assert_contains "README keeps deferrable notation for deferred test tasks" \
 
 expect_valid "fixture same-task coverage is valid" \
   "same-task" "$_FIXTURE_DIR/tasks-same-task-coverage.md"
+expect_valid_as_not_invalid "fixture same-task coverage is not invalid deferred AC" \
+  "$_FIXTURE_DIR/tasks-same-task-coverage.md"
 expect_valid "fixture deferred coverage is valid" \
   "deferred" "$_FIXTURE_DIR/tasks-deferred-coverage.md"
-expect_invalid "fixture invalid deferred coverage is rejected" \
-  "deferred" "$_FIXTURE_DIR/tasks-invalid-deferred-ac.md"
+expect_valid_as_not_invalid "fixture deferred coverage is not invalid deferred AC" \
+  "$_FIXTURE_DIR/tasks-deferred-coverage.md"
+expect_invalid_kind "fixture invalid deferred AC shape is detected" \
+  "deferred-ac" "$_FIXTURE_DIR/tasks-invalid-deferred-ac.md"
+expect_invalid "fixture invalid deferred AC is rejected by deferred validator" \
+  "deferred-ac" "$_FIXTURE_DIR/tasks-invalid-deferred-ac.md"
+expect_invalid_as_same_task "fixture invalid deferred AC is not same-task valid" \
+  "$_FIXTURE_DIR/tasks-invalid-deferred-ac.md"
+expect_invalid_as_deferred "fixture invalid deferred AC is not deferred valid" \
+  "$_FIXTURE_DIR/tasks-invalid-deferred-ac.md"
 
 echo
 echo "summary: pass=$_pass fail=$_fail total=$((_pass + _fail))"

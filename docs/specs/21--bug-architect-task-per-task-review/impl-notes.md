@@ -19,3 +19,9 @@
 - 採用方針: README の Reviewer Gate / Per-task TDD Implementation Loop 説明に、prompt と同じ task-boundary contract を運用者向けに要約した。
 - 重要な判断: `missing test` の scope 限定、same-task test work、deferred coverage AC の除外、`- [ ]*` の optional / deferrable 表記維持を README key phrase assertion で固定した。
 - 残存課題: 完成版 fixture coverage と root / repo-template sync verification の最終整理は task 4 で扱う。
+
+### Task 4
+
+- 採用方針: fixture を canonical な annotation 表記へ寄せ、driver で same-task / deferred / invalid deferred AC の境界を明示的に検証した。
+- 重要な判断: prompt / rule / README の主要 assertion と root / repo-template sync は shell-level driver で検証可能と判断し、prompt-only の未自動化項目は残していない。
+- 残存課題: なし。
