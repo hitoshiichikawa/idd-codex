@@ -3337,6 +3337,11 @@ Developer に **最大 1 回だけ自動差し戻し** し、再 reject なら `
 | **missing test** | 新規追加された AC 対応の挙動について、対応テストケースの追加が確認できない |
 | **boundary 逸脱** | `tasks.md` の `_Boundary:_` で許可されていないコンポーネントへの変更が含まれる |
 
+per-task review では `missing test` の scope が当該 task の `_Requirements:_` に限定されます。
+後続 task や `- [ ]*` の deferred task に分離された未実施テストは、それが当該 task の
+`_Requirements:_` に含まれていない限り、先行 task の `missing test` reject 理由にはしません。
+ただし `_Boundary:_` 違反は従来どおり reject 対象です。
+
 スタイル違反 / 命名 / フォーマット / lint で検出可能な軽微事項は **reject の対象外** です
 （lint 系ツールに委ねる領分）。
 
@@ -4516,6 +4521,9 @@ opt-in した状態で `impl` / `impl-resume` モードが Stage A に入ると�
    - Implementer は **1 task のみ**実装し、`- [ ]` → `- [x]` 化 + `docs(tasks): mark <id> as done`
      専用 commit を積み、`impl-notes.md` の `## Implementation Notes` 配下に
      `### Task <id>` learning を追記する
+   - coverage / failure / safety AC は同 task の test work と結び付ける。テスト作業を後続
+     task に defer する場合は、先行 task の `_Requirements:_` から未実施 coverage AC を外し、
+     coverage task 側に `_Depends:_` と partial boundary を明記する
    - fresh Codex session で Reviewer 起動（REVIEWER_MODEL / REVIEWER_MAX_TURNS を流用）
    - Reviewer は当該 task の `docs(tasks): mark` commit 範囲のみを `git diff` 対象とし、
      当該 task の `_Requirements:_` AC のみを verify 対象とする（`_Boundary:_` 違反は常に reject）
@@ -4557,6 +4565,11 @@ opt-in した状態で `impl` / `impl-resume` モードが Stage A に入ると�
    `verify_pushed_or_retry` / stage-a-verify / Stage B（HEAD 全体 Reviewer）/ Stage C
    （PjM PR 作成）は **従来通り実行**される（NFR 1.4）。`PER_TASK_LOOP_ENABLED` 未指定 /
    `=true` 以外の通常 Developer 経路は本ゲートの影響を一切受けない（Req 2.1 / NFR 1.1）
+
+`- [ ]*` は既存の optional / deferrable 規約として維持され、deferred test task の表記としても利用できます。
+per-task loop では必須未完了 task の抽出・全 task 完了ゲートから除外されます。
+deferred test task を使う場合でも、先行 task の `_Requirements:_` には未実施の coverage /
+failure / safety AC を残さず、coverage task 側で実装・テスト・レビュー可能な AC として扱います。
 
 ### learnings 前方伝播
 

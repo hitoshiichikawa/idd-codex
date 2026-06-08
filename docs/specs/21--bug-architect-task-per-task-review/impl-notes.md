@@ -13,3 +13,9 @@
 - 採用方針: Developer / Reviewer prompt を Task Boundary Contract に接続し、同じ contract を `contract-driver.sh` の key phrase assertion で検証した。
 - 重要な判断: Developer には対象 task の `_Requirements:_` に含まれる AC の必要 test を同 task 作業として扱う責務を明記し、Reviewer には per-task の `missing test` 判定対象を当該 task の `_Requirements:_` に限定する責務を明記した。
 - 残存課題: README の運用説明と完成版 fixture coverage は後続 task 3〜4 で扱う。
+
+### Task 3
+
+- 採用方針: README の Reviewer Gate / Per-task TDD Implementation Loop 説明に、prompt と同じ task-boundary contract を運用者向けに要約した。
+- 重要な判断: `missing test` の scope 限定、same-task test work、deferred coverage AC の除外、`- [ ]*` の optional / deferrable 表記維持を README key phrase assertion で固定した。
+- 残存課題: 完成版 fixture coverage と root / repo-template sync verification の最終整理は task 4 で扱う。

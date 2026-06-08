@@ -191,6 +191,14 @@ assert_contains "reviewer prompt limits missing test scope to current task" \
   "$_REPO_ROOT/.codex/agents/reviewer.md" 'missing test 判定対象.*当該 task の .*Requirements'
 assert_contains "reviewer prompt does not reject deferred test task absence" \
   "$_REPO_ROOT/.codex/agents/reviewer.md" '後続 deferred test task の未実施'
+assert_contains "README documents per-task missing test scope" \
+  "$_REPO_ROOT/README.md" 'per-task review では .*missing test.* scope が当該 task の .*Requirements.* に限定'
+assert_contains "README binds coverage AC to same-task test work" \
+  "$_REPO_ROOT/README.md" 'coverage / failure / safety AC は同 task の test work と結び付ける'
+assert_contains "README excludes deferred coverage AC from prior task" \
+  "$_REPO_ROOT/README.md" '先行 task の .*Requirements.* から未実施 coverage AC を外し'
+assert_contains "README keeps deferrable notation for deferred test tasks" \
+  "$_REPO_ROOT/README.md" '.*- \[ \]\*.*deferred test task'
 
 expect_valid "fixture same-task coverage is valid" \
   "same-task" "$_FIXTURE_DIR/tasks-same-task-coverage.md"
