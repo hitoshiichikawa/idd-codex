@@ -29,7 +29,7 @@
   - _Boundary:_ Project Manager Guidance, README Updates
   - _Depends:_ 1, 2
 
-- [ ] 4. shell-level regression test を追加して single / multi branch の挙動を固定する
+- [x] 4. shell-level regression test を追加して single / multi branch の挙動を固定する
   - `local-watcher/test/issue6_gitflow_no_closing_keyword_test.sh` を追加し、`gh` / `jq` 入出力を mock する
   - single-branch closing-keyword workflow で Dependency Resolver と Promote Pipeline の既存挙動を検証する
   - multi-branch no-closing-keyword workflow で auto-label と development-resolved を検証する
@@ -45,7 +45,7 @@
 
 <!-- stage-a-verify -->
 ```sh
-shellcheck local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/bin/modules/promote-pipeline.sh install.sh setup.sh .github/scripts/*.sh &&
+shellcheck local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/bin/idd-codex-modules/promote-pipeline.sh install.sh setup.sh .github/scripts/*.sh &&
   diff -r .codex/agents repo-template/.codex/agents &&
   diff -r .codex/rules repo-template/.codex/rules &&
   bash local-watcher/test/issue6_gitflow_no_closing_keyword_test.sh
