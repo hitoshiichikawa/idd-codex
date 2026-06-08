@@ -1,6 +1,6 @@
 # Implementation Plan
 
-- [ ] 1. Module source directory を idd-codex 専用名へ rename する
+- [x] 1. Module source directory を idd-codex 専用名へ rename する
   - `git mv local-watcher/bin/modules local-watcher/bin/idd-codex-modules` を使い、履歴を保ったまま source directory を rename する。
   - `local-watcher/bin/idd-codex-modules/*.sh` のヘッダコメントにある `$HOME/bin/modules/*.sh` / `local-watcher/bin/modules/` 参照を `$HOME/bin/idd-codex-modules/*.sh` / `local-watcher/bin/idd-codex-modules/` へ更新する。
   - module ファイル名、関数名、`REQUIRED_MODULES` の構成、processor 挙動は変更しない。
