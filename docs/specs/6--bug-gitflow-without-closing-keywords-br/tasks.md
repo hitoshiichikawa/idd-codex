@@ -10,7 +10,7 @@
   - _Boundary:_ Dependency Resolver Gate
   - _Depends:_ なし
 
-- [ ] 2. Promote Pipeline の managed PR issue resolver と auto-label 経路を拡張する
+- [x] 2. Promote Pipeline の managed PR issue resolver と auto-label 経路を拡張する
   - `pp_collect_merged_issues` の PR 取得 fields を body/title/headRefName/baseRefName/mergeCommit 等へ拡張する
   - branch naming、PR title、managed PR body plain reference、既存 closing refs から Issue 番号を抽出する helper を追加する
   - unmanaged PR の body plain reference は `codex-staged-for-release` 自動付与対象にしない
