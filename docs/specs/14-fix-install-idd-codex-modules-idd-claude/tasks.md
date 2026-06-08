@@ -27,7 +27,7 @@
   - `install.sh --local` の一時 `HOME` smoke で、新配置に module が存在し旧 `$HOME/bin/modules/` に idd-codex module が置かれないことを確認できるようにする。
   - _Requirements: 2.3, 2.4, 4.3, 4.4, 4.5_
 
-- [ ] 5. README の構成図、手動コピー例、migration note を新配置へ更新する
+- [x] 5. README の構成図、手動コピー例、migration note を新配置へ更新する
   - 構成図の `local-watcher/bin/modules/` を `local-watcher/bin/idd-codex-modules/` に変更する。
   - 手動コピー例を `~/bin/idd-codex-modules` 作成と `idd-codex-modules/*.sh` コピーへ更新する。
   - migration note で、既存利用者は `git pull && ./install.sh --local` により新配置へ移行できることを明記する。
