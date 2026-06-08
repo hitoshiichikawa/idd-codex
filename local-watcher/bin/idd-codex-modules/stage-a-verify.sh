@@ -26,7 +26,7 @@
 #   統合しても挙動は等価（元コードの「順序維持」コメントは可読性配慮でランタイム要件ではない）。
 #
 # 配置先:
-#   $HOME/bin/modules/stage-a-verify.sh（install.sh が local-watcher/bin/modules/ から配置する）
+#   $HOME/bin/idd-codex-modules/stage-a-verify.sh（install.sh が local-watcher/bin/idd-codex-modules/ から配置する）
 #
 # 依存:
 #   - 本モジュールは idd-codex-issue-watcher.sh 本体から `source` される前提（単体起動しない）。

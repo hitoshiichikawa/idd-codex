@@ -11,7 +11,7 @@
 #   - SLOT_INIT_HOOK 起動 wrapper（_hook_invoke）
 #
 # 配置先:
-#   $HOME/bin/modules/core_utils.sh（install.sh が local-watcher/bin/modules/ から配置する）
+#   $HOME/bin/idd-codex-modules/core_utils.sh（install.sh が local-watcher/bin/idd-codex-modules/ から配置する）
 #
 # 依存:
 #   - 本モジュールは idd-codex-issue-watcher.sh 本体から `source` される前提（単体起動しない）。
