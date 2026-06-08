@@ -2228,7 +2228,8 @@ idd-codex 管理下 PR を fresh context の Codex で反復対応する Process
 1. 最新 review の line コメントと PR Conversation タブの一般コメントを Codex に渡し
 2. 必要なら修正 commit を head branch に **通常 push（force push 禁止）** で積み
 3. 各 review thread に「何をどう修正したか / なぜ対応しないか」を 1:1 で返信し
-4. ラベルを `codex-needs-iteration` → `codex-ready-for-review` に切り替える
+4. head branch に新規 commit が積まれた場合のみ、ラベルを `codex-needs-iteration`
+   → `codex-ready-for-review` に切り替える
 
 までを 1 round で実施します。Phase A の merge queue 処理と同じ flock 境界内で **直列実行**
 されるため、同一ローカル working copy への競合は発生しません。
@@ -2300,8 +2301,9 @@ watcher が Codex prompt に積むのは以下の 2 種類です。**`@codex` me
 | 状況 | アクション |
 |---|---|
 | 候補 PR を検出 → round < MAX | hidden marker 更新 + 着手表明コメント → fresh context で Codex 起動 |
-| **実装 PR** Codex 成功（commit+push or reply-only） | `codex-needs-iteration` 除去 + `codex-ready-for-review` 付与 |
-| **設計 PR** Codex 成功（`PR_ITERATION_DESIGN_ENABLED` が有効な時、#112 以降デフォルト） | `codex-needs-iteration` 除去 + `codex-awaiting-design-review` 付与 |
+| **実装 PR** Codex 成功（head branch に新規 commit が push された） | `codex-needs-iteration` 除去 + `codex-ready-for-review` 付与 |
+| **設計 PR** Codex 成功（head branch に新規 commit が push された。`PR_ITERATION_DESIGN_ENABLED` が有効な時、#112 以降デフォルト） | `codex-needs-iteration` 除去 + `codex-awaiting-design-review` 付与 |
+| Codex は成功終了したが head branch に新規 commit が無い（no-progress streak が上限未満） | `codex-needs-iteration` を残置 + `action=hold` ログ、次サイクルで再試行 |
 | Codex 失敗（exit 非 0、turn 上限、push 失敗等） | `codex-needs-iteration` を残置 + WARN ログ、次サイクルで再試行 |
 | 累計 round が kind 別 `MAX_ROUNDS` に到達（**#122 で kind 別**。design は既定 `0` = 無制限） | `codex-needs-iteration` 除去 + `codex-failed` 付与 + エスカレコメント |
 | **#122 新設**: head branch への新規 commit が `PR_ITERATION_NO_PROGRESS_LIMIT`（既定 3）round 連続で観測されない | `codex-needs-iteration` 除去 + `codex-failed` 付与 + no-progress 専用エスカレコメント |
@@ -2407,7 +2409,7 @@ watcher は branch 名で **kind**（design / impl / 対象外）を判定しま
 | 付与主体 | **人間レビュワー**（review コメントを残してから付与）。手動付与のみ |
 | 付与契機 | 人間が line コメント / 一般コメント（mention 不要）を残し、Codex に取り込んでほしいタイミング |
 | 解除主体 | **PR Iteration Processor**（成功時）／**人間**（自動 iteration を止めたい時） |
-| 解除タイミング | (1) iteration 成功 → 自動で `codex-ready-for-review` に付け替え、(2) 上限到達 → 自動で `codex-failed` に付け替え |
+| 解除タイミング | (1) iteration が新規 commit を push して成功 → 自動で `codex-ready-for-review` に付け替え、(2) 上限到達 → 自動で `codex-failed` に付け替え |
 | 重複抑止 | 着手中の hidden marker（PR body 末尾）でラウンド数を観測。複数 watcher プロセス間は flock で排他 |
 
 #### iteration カウンタの仕組み（hidden marker）
@@ -2427,6 +2429,8 @@ round 上限を `0` で無制限にしても、Codex が空コミットや「対
 - round 開始時の `git rev-parse HEAD` と、round 終了時（auto-commit / push 後を含む）の
   HEAD を比較
 - 同じ SHA のままなら `no-progress-streak += 1`、変わっていれば `no-progress-streak = 0`
+- 同じ SHA のまま、かつ `PR_ITERATION_NO_PROGRESS_LIMIT` 未満なら `codex-needs-iteration`
+  を残置して hold する（`codex-ready-for-review` / `codex-awaiting-design-review` には戻さない）
 - `PR_ITERATION_NO_PROGRESS_LIMIT`（既定 `3`）以上に達した時点で `codex-failed` に escalate
 
 本機能は kind に依らず impl / design 両方の PR で動作します。escalate コメントには
