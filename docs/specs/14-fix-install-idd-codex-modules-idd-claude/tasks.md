@@ -6,7 +6,7 @@
   - module ファイル名、関数名、`REQUIRED_MODULES` の構成、processor 挙動は変更しない。
   - _Requirements: 1.3, 2.3, 3.3, 3.5, 4.1, 4.2_
 
-- [ ] 2. `install.sh --local` の module 配置先を `$HOME/bin/idd-codex-modules/` へ変更する
+- [x] 2. `install.sh --local` の module 配置先を `$HOME/bin/idd-codex-modules/` へ変更する
   - source directory 判定を `"$LOCAL_WATCHER_DIR/bin/idd-codex-modules"` に変更する。
   - destination を `"$HOME/bin/idd-codex-modules"` に変更し、idd-codex module 配置のために `"$HOME/bin/modules"` を作成・更新しない。
   - 既存の `ensure_dir` / `copy_glob_to_homebin` による冪等コピーを維持し、`install.sh --repo` の挙動は変更しない。
