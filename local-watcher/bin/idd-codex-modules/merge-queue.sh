@@ -45,6 +45,169 @@ mq_pr_has_label() {
   echo "$pr_json" | jq -e --arg l "$label" '.labels // [] | map(.name) | index($l)' >/dev/null 2>&1
 }
 
+# PR JSON の GitHub formal review approval を判定する。
+mq_pr_review_decision_approved() {
+  local pr_json="$1"
+  printf '%s\n' "$pr_json" | jq -e '.reviewDecision == "APPROVED"' >/dev/null 2>&1
+}
+
+# PR Reviewer comment marker 群から current head SHA に対する marker approval を解決する。
+# stdout: approved|idd-codex-marker / rejected|iteration-marker / rejected|stale-marker /
+#         rejected|malformed-marker / rejected|none
+mq_resolve_marker_approval_signal() {
+  local comments_json="$1"
+  local head_sha="$2"
+
+  local marker_state
+  if ! marker_state=$(printf '%s\n' "$comments_json" | jq -r --arg sha "$head_sha" '
+    def has_approve_verdict:
+      test("(^|[\r\n])[[:space:]]*VERDICT:[[:space:]]*approve[[:space:]]*($|[\r\n])"; "i");
+    def has_blocking_verdict:
+      test("(^|[\r\n])[[:space:]]*VERDICT:[[:space:]]*(codex-needs-iteration|reject|rejected)[[:space:]]*($|[\r\n])"; "i");
+    def marker_attr_verdict:
+      if test("verdict=(approve|iteration|codex-needs-iteration|reject|rejected)"; "i") then
+        (match("verdict=(approve|iteration|codex-needs-iteration|reject|rejected)"; "i").captures[0].string | ascii_downcase)
+      else "" end;
+    def marker_record:
+      . as $body
+      | "idd-codex:pr-reviewer[[:space:]][^>]*sha=([^[:space:]>]+)[^>]*kind=review" as $marker_pattern
+      | if (($body | test($marker_pattern)) | not) then
+          {valid: false, malformed: true, sha: "", verdict: "none"}
+        else
+          ($body | match($marker_pattern)) as $m
+          | (has_approve_verdict) as $body_approve
+          | (has_blocking_verdict) as $body_blocking
+          | (marker_attr_verdict) as $attr_verdict
+          | ($attr_verdict == "approve") as $attr_approve
+          | ($attr_verdict == "iteration" or $attr_verdict == "codex-needs-iteration" or
+             $attr_verdict == "reject" or $attr_verdict == "rejected") as $attr_blocking
+          | {valid: true,
+             malformed: false,
+             sha: $m.captures[0].string,
+             verdict:
+               (if ($body_blocking or $attr_blocking) then "blocking"
+                elif ($body_approve or $attr_approve) then "approve"
+                else "none" end)}
+        end;
+    [
+      (.[]?.body // "")
+      | select(test("idd-codex:pr-reviewer"; "i") and test("kind=review"; "i"))
+      | marker_record
+    ] as $records
+    | if any($records[]; .valid and .sha == $sha and .verdict == "blocking") then
+        "current-blocking"
+      elif any($records[]; .valid and .sha == $sha and .verdict == "approve") then
+        "current-approve"
+      elif any($records[]; .valid and .sha != $sha and .verdict == "approve") then
+        "stale-approve"
+      elif any($records[]; .malformed) then
+        "malformed"
+      else
+        "none"
+      end
+  ' 2>/dev/null); then
+    mq_warn "PR Reviewer marker comments の解析に失敗しました"
+    printf 'unknown|api-error'
+    return 1
+  fi
+
+  case "$marker_state" in
+    current-approve)
+      printf 'approved|idd-codex-marker'
+      ;;
+    current-blocking)
+      printf 'rejected|iteration-marker'
+      ;;
+    stale-approve)
+      printf 'rejected|stale-marker'
+      ;;
+    malformed)
+      mq_warn "PR Reviewer marker comment に malformed marker を検出しました"
+      printf 'rejected|malformed-marker'
+      ;;
+    *)
+      printf 'rejected|none'
+      ;;
+  esac
+}
+
+# GitHub reviewDecision と PR Reviewer current-SHA marker から Merge Queue approval を解決する。
+# stdout: approved|github / approved|idd-codex-marker / rejected|... / unknown|...
+# rc: 0=approved/rejected を安全に解決, 1=API failure 等により unknown（merge しない）
+mq_resolve_approval_signal() {
+  local pr_json="$1"
+
+  if mq_pr_review_decision_approved "$pr_json"; then
+    printf 'approved|github'
+    return 0
+  fi
+
+  local pr_number head_sha
+  pr_number=$(printf '%s\n' "$pr_json" | jq -r '.number // empty' 2>/dev/null || echo "")
+  head_sha=$(printf '%s\n' "$pr_json" | jq -r '.headRefOid // empty' 2>/dev/null || echo "")
+  if [ -z "$pr_number" ] || [ -z "$head_sha" ]; then
+    mq_warn "approval resolver: PR number または headRefOid が取得できません"
+    printf 'unknown|invalid-pr-json'
+    return 1
+  fi
+
+  local comments_json timeout_sec
+  timeout_sec="${MERGE_QUEUE_GIT_TIMEOUT:-60}"
+  if ! comments_json=$(timeout "$timeout_sec" \
+      gh api "/repos/${REPO}/issues/${pr_number}/comments" 2>/dev/null); then
+    mq_warn "PR #${pr_number}: approval resolver のコメント取得に失敗（not-approved として扱います）"
+    printf 'unknown|api-error'
+    return 1
+  fi
+
+  local record rc=0
+  record=$(mq_resolve_marker_approval_signal "$comments_json" "$head_sha") || rc=$?
+  printf '%s' "$record"
+  return "$rc"
+}
+
+# PR 一覧を approval resolver に通し、approved PR の JSON 配列だけを返す。
+# stdout: approved PR JSON array（各要素に iddCodexApprovalSignal/source を付与）
+mq_select_approved_prs() {
+  local prs_json="$1"
+
+  local pr_iter
+  pr_iter=$(printf '%s\n' "$prs_json" | jq -c '.[]')
+  if [ -z "$pr_iter" ]; then
+    printf '[]'
+    return 0
+  fi
+
+  local approved_lines=""
+  while IFS= read -r pr_json; do
+    local approval_record resolver_rc=0
+    approval_record=$(mq_resolve_approval_signal "$pr_json") || resolver_rc=$?
+
+    local approval_state approval_source
+    approval_state="${approval_record%%|*}"
+    approval_source="${approval_record#*|}"
+    approval_source="${approval_source%%|*}"
+
+    if [ "$resolver_rc" -ne 0 ] || [ "$approval_state" != "approved" ]; then
+      continue
+    fi
+
+    local approved_pr
+    if approved_pr=$(printf '%s\n' "$pr_json" | jq -c \
+        --arg signal "$approval_record" \
+        --arg source "$approval_source" \
+        '. + {iddCodexApprovalSignal: $signal, iddCodexApprovalSource: $source}' 2>/dev/null); then
+      approved_lines+="${approved_pr}"$'\n'
+    fi
+  done <<< "$pr_iter"
+
+  if [ -z "$approved_lines" ]; then
+    printf '[]'
+    return 0
+  fi
+  printf '%s' "$approved_lines" | jq -s '.'
+}
+
 # CONFLICTING PR にラベル + 状況コメントを投稿（重複抑止つき）
 # 失敗しても次の PR に進むよう、戻り値ではなく内部で WARN を出す
 mq_handle_conflict() {
@@ -195,35 +358,39 @@ process_merge_queue() {
 
   mq_log "サイクル開始 (max=${MERGE_QUEUE_MAX_PRS}, base=${MERGE_QUEUE_BASE_BRANCH}, timeout=${MERGE_QUEUE_GIT_TIMEOUT}s)"
 
-  # AC 1.2 / 1.3 / 1.4 / 1.6 / 1.7: approved かつ codex-needs-rebase / codex-failed が付いていない
-  # 非 draft の PR。さらに head branch が MERGE_QUEUE_HEAD_PATTERN に合致し、
-  # head repo owner が base repo owner と同一（= fork PR を除外）のものに限定。
-  # GitHub search 構文で server side フィルタ（API call 削減・NFR 1.2）
+  # AC 1.2 / 1.3 / 1.4 / 1.6 / 1.7: codex-needs-rebase / codex-failed が付いていない
+  # 非 draft の PR。approval は GitHub reviewDecision と idd-codex marker の union を
+  # client-side resolver で判定するため、GitHub search の review:approved には依存しない。
   local repo_owner="${REPO%%/*}"
   local prs_json
   if ! prs_json=$(timeout "$MERGE_QUEUE_GIT_TIMEOUT" gh pr list \
       --repo "$REPO" \
       --state open \
-      --search "review:approved -label:\"$LABEL_NEEDS_REBASE\" -label:\"$LABEL_FAILED\" -draft:true" \
-      --json number,headRefName,baseRefName,mergeable,mergeStateStatus,labels,url,isDraft,reviewDecision,headRepositoryOwner \
+      --search "-label:\"$LABEL_NEEDS_REBASE\" -label:\"$LABEL_FAILED\" -draft:true" \
+      --json number,headRefName,headRefOid,baseRefName,mergeable,mergeStateStatus,labels,url,isDraft,reviewDecision,headRepositoryOwner \
       --limit 50 2>/dev/null); then
-    mq_warn "approved PR の取得に失敗しました（gh pr list タイムアウトまたはエラー）"
+    mq_warn "Merge Queue 候補 PR の取得に失敗しました（gh pr list タイムアウトまたはエラー）"
     return 0
   fi
 
   # クライアント側フィルタ:
-  #   - isDraft / reviewDecision の再確認（server filter の保険）
+  #   - isDraft / excluded labels の再確認（server filter の保険）
   #   - head ref prefix (MERGE_QUEUE_HEAD_PATTERN): 人間の手書き PR を巻き込まない
   #   - head repo owner == base repo owner: fork PR を除外
   prs_json=$(echo "$prs_json" | jq \
     --arg pattern "$MERGE_QUEUE_HEAD_PATTERN" \
     --arg owner "$repo_owner" \
+    --arg needs_rebase "$LABEL_NEEDS_REBASE" \
+    --arg failed "$LABEL_FAILED" \
     '[.[]
       | select(.isDraft == false)
-      | select(.reviewDecision == "APPROVED")
+      | select(((.labels // []) | map(.name) | index($needs_rebase)) | not)
+      | select(((.labels // []) | map(.name) | index($failed)) | not)
       | select(.headRefName | test($pattern))
       | select((.headRepositoryOwner.login // "") == $owner)
     ]')
+
+  prs_json=$(mq_select_approved_prs "$prs_json")
 
   local total
   total=$(echo "$prs_json" | jq 'length')
@@ -260,16 +427,17 @@ process_merge_queue() {
   fi
 
   while IFS= read -r pr_json; do
-    local pr_number head_ref base_ref mergeable merge_state url
+    local pr_number head_ref base_ref mergeable merge_state url approval_source
     pr_number=$(echo "$pr_json" | jq -r '.number')
     head_ref=$(echo "$pr_json"  | jq -r '.headRefName')
     base_ref=$(echo "$pr_json"  | jq -r '.baseRefName')
     mergeable=$(echo "$pr_json" | jq -r '.mergeable')
     merge_state=$(echo "$pr_json" | jq -r '.mergeStateStatus')
     url=$(echo "$pr_json" | jq -r '.url')
+    approval_source=$(echo "$pr_json" | jq -r '.iddCodexApprovalSource // "unknown"')
 
     # AC 1.5 / 6.2: 各 PR の mergeable 判定をログ
-    mq_log "PR #${pr_number}: mergeable=${mergeable}, state=${merge_state}, head=${head_ref}, base=${base_ref}"
+    mq_log "PR #${pr_number}: approval=${approval_source}, mergeable=${mergeable}, state=${merge_state}, head=${head_ref}, base=${base_ref}"
 
     case "$mergeable" in
       CONFLICTING)
@@ -344,15 +512,16 @@ process_merge_queue_recheck() {
 
   mqr_log "サイクル開始 (max=${MERGE_QUEUE_RECHECK_MAX_PRS}, timeout=${MERGE_QUEUE_GIT_TIMEOUT}s)"
 
-  # AC 1.4 / 1.5 / 1.6: approved かつ codex-needs-rebase ラベル付き、codex-failed 無し、非 draft。
+  # AC 1.4 / 1.5 / 1.6: codex-needs-rebase ラベル付き、codex-failed 無し、非 draft。
+  # approval は Phase A 本体と同じ resolver semantics で判定する。
   # AC 4.3 / 4.4: server-side フィルタで API call を最小化、Phase A と同一 timeout を適用。
   local repo_owner="${REPO%%/*}"
   local prs_json
   if ! prs_json=$(timeout "$MERGE_QUEUE_GIT_TIMEOUT" gh pr list \
       --repo "$REPO" \
       --state open \
-      --search "review:approved label:\"$LABEL_NEEDS_REBASE\" -label:\"$LABEL_FAILED\" -draft:true" \
-      --json number,headRefName,baseRefName,mergeable,labels,url,isDraft,reviewDecision,headRepositoryOwner \
+      --search "label:\"$LABEL_NEEDS_REBASE\" -label:\"$LABEL_FAILED\" -draft:true" \
+      --json number,headRefName,headRefOid,baseRefName,mergeable,labels,url,isDraft,reviewDecision,headRepositoryOwner \
       --limit 100 2>/dev/null); then
     # AC 4.5: タイムアウト / エラー時は WARN を出して以降スキップ（後続処理は継続）
     mqr_warn "対象 PR 一覧の取得に失敗しました（gh pr list タイムアウトまたはエラー）"
@@ -360,18 +529,23 @@ process_merge_queue_recheck() {
   fi
 
   # AC 1.5 / 1.6 / 1.7 / 1.8: クライアント側フィルタ（server filter の保険）
-  #   - isDraft / reviewDecision の再確認
+  #   - isDraft / included/excluded labels の再確認
   #   - head ref prefix (MERGE_QUEUE_HEAD_PATTERN): 人間の手書き PR を巻き込まない
   #   - head repo owner == base repo owner: fork PR を除外
   prs_json=$(echo "$prs_json" | jq \
     --arg pattern "$MERGE_QUEUE_HEAD_PATTERN" \
     --arg owner "$repo_owner" \
+    --arg needs_rebase "$LABEL_NEEDS_REBASE" \
+    --arg failed "$LABEL_FAILED" \
     '[.[]
       | select(.isDraft == false)
-      | select(.reviewDecision == "APPROVED")
+      | select(((.labels // []) | map(.name) | index($needs_rebase)) != null)
+      | select(((.labels // []) | map(.name) | index($failed)) | not)
       | select(.headRefName | test($pattern))
       | select((.headRepositoryOwner.login // "") == $owner)
     ]')
+
+  prs_json=$(mq_select_approved_prs "$prs_json")
 
   local total
   total=$(echo "$prs_json" | jq 'length')
@@ -407,12 +581,13 @@ process_merge_queue_recheck() {
   fi
 
   while IFS= read -r pr_json; do
-    local pr_number head_ref base_ref mergeable url
+    local pr_number head_ref base_ref mergeable url approval_source
     pr_number=$(echo "$pr_json" | jq -r '.number')
     head_ref=$(echo "$pr_json"  | jq -r '.headRefName')
     base_ref=$(echo "$pr_json"  | jq -r '.baseRefName')
     mergeable=$(echo "$pr_json" | jq -r '.mergeable')
     url=$(echo "$pr_json" | jq -r '.url')
+    approval_source=$(echo "$pr_json" | jq -r '.iddCodexApprovalSource // "unknown"')
 
     # AC 5.2: 各 PR の mergeable 判定をログ（PR 番号 / mergeable / アクション）
     case "$mergeable" in
@@ -421,7 +596,7 @@ process_merge_queue_recheck() {
         if timeout "$MERGE_QUEUE_GIT_TIMEOUT" \
             gh pr edit "$pr_number" --repo "$REPO" --remove-label "$LABEL_NEEDS_REBASE" >/dev/null 2>&1; then
           # AC 2.2 / 5.3: 成功 INFO ログ（要件文言を含める）
-          mqr_log "PR #${pr_number}: mergeable=MERGEABLE -> label removed (conflict resolved, re-evaluating next cycle) (${url})"
+          mqr_log "PR #${pr_number}: approval=${approval_source}, mergeable=MERGEABLE -> label removed (conflict resolved, re-evaluating next cycle) (${url})"
           removed=$((removed + 1))
         else
           # AC 2.6: ラベル除去 API がエラーを返した場合は WARN、後続 PR は継続
@@ -431,17 +606,17 @@ process_merge_queue_recheck() {
         ;;
       CONFLICTING)
         # AC 2.3 / NFR 2.2: 状態変更なし（再ラベル / コメント追記なし）
-        mqr_log "PR #${pr_number}: mergeable=CONFLICTING -> kept (head=${head_ref}, base=${base_ref})"
+        mqr_log "PR #${pr_number}: approval=${approval_source}, mergeable=CONFLICTING -> kept (head=${head_ref}, base=${base_ref})"
         conflicting=$((conflicting + 1))
         ;;
       UNKNOWN|null|"")
         # AC 2.4 / NFR 2.2: UNKNOWN / null は次回サイクルに委ねる
-        mqr_log "PR #${pr_number}: mergeable=${mergeable:-null} -> skip (next cycle)"
+        mqr_log "PR #${pr_number}: approval=${approval_source}, mergeable=${mergeable:-null} -> skip (next cycle)"
         unknown_skip=$((unknown_skip + 1))
         ;;
       *)
         # NFR 2.2: 未知の値もラベル除去を行わずスキップ
-        mqr_log "PR #${pr_number}: mergeable=${mergeable} (未知) -> skip"
+        mqr_log "PR #${pr_number}: approval=${approval_source}, mergeable=${mergeable} (未知) -> skip"
         unknown_skip=$((unknown_skip + 1))
         ;;
     esac
