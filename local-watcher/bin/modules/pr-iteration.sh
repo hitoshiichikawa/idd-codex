@@ -1042,9 +1042,37 @@ pi_auto_commit_and_push() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# pi_resolve_success_action: Codex rc=0 後のラベル確定アクションを決める
+#   入力: $1=commit_pushed ("true" / "false"), $2=new_streak, $3=no_progress_limit
+#   出力: stdout に "success" / "hold" / "escalate"
+#   返り値: 0 固定
+#
+#   Issue #3: head branch に新規 commit がない round は、明示的な reply-only success
+#   contract が未定義の現状では success label transition へ進めない。streak が上限
+#   未満なら hold、上限以上なら no-progress escalation に倒す。
+# ─────────────────────────────────────────────────────────────────────────────
+pi_resolve_success_action() {
+  local commit_pushed="$1"
+  local new_streak="$2"
+  local no_progress_limit="$3"
+
+  if [ "$commit_pushed" != "true" ]; then
+    if [ "$new_streak" -ge "$no_progress_limit" ]; then
+      echo "escalate"
+    else
+      echo "hold"
+    fi
+    return 0
+  fi
+
+  echo "success"
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # pi_run_iteration: 1 PR 分の iteration を実行（fresh context Codex 起動）
 #   入力: $1=pr_json
-#   戻り値: 0=success(commit+push or reply-only), 1=failure, 2=escalated(round上限到達),
+#   戻り値: 0=success(commit+push), 1=failure/hold, 2=escalated(round上限到達),
 #           3=skip (kind=none/ambiguous, #35)
 #   AC 3.6, 4.x, 5.x, 6.2, 6.3, 7.x, 8.3, 9.2, NFR 1.1, NFR 1.3 (#26)
 #   #35: kind 判定で design / impl を分岐し、template と finalize 関数を切り替える
@@ -1386,12 +1414,28 @@ pi_run_iteration() {
       return 1
     fi
 
-    # Issue #122 Req 3.3 / 6.3: no-progress 連続カウンタが上限以上に達したら escalate
-    if [ "$new_streak" -ge "$PR_ITERATION_NO_PROGRESS_LIMIT" ]; then
-      pi_log "PR #${pr_number}: kind=${kind} round=${next_round} no-progress-streak=${new_streak} reason=no-progress escalate"
-      pi_escalate_to_failed "$pr_number" "$next_round" "$max_rounds" "no-progress" "$new_streak" || true
-      return 2
-    fi
+    # Issue #3 / #122 Req 3.3 / 6.3: commit が無い round は success label transition に進めない。
+    # 明示的な reply-only success contract は未定義のため、no-progress limit 未満は hold、
+    # limit 到達時のみ no-progress escalation に倒す。
+    local success_action
+    success_action=$(pi_resolve_success_action "$commit_pushed" "$new_streak" "$PR_ITERATION_NO_PROGRESS_LIMIT")
+    case "$success_action" in
+      escalate)
+        pi_log "PR #${pr_number}: kind=${kind} round=${next_round} no-progress-streak=${new_streak} reason=no-progress escalate"
+        pi_escalate_to_failed "$pr_number" "$next_round" "$max_rounds" "no-progress" "$new_streak" || true
+        return 2
+        ;;
+      hold)
+        pi_log "PR #${pr_number}: kind=${kind} round=${next_round} action=hold (codex-needs-iteration を残置; no new commit)"
+        return 1
+        ;;
+      success)
+        : ;;
+      *)
+        pi_warn "PR #${pr_number}: kind=${kind} round=${next_round} unknown success_action='${success_action}' (codex-needs-iteration を残置)"
+        return 1
+        ;;
+    esac
 
     # AC 6.2 (#26) / #35 AC 3.1 / 3.2: kind に応じたラベル遷移
     local finalize_ok=false
