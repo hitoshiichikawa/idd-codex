@@ -228,6 +228,23 @@ interface <ComponentName>Service {
 - `_Depends:_` — 非自明な cross-boundary 依存がある場合のみ
 - `(P)` — 並列実行可能を明示（`_Boundary:_` とセット）
 
+## Task Boundary Contract
+
+`tasks.md` 生成時は [`tasks-generation.md`](../rules/tasks-generation.md) の
+「Task Boundary Contract」を正準として扱う。各 task の `_Requirements:_` は、その task 完了時点で
+実装・テスト・レビュー可能な AC だけに限定すること。
+
+- regression coverage / failure path / safety fallback / runtime behavior change の AC を
+  `_Requirements:_` に含める task には、同 task の詳細項目として対応する test work を必ず明記する
+- 実行時挙動を変更する task には、原則として同 task に最低限の regression test または shell-level
+  test を含める
+- test work を後続 task に defer する場合は、先行 task の `_Requirements:_` から未実施 coverage AC を
+  外し、coverage task 側にその AC と `_Depends:_` を付ける
+- partial な先行 task と coverage task の関係は `_Boundary:_` または `_Depends:_` で明示し、
+  per-task review が後続 task の未実施テストを先行 task の `missing test` と判定しない境界を保つ
+- dedicated regression test task を作る場合、その task の `_Requirements:_` は後続 task 完了時点で
+  検証する AC に限定する
+
 ## Checkbox 形式の必須化
 
 **すべてのタスク行は `- [ ]`（未完了）または `- [ ]*`（deferrable 印）の checkbox 形式で
@@ -336,6 +353,10 @@ Developer フェーズで仕様乖離が判明する事故が起きえます。�
       読むため、checkbox 形式が必須。詳細は
       [`design-review-gate.md`](../rules/design-review-gate.md) の「tasks.md checkbox
       enforcement check」節を参照）
+- [ ] **Task boundary contract**: 各 task の `_Requirements:_` がその task 完了時点で実装・テスト・
+      レビュー可能な AC のみに限定され、coverage / failure / safety / runtime behavior change の AC
+      には同 task の test work が対応している。deferred coverage は先行 task の `_Requirements:_`
+      から外し、coverage task 側の `_Requirements:_` と `_Depends:_` で関係を明示している
 
 問題が見つかれば draft を修正し、最大 2 パスで再レビューします。それでも曖昧性が残る場合は
 要件フェーズへ差し戻します（design.md 側で要件を発明しない）。
