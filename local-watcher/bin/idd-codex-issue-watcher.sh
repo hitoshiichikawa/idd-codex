@@ -7368,10 +7368,11 @@ dr_extract_deps() {
 dr_format_unresolved_comment() {
   local unresolved="$1"
 
-  # 未解決依存リストを markdown 箇条書きに整形（"#N|区分" → "- #N (区分)"）。
+  # 未解決依存リストを markdown 箇条書きに整形する。対象 Issue 番号と依存先
+  # Issue 番号が隣接して見えないよう、行内で明示ラベルを付ける。
   local items
   items=$(printf '%s\n' "$unresolved" \
-    | awk -F'|' 'NF==2 && $1 != "" {printf "- %s (%s)\n", $1, $2}')
+    | awk -F'|' 'NF==2 && $1 != "" {printf "- 依存先: %s / 状態: %s\n", $1, $2}')
 
   cat <<EOF_DR_COMMENT
 🛑 依存 Issue 未 merge のため自動処理を中止しました。
@@ -7422,6 +7423,11 @@ dr_gh_graphql_closed_by() {
     repository(owner: $owner, name: $repo) {
       issue(number: $number) {
         state
+        labels(first: 50) {
+          nodes {
+            name
+          }
+        }
         closedByPullRequestsReferences(first: 20, includeClosedPrs: true) {
           nodes {
             number
@@ -7441,18 +7447,79 @@ dr_gh_graphql_closed_by() {
 }
 
 # 引数 $1 = 依存 Issue 番号（数字のみ）。
-# stdout = 区分文字列 1 行: "resolved" | "open" | "closed unmerged" | "api error"。
+# stdout = `BASE_BRANCH` に merge 済みの idd-codex managed PR 番号（見つからなければ空）。
+# return = 0（取得失敗時も安全側で空 stdout。WARN は本関数で記録）。
+#
+# multi-branch の Dependency Resolver は GitHub closing keyword に依存せず、
+# idd-codex の branch naming で managed PR を検出する。Promote Pipeline 側のより広い
+# managed resolver は task 2 で扱うため、本 task では Dependency Resolver に必要な
+# `codex/issue-<N>-impl-*` / `codex/issue-<N>-impl-resume-*` に絞る。
+dr_find_base_merged_managed_pr() {
+  local dep_num="$1"
+
+  local owner repo_name repo_owner
+  owner="${REPO%%/*}"
+  repo_name="${REPO##*/}"
+  repo_owner="$owner"
+  if [ -z "$owner" ] || [ -z "$repo_name" ] || [ "$owner" = "$REPO" ]; then
+    dr_warn "issue=#${dep_num} base-merged managed PR 検出を skip（REPO env 不正: ${REPO:-<empty>}）"
+    return 0
+  fi
+
+  local prs_json
+  if ! prs_json=$(timeout "${DRR_GH_TIMEOUT:-${MERGE_QUEUE_GIT_TIMEOUT:-60}}" \
+      gh pr list \
+        --repo "$REPO" \
+        --state merged \
+        --base "$BASE_BRANCH" \
+        --search "codex/issue-${dep_num}-impl in:head" \
+        --json number,headRefName,baseRefName,headRepositoryOwner,mergedAt \
+        --limit 20 2>&1); then
+    dr_warn "issue=#${dep_num} base-merged managed PR 取得失敗"
+    return 0
+  fi
+
+  local managed_pattern pr_number
+  managed_pattern="^codex/issue-${dep_num}-impl(-resume)?-"
+  if ! pr_number=$(printf '%s' "$prs_json" | jq -r \
+      --arg owner "$repo_owner" \
+      --arg base "$BASE_BRANCH" \
+      --arg pattern "$managed_pattern" '
+      [.[]
+        | select((.headRepositoryOwner.login // "") == $owner)
+        | select((.baseRefName // "") == $base)
+        | select((.headRefName // "") | test($pattern))
+      ]
+      | sort_by(.number)
+      | reverse
+      | .[0].number // empty
+    ' 2>/dev/null); then
+    dr_warn "issue=#${dep_num} base-merged managed PR jq parse 失敗"
+    return 0
+  fi
+
+  if [[ "$pr_number" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$pr_number"
+  fi
+}
+
+# 引数 $1 = 依存 Issue 番号（数字のみ）。
+# stdout = 区分文字列 1 行:
+#   - 新形式: "resolved|<reason>|<detail>" | "open|open" | "closed unmerged|closed-unmerged" | "api error|<reason>"
+#   - 旧形式: "resolved" | "open" | "closed unmerged" | "api error" も caller が受け付ける。
 # return = 常に 0（判定結果は stdout で返す）。
 # 副作用 = API エラー / jq parse 失敗時のみ dr_warn でログ（Req 6.2）。
 #
 # `dr_gh_graphql_closed_by` で Issue の state と
 # `closedByPullRequestsReferences.nodes[].state` を取得し、以下を判定:
-#   - issue.state == "OPEN"  → "open"（unresolved / Req 1.4 / 旧 2.3）
+#   - multi-branch かつ staged label あり → "resolved|staged-for-release"
+#   - multi-branch かつ base merged managed PR あり → "resolved|base-merged|#P"
+#   - issue.state == "OPEN"  → "open|open"（unresolved / Req 1.4 / 旧 2.3）
 #   - issue.state == "CLOSED" かつ PR ノードの state に "MERGED" が 1 件以上
-#     → "resolved"（Req 1.1）
+#     → "resolved|closing-pr"（Req 1.1）
 #   - issue.state == "CLOSED" かつ "MERGED" が 0 件（空配列・全 CLOSED 含む）
-#     → "closed unmerged"（Req 1.2, 1.3）
-#   - gh / jq 失敗 / GraphQL errors / 未知の state → "api error"
+#     → "closed unmerged|closed-unmerged"（Req 1.2, 1.3）
+#   - gh / jq 失敗 / GraphQL errors / 未知の state → "api error|<reason>"
 #     （Req 2.1, 2.2 / NFR 4.2 安全側）
 #
 # 旧実装は `gh issue view --json closedByPullRequestsReferences` の PR ノードに
@@ -7469,7 +7536,7 @@ dr_resolve_one() {
   repo_name="${REPO##*/}"
   if [ -z "$owner" ] || [ -z "$repo_name" ] || [ "$owner" = "$REPO" ]; then
     dr_warn "issue=#${dep_num} REPO env が owner/repo 形式でない: ${REPO:-<empty>}"
-    echo "api error"
+    echo "api error|invalid-repo"
     return 0
   fi
 
@@ -7478,14 +7545,14 @@ dr_resolve_one() {
 
   if [ "$gh_rc" -ne 0 ]; then
     dr_warn "issue=#${dep_num} gh api graphql 失敗 (rc=${gh_rc}): ${response}"
-    echo "api error"
+    echo "api error|graphql-failed"
     return 0
   fi
 
   # GraphQL は HTTP 200 でも errors を返すケースがあるため明示的に検査する（Req 2.1）。
   if printf '%s' "$response" | jq -e '.errors // empty | length > 0' >/dev/null 2>&1; then
     dr_warn "issue=#${dep_num} GraphQL errors を検出"
-    echo "api error"
+    echo "api error|graphql-errors"
     return 0
   fi
 
@@ -7493,20 +7560,48 @@ dr_resolve_one() {
   if ! state=$(printf '%s' "$response" \
         | jq -r '.data.repository.issue.state' 2>/dev/null); then
     dr_warn "issue=#${dep_num} jq parse 失敗（issue.state 取り出し）"
-    echo "api error"
+    echo "api error|jq-parse-error"
     return 0
   fi
   # state が null（issue ノードが取れていない等の想定外応答）→ 安全側で api error
   # （Req 2.2: 想定外構造で merge 状態を解釈できない場合）。
   if [ -z "$state" ] || [ "$state" = "null" ]; then
     dr_warn "issue=#${dep_num} issue.state が取得できない応答構造（state=${state:-<empty>}）"
-    echo "api error"
+    echo "api error|missing-state"
     return 0
+  fi
+
+  if [ "${BASE_BRANCH:-main}" != "${PROMOTION_TARGET_BRANCH:-main}" ]; then
+    local staged_count
+    if ! staged_count=$(printf '%s' "$response" \
+          | jq --arg label "${LABEL_STAGED_FOR_RELEASE:-codex-staged-for-release}" \
+              '[.data.repository.issue.labels.nodes[]? | select(.name == $label)] | length' \
+          2>/dev/null); then
+      dr_warn "issue=#${dep_num} jq parse 失敗（labels 集計）"
+      echo "api error|jq-parse-error"
+      return 0
+    fi
+    if ! [[ "$staged_count" =~ ^[0-9]+$ ]]; then
+      dr_warn "issue=#${dep_num} labels 集計結果が数値でない: ${staged_count}"
+      echo "api error|jq-parse-error"
+      return 0
+    fi
+    if [ "$staged_count" -gt 0 ]; then
+      echo "resolved|staged-for-release"
+      return 0
+    fi
+
+    local base_merged_pr
+    base_merged_pr=$(dr_find_base_merged_managed_pr "$dep_num")
+    if [ -n "$base_merged_pr" ]; then
+      echo "resolved|base-merged|#${base_merged_pr}"
+      return 0
+    fi
   fi
 
   case "$state" in
     OPEN)
-      echo "open"
+      echo "open|open"
       return 0
       ;;
     CLOSED)
@@ -7518,26 +7613,26 @@ dr_resolve_one() {
             | jq '[.data.repository.issue.closedByPullRequestsReferences.nodes[]? | select(.state == "MERGED")] | length' \
             2>/dev/null); then
         dr_warn "issue=#${dep_num} jq parse 失敗（closedByPullRequestsReferences 集計）"
-        echo "api error"
+        echo "api error|jq-parse-error"
         return 0
       fi
       # 想定外応答で集計結果が数値でない場合も安全側で api error（Req 2.2）。
       if ! [[ "$merged_count" =~ ^[0-9]+$ ]]; then
         dr_warn "issue=#${dep_num} closedByPullRequestsReferences 集計結果が数値でない: ${merged_count}"
-        echo "api error"
+        echo "api error|jq-parse-error"
         return 0
       fi
       if [ "$merged_count" -gt 0 ]; then
-        echo "resolved"
+        echo "resolved|closing-pr"
       else
-        echo "closed unmerged"
+        echo "closed unmerged|closed-unmerged"
       fi
       return 0
       ;;
     *)
       # 未知の state（GitHub API 仕様変更 / 異常応答）→ 安全側で api error 扱い
       dr_warn "issue=#${dep_num} 未知の state: ${state}"
-      echo "api error"
+      echo "api error|unknown-state"
       return 0
       ;;
   esac
@@ -7630,26 +7725,42 @@ dr_check_dependencies() {
   unresolved_csv=""
   api_errors_csv=""
   unresolved_lines=""
-  local dep verdict_for_dep
+  local dep verdict_for_dep dep_verdict dep_reason dep_detail resolved_item
   while IFS= read -r dep; do
     [ -z "$dep" ] && continue
     extracted_csv="${extracted_csv:+${extracted_csv},}#${dep}"
     verdict_for_dep=$(dr_resolve_one "$dep")
-    case "$verdict_for_dep" in
+    dep_verdict="${verdict_for_dep%%|*}"
+    dep_reason=""
+    dep_detail=""
+    if [ "$dep_verdict" != "$verdict_for_dep" ]; then
+      local rest="${verdict_for_dep#*|}"
+      dep_reason="${rest%%|*}"
+      if [ "$dep_reason" != "$rest" ]; then
+        dep_detail="${rest#*|}"
+      fi
+    fi
+
+    case "$dep_verdict" in
       resolved)
-        resolved_csv="${resolved_csv:+${resolved_csv},}#${dep}"
+        dep_reason="${dep_reason:-closing-pr}"
+        resolved_item="#${dep}(${dep_reason}${dep_detail:+:${dep_detail}})"
+        resolved_csv="${resolved_csv:+${resolved_csv},}${resolved_item}"
         ;;
       open)
-        unresolved_csv="${unresolved_csv:+${unresolved_csv},}#${dep} (open)"
-        unresolved_lines="${unresolved_lines}#${dep}|open"$'\n'
+        dep_reason="${dep_reason:-open}"
+        unresolved_csv="${unresolved_csv:+${unresolved_csv},}#${dep} (${dep_reason})"
+        unresolved_lines="${unresolved_lines}#${dep}|${dep_reason}"$'\n'
         ;;
       "closed unmerged")
-        unresolved_csv="${unresolved_csv:+${unresolved_csv},}#${dep} (closed_unmerged)"
-        unresolved_lines="${unresolved_lines}#${dep}|closed unmerged"$'\n'
+        dep_reason="${dep_reason:-closed-unmerged}"
+        unresolved_csv="${unresolved_csv:+${unresolved_csv},}#${dep} (${dep_reason})"
+        unresolved_lines="${unresolved_lines}#${dep}|${dep_reason}"$'\n'
         ;;
       "api error")
+        dep_reason="${dep_reason:-api-error}"
         api_errors_csv="${api_errors_csv:+${api_errors_csv},}#${dep}"
-        unresolved_lines="${unresolved_lines}#${dep}|api error"$'\n'
+        unresolved_lines="${unresolved_lines}#${dep}|${dep_reason}"$'\n'
         ;;
       *)
         # 想定外（dr_resolve_one が新区分を返した）→ 安全側で unresolved 扱い
