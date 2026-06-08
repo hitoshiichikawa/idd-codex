@@ -9,7 +9,7 @@
   - _Requirements:_ 1.1, 1.2, 1.3, 2.1, 2.2, 2.3, 2.4, 4.3, 4.4, 6.5
   - _Boundary:_ PR Reviewer Verdict Parser, Formal Review Submitter, PR Reviewer Marker Writer
 
-- [ ] 2. Merge Queue の approval resolver を追加する
+- [x] 2. Merge Queue の approval resolver を追加する
   - `reviewDecision == "APPROVED"` を従来どおり approved とする helper を作る
   - current head SHA の PR Reviewer comment marker と `VERDICT: approve` を parse して marker approval として扱う
   - old-SHA approve marker、current-SHA iteration / reject marker、malformed marker、comments API failure は approved にしない
