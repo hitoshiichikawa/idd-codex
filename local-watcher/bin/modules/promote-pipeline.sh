@@ -1117,7 +1117,7 @@ pp_collect_merged_issues() {
       if timeout "$PROMOTE_GIT_TIMEOUT" \
           gh issue edit "$issue_number" --repo "$REPO" \
             --add-label "$LABEL_STAGED_FOR_RELEASE" >/dev/null 2>&1; then
-        pp_log "issue=#${issue_number} action=label-add label=${LABEL_STAGED_FOR_RELEASE} source=auto"
+        pp_log "issue=#${issue_number} action=label-add label=${LABEL_STAGED_FOR_RELEASE} source=auto" >&2
         added=$((added + 1))
       else
         pp_warn "issue=#${issue_number} codex-staged-for-release 自動付与に失敗（後続 Issue は継続）"
@@ -1125,7 +1125,7 @@ pp_collect_merged_issues() {
     done <<< "$linked_issues"
   fi
 
-  pp_log "auto-label サマリ: codex-staged-for-release-added=${added}, already-labeled-skipped=${skipped}"
+  pp_log "auto-label サマリ: codex-staged-for-release-added=${added}, already-labeled-skipped=${skipped}" >&2
 
   # 4. 全 codex-staged-for-release 付き open Issue の番号を stdout に出力（自動 + 人間
   #    付与の両方を含む / Req 2.1.2）。後続 ST 判定の対象集合になる。
