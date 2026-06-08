@@ -17,6 +17,11 @@
 - `bash local-watcher/test/pr_reviewer_quota_marker_test.sh`
 - `shellcheck local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/bin/modules/quota-aware.sh local-watcher/bin/modules/pr-reviewer.sh local-watcher/bin/modules/pr-iteration.sh local-watcher/test/qa_detect_rate_limit_test.sh local-watcher/test/qa_run_codex_stage_test.sh local-watcher/test/pr_reviewer_quota_marker_test.sh`
 
+## Reviewer round=1 指摘対応
+
+- Finding 1 対応として、`qa_run_codex_stage_test.sh` に Stage A / Reviewer round=1 / Debugger 後 Reviewer round=3 / Triage の usage-limit fatal を `qa_handle_quota_exceeded` へ接続する結合テストを追加した。各ケースで `codex-needs-quota-wait` 付与、`codex-failed` 不付与、`mark_issue_failed` 未呼び出し、reset epoch 永続化を検証する。
+- Finding 2 対応として、`pr_reviewer_quota_marker_test.sh` に `pr_run_review_for_pr` の PR Reviewer command 非ゼロ終了 fixture を追加し、stderr の usage-limit fatal から reset epoch を抽出して `codex-needs-quota-wait` に退避すること、`pr-reviewer-<PR番号>` key へ reset epoch を保存すること、`exec-failed` コメントを投稿しないことを検証する。
+
 ## 確認事項
 
 - reset 時刻なし usage-limit 風 fatal は Issue コメントの人間回答「Bで」に従い、quota wait ではなく既存失敗扱いにしている。

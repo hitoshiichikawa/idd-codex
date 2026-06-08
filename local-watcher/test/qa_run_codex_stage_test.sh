@@ -84,14 +84,46 @@ eval "$(extract_function "$WATCHER_SH" "qa_extract_usage_limit_reset_epoch")"
 # shellcheck disable=SC1090
 eval "$(extract_function "$WATCHER_SH" "qa_run_codex_stage")"
 # shellcheck disable=SC1090
+eval "$(extract_function "$WATCHER_SH" "qa_format_iso8601")"
+# shellcheck disable=SC1090
+eval "$(extract_function "$WATCHER_SH" "qa_persist_reset_time")"
+# shellcheck disable=SC1090
+eval "$(extract_function "$WATCHER_SH" "qa_build_escalation_comment")"
+# shellcheck disable=SC1090
+eval "$(extract_function "$WATCHER_SH" "qa_handle_quota_exceeded")"
+# shellcheck disable=SC1090
 eval "$(extract_function "$WATCHER_SH" "codex_log_detect_529")"
 
-for fn in qa_log qa_warn qa_error qa_detect_rate_limit qa_extract_usage_limit_reset_epoch qa_run_codex_stage codex_log_detect_529; do
+for fn in qa_log qa_warn qa_error qa_detect_rate_limit qa_extract_usage_limit_reset_epoch qa_run_codex_stage qa_format_iso8601 qa_persist_reset_time qa_build_escalation_comment qa_handle_quota_exceeded codex_log_detect_529; do
   if ! declare -F "$fn" >/dev/null; then
     echo "ERROR: $fn not loaded" >&2
     exit 2
   fi
 done
+
+REPO="owner/test"
+REPO_SLUG="owner-test"
+LOG_DIR="$TMPDIR_TEST/logs"
+QUOTA_RESET_STATE_FILE="$TMPDIR_TEST/quota-reset-times.json"
+QUOTA_RESUME_GRACE_SEC="60"
+LABEL_CLAIMED="codex-claimed"
+LABEL_PICKED="codex-picked-up"
+LABEL_NEEDS_QUOTA_WAIT="codex-needs-quota-wait"
+LABEL_FAILED="codex-failed"
+GH_CALL_LOG="$TMPDIR_TEST/gh-calls.log"
+MARK_FAILED_LOG="$TMPDIR_TEST/mark-failed.log"
+export REPO REPO_SLUG LOG_DIR QUOTA_RESET_STATE_FILE QUOTA_RESUME_GRACE_SEC
+export LABEL_CLAIMED LABEL_PICKED LABEL_NEEDS_QUOTA_WAIT LABEL_FAILED
+
+gh() {
+  printf '%s\n' "$*" >> "$GH_CALL_LOG"
+  return 0
+}
+
+mark_issue_failed() {
+  printf '%s\n' "$*" >> "$MARK_FAILED_LOG"
+  return 0
+}
 
 # ─── アサーションヘルパ ───
 PASS_COUNT=0
@@ -108,6 +140,36 @@ assert_eq() {
     echo "FAIL: $label"
     echo "  expected: $(printf '%q' "$expected")"
     echo "  actual  : $(printf '%q' "$actual")"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  fi
+}
+
+assert_contains() {
+  local label="$1"
+  local haystack="$2"
+  local needle="$3"
+  if [[ "$haystack" == *"$needle"* ]]; then
+    echo "PASS: $label"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    echo "FAIL: $label"
+    echo "  missing: $(printf '%q' "$needle")"
+    echo "  in     : $(printf '%q' "$haystack")"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  fi
+}
+
+assert_not_contains() {
+  local label="$1"
+  local haystack="$2"
+  local needle="$3"
+  if [[ "$haystack" != *"$needle"* ]]; then
+    echo "PASS: $label"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    echo "FAIL: $label"
+    echo "  unexpected: $(printf '%q' "$needle")"
+    echo "  in        : $(printf '%q' "$haystack")"
     FAIL_COUNT=$((FAIL_COUNT + 1))
   fi
 }
@@ -144,6 +206,41 @@ run_case() {
 
   assert_eq "$label rc" "$expected_rc" "$rc"
   assert_eq "$label reset_file" "$expected_reset" "$actual_reset"
+}
+
+run_quota_wait_label_case() {
+  local label="$1"
+  local stage_label="$2"
+  local reset_file
+  reset_file=$(mktemp -p "$TMPDIR_TEST" "reset.XXXXXX")
+  : > "$GH_CALL_LOG"
+  : > "$MARK_FAILED_LOG"
+  rm -f "$QUOTA_RESET_STATE_FILE"
+
+  local rc=0
+  qa_run_codex_stage "$stage_label" "$reset_file" -- \
+    fake_codex "$FIXTURE_DIR/usage-limit-with-reset.jsonl" 1 >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    99)
+      qa_handle_quota_exceeded "12" "$stage_label" "$(cat "$reset_file")"
+      rc=0
+      ;;
+    *)
+      mark_issue_failed "$stage_label" "unexpected rc=${rc}"
+      ;;
+  esac
+
+  local gh_calls mark_failed persisted_epoch
+  gh_calls=$(cat "$GH_CALL_LOG" 2>/dev/null || true)
+  mark_failed=$(cat "$MARK_FAILED_LOG" 2>/dev/null || true)
+  persisted_epoch=$(jq -r '."12" // ""' "$QUOTA_RESET_STATE_FILE" 2>/dev/null || true)
+  rm -f "$reset_file" "${reset_file}.detect"
+
+  assert_eq "$label callsite rc" "0" "$rc"
+  assert_contains "$label adds quota wait label" "$gh_calls" "--add-label $LABEL_NEEDS_QUOTA_WAIT"
+  assert_not_contains "$label does not add failed label" "$gh_calls" "--add-label $LABEL_FAILED"
+  assert_eq "$label mark_issue_failed not called" "" "$mark_failed"
+  assert_eq "$label reset persisted" "$usage_reset_epoch" "$persisted_epoch"
 }
 
 # ─── テストケース ───
@@ -214,6 +311,18 @@ run_case "Triage usage-limit-with-reset → quota wait (Issue #12 Req 2, 6)" \
 
 run_case "StageC usage-limit-with-reset → quota wait (Issue #12 Req 1, 6)" \
   99 "$usage_reset_epoch" "usage-limit-with-reset.jsonl" 1 "StageC"
+
+run_quota_wait_label_case "StageA usage-limit callsite → quota label, no failed (Issue #12 Req 6.3)" \
+  "StageA"
+
+run_quota_wait_label_case "Reviewer usage-limit callsite → quota label, no failed (Issue #12 Req 6.4)" \
+  "Reviewer-r1-a1"
+
+run_quota_wait_label_case "Debugger後 Reviewer usage-limit callsite → quota label, no failed (Issue #12 Req 6.4)" \
+  "Reviewer-r3-a1"
+
+run_quota_wait_label_case "Triage usage-limit callsite → quota label, no failed (Issue #12 Req 6.5)" \
+  "Triage"
 
 run_case "usage-limit-no-reset → codex rc透過 (Issue #12 Option B)" \
   1 "" "usage-limit-no-reset.jsonl" 1 "StageA"
