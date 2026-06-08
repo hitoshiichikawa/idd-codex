@@ -271,7 +271,7 @@ well-formed であるかを機械的に確認します。本チェックは malf
 #### well-formed 判定（参照実装）
 
 ブロックが well-formed であるとは、以下をすべて満たすことです（モジュール側 awk
-`stage_a_verify_extract_verify_block`（`local-watcher/bin/modules/stage-a-verify.sh`）の
+`stage_a_verify_extract_verify_block`（`local-watcher/bin/idd-codex-modules/stage-a-verify.sh`）の
 抽出基準と **同一**。両者は別実行基盤のため共有コードを持てず、同一基準の明記と相互参照で
 ドリフトを防いでいます。判定基準を変更する場合は本節とモジュール側 awk の双方を同期更新する
 こと）:
