@@ -45,6 +45,127 @@ mq_pr_has_label() {
   echo "$pr_json" | jq -e --arg l "$label" '.labels // [] | map(.name) | index($l)' >/dev/null 2>&1
 }
 
+# PR JSON の GitHub formal review approval を判定する。
+mq_pr_review_decision_approved() {
+  local pr_json="$1"
+  printf '%s\n' "$pr_json" | jq -e '.reviewDecision == "APPROVED"' >/dev/null 2>&1
+}
+
+# PR Reviewer comment marker 群から current head SHA に対する marker approval を解決する。
+# stdout: approved|idd-codex-marker / rejected|iteration-marker / rejected|stale-marker /
+#         rejected|malformed-marker / rejected|none
+mq_resolve_marker_approval_signal() {
+  local comments_json="$1"
+  local head_sha="$2"
+
+  local marker_state
+  if ! marker_state=$(printf '%s\n' "$comments_json" | jq -r --arg sha "$head_sha" '
+    def has_approve_verdict:
+      test("(^|[\r\n])[[:space:]]*VERDICT:[[:space:]]*approve[[:space:]]*($|[\r\n])"; "i");
+    def has_blocking_verdict:
+      test("(^|[\r\n])[[:space:]]*VERDICT:[[:space:]]*(codex-needs-iteration|reject|rejected)[[:space:]]*($|[\r\n])"; "i");
+    def marker_attr_verdict:
+      if test("verdict=(approve|iteration|codex-needs-iteration|reject|rejected)"; "i") then
+        (match("verdict=(approve|iteration|codex-needs-iteration|reject|rejected)"; "i").captures[0].string | ascii_downcase)
+      else "" end;
+    def marker_record:
+      . as $body
+      | "idd-codex:pr-reviewer[[:space:]][^>]*sha=([^[:space:]>]+)[^>]*kind=review" as $marker_pattern
+      | if (($body | test($marker_pattern)) | not) then
+          {valid: false, malformed: true, sha: "", verdict: "none"}
+        else
+          ($body | match($marker_pattern)) as $m
+          | (has_approve_verdict) as $body_approve
+          | (has_blocking_verdict) as $body_blocking
+          | (marker_attr_verdict) as $attr_verdict
+          | ($attr_verdict == "approve") as $attr_approve
+          | ($attr_verdict == "iteration" or $attr_verdict == "codex-needs-iteration" or
+             $attr_verdict == "reject" or $attr_verdict == "rejected") as $attr_blocking
+          | {valid: true,
+             malformed: false,
+             sha: $m.captures[0].string,
+             verdict:
+               (if ($body_blocking or $attr_blocking) then "blocking"
+                elif ($body_approve or $attr_approve) then "approve"
+                else "none" end)}
+        end;
+    [
+      (.[]?.body // "")
+      | select(test("idd-codex:pr-reviewer"; "i") and test("kind=review"; "i"))
+      | marker_record
+    ] as $records
+    | if any($records[]; .valid and .sha == $sha and .verdict == "blocking") then
+        "current-blocking"
+      elif any($records[]; .valid and .sha == $sha and .verdict == "approve") then
+        "current-approve"
+      elif any($records[]; .valid and .sha != $sha and .verdict == "approve") then
+        "stale-approve"
+      elif any($records[]; .malformed) then
+        "malformed"
+      else
+        "none"
+      end
+  ' 2>/dev/null); then
+    mq_warn "PR Reviewer marker comments の解析に失敗しました"
+    printf 'unknown|api-error'
+    return 1
+  fi
+
+  case "$marker_state" in
+    current-approve)
+      printf 'approved|idd-codex-marker'
+      ;;
+    current-blocking)
+      printf 'rejected|iteration-marker'
+      ;;
+    stale-approve)
+      printf 'rejected|stale-marker'
+      ;;
+    malformed)
+      mq_warn "PR Reviewer marker comment に malformed marker を検出しました"
+      printf 'rejected|malformed-marker'
+      ;;
+    *)
+      printf 'rejected|none'
+      ;;
+  esac
+}
+
+# GitHub reviewDecision と PR Reviewer current-SHA marker から Merge Queue approval を解決する。
+# stdout: approved|github / approved|idd-codex-marker / rejected|... / unknown|...
+# rc: 0=approved/rejected を安全に解決, 1=API failure 等により unknown（merge しない）
+mq_resolve_approval_signal() {
+  local pr_json="$1"
+
+  if mq_pr_review_decision_approved "$pr_json"; then
+    printf 'approved|github'
+    return 0
+  fi
+
+  local pr_number head_sha
+  pr_number=$(printf '%s\n' "$pr_json" | jq -r '.number // empty' 2>/dev/null || echo "")
+  head_sha=$(printf '%s\n' "$pr_json" | jq -r '.headRefOid // empty' 2>/dev/null || echo "")
+  if [ -z "$pr_number" ] || [ -z "$head_sha" ]; then
+    mq_warn "approval resolver: PR number または headRefOid が取得できません"
+    printf 'unknown|invalid-pr-json'
+    return 1
+  fi
+
+  local comments_json timeout_sec
+  timeout_sec="${MERGE_QUEUE_GIT_TIMEOUT:-60}"
+  if ! comments_json=$(timeout "$timeout_sec" \
+      gh api "/repos/${REPO}/issues/${pr_number}/comments" 2>/dev/null); then
+    mq_warn "PR #${pr_number}: approval resolver のコメント取得に失敗（not-approved として扱います）"
+    printf 'unknown|api-error'
+    return 1
+  fi
+
+  local record rc=0
+  record=$(mq_resolve_marker_approval_signal "$comments_json" "$head_sha") || rc=$?
+  printf '%s' "$record"
+  return "$rc"
+}
+
 # CONFLICTING PR にラベル + 状況コメントを投稿（重複抑止つき）
 # 失敗しても次の PR に進むよう、戻り値ではなく内部で WARN を出す
 mq_handle_conflict() {
