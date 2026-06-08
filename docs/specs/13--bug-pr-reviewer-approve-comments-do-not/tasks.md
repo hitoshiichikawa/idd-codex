@@ -38,7 +38,7 @@
   - _Boundary:_ Regression Tests
   - _Depends:_ 1, 2, 3
 
-- [ ] 5. README の PR Reviewer / Merge Queue 連携説明を更新する
+- [x] 5. README の PR Reviewer / Merge Queue 連携説明を更新する
   - PR Reviewer approve は formal review 投稿を試みることを説明する
   - formal review が使えない場合は current-SHA idd-codex approve marker を Merge Queue が承認 signal として扱うことを説明する
   - stale SHA approve、iteration / reject marker、API failure は merge 対象外であることを説明する
