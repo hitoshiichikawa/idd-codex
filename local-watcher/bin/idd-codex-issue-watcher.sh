@@ -234,6 +234,9 @@ PR_ITERATION_MAX_ROUNDS_DESIGN="${PR_ITERATION_MAX_ROUNDS_DESIGN:-}"
 # への新規 commit が観測されなかった round が連続して本値以上に達したら、kind に
 # 依らず codex-failed に escalate する（Req 3.3 / 3.6）。
 PR_ITERATION_NO_PROGRESS_LIMIT="${PR_ITERATION_NO_PROGRESS_LIMIT:-3}"
+# usage-limit 風 fatal error で reset 時刻が読めない場合の自動再試行上限。
+# 既定 1 は「初回検出で人間判断待ちへ退避」を意味し、同一 round のコメント増殖を止める。
+PR_ITERATION_USAGE_FATAL_RETRY_LIMIT="${PR_ITERATION_USAGE_FATAL_RETRY_LIMIT:-1}"
 # 自動 iteration を許可する head ref のプレフィックス正規表現（impl PR 用）。
 # 既定値は #35 で `^codex/` から `^codex/issue-[0-9]+-impl-` に厳格化された。
 # 旧 `^codex/` 挙動に戻したい場合は cron / launchd 側で本変数を override すること
