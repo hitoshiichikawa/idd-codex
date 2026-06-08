@@ -87,6 +87,10 @@ if [ "${1:-}" = "pr" ] && [ "${2:-}" = "list" ]; then
       ]'
       exit 0
       ;;
+    *"codex/issue-18-impl in:head"*)
+      echo "mock gh pr list failure" >&2
+      exit 42
+      ;;
     *)
       printf '%s\n' '[]'
       exit 0
@@ -141,6 +145,11 @@ EOF_JSON
 {"data":{"repository":{"issue":{"state":"CLOSED","labels":{"nodes":[]},"closedByPullRequestsReferences":{"nodes":[{"number":70,"state":"MERGED"}]}}}}}
 EOF_JSON
       ;;
+    19)
+      cat <<'EOF_JSON'
+{"data":{"repository":{"issue":{"state":"OPEN","labels":"not-an-object","closedByPullRequestsReferences":{"nodes":[]}}}}}
+EOF_JSON
+      ;;
     *)
       cat <<'EOF_JSON'
 {"data":{"repository":{"issue":{"state":"OPEN","labels":{"nodes":[]},"closedByPullRequestsReferences":{"nodes":[]}}}}}
@@ -169,6 +178,24 @@ assert_eq "base branch merged managed PR resolves open dependency" \
 assert_eq "multi-branch open dependency without staged label or merged PR remains unresolved" \
   "open|open" \
   "$(dr_resolve_one 16)"
+
+echo "--- dependency resolver failure safety ---"
+
+base_merged_failure=$(dr_resolve_one 18 2>"$TMPROOT/base-merged-failure.err")
+assert_eq "base-merged PR lookup failure stays unresolved" \
+  "open|open" \
+  "$base_merged_failure"
+assert_contains "base-merged PR lookup failure emits warning" \
+  "base-merged managed PR 取得失敗" \
+  "$(cat "$TMPROOT/base-merged-failure.err")"
+
+label_parse_failure=$(dr_resolve_one 19 2>"$TMPROOT/label-parse-failure.err")
+assert_eq "label parse failure returns api error" \
+  "api error|jq-parse-error" \
+  "$label_parse_failure"
+assert_contains "label parse failure emits warning" \
+  "jq parse 失敗（labels 集計）" \
+  "$(cat "$TMPROOT/label-parse-failure.err")"
 
 echo "--- dr_check_dependencies reason logging ---"
 
