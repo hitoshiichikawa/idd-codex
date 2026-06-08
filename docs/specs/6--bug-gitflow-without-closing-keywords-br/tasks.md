@@ -1,6 +1,6 @@
 # Issue #6 実装タスク
 
-- [ ] 1. Dependency Resolver を multi-branch development-resolved 判定に拡張する
+- [x] 1. Dependency Resolver を multi-branch development-resolved 判定に拡張する
   - `dr_resolve_one` で `BASE_BRANCH != PROMOTION_TARGET_BRANCH` のとき `codex-staged-for-release` label を resolved として扱う
   - `BASE_BRANCH` merged managed PR を検出する helper を追加し、open Issue でも development-resolved として扱う
   - `dr_check_dependencies` のログに `staged-for-release` / `base-merged` / `closing-pr` の reason を出す
