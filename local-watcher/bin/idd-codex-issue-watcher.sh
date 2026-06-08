@@ -65,7 +65,7 @@ LABEL_READY="codex-ready-for-review"
 LABEL_FAILED="codex-failed"
 LABEL_SKIP_TRIAGE="codex-skip-triage"
 # #181 Part 3 で本体内の唯一の参照（pi_fetch_candidate_prs）が
-# modules/pr-iteration.sh へ移動したため、本体内では参照箇所がなくなった
+# idd-codex-modules/pr-iteration.sh へ移動したため、本体内では参照箇所がなくなった
 # （消費は pr-iteration.sh / merge-queue.sh 側）。source で同一プロセスに読み込まれる
 # ため共有は維持される。SC2034（本体内未使用）を局所的に抑止する。
 # shellcheck disable=SC2034
@@ -74,7 +74,7 @@ LABEL_NEEDS_ITERATION="codex-needs-iteration"
 LABEL_NEEDS_QUOTA_WAIT="codex-needs-quota-wait"
 LABEL_STAGED_FOR_RELEASE="codex-staged-for-release"
 # Phase B: ST failure 検知後 revert 済みを示すラベル（Req 4.1）。
-# #181 Part 3 で pp_* が modules/promote-pipeline.sh へ移動したため、本体内では
+# #181 Part 3 で pp_* が idd-codex-modules/promote-pipeline.sh へ移動したため、本体内では
 # 参照箇所がなくなった（消費は module 側）。source で同一プロセスに読み込まれるため
 # 共有は維持される。SC2034（本体内未使用）を局所的に抑止する。
 # shellcheck disable=SC2034
@@ -82,7 +82,7 @@ LABEL_ST_FAILED="codex-st-failed"
 # Phase E: hot file 競合予防で同サイクル dispatch を見送り中（#18 Req 7.1）。
 # Path Overlap Checker が付与・除去し、先行 Issue の PR merge で in-flight 集合から
 # 外れた次サイクルで自動除去される（Req 6.1〜6.4）。
-# #181 Part 3 で po_* が modules/promote-pipeline.sh へ移動したため、本体内では
+# #181 Part 3 で po_* が idd-codex-modules/promote-pipeline.sh へ移動したため、本体内では
 # 参照箇所がなくなった（消費は module 側）。source で同一プロセスに読み込まれるため
 # 共有は維持される。SC2034（本体内未使用）を局所的に抑止する。
 # shellcheck disable=SC2034
@@ -209,7 +209,7 @@ PR_ITERATION_MAX_PRS="${PR_ITERATION_MAX_PRS:-3}"
 # 前に確認しておき、後段の pi_resolve_max_rounds で「kind 固有 env も旧 env も全部
 # 未設定」（Req 1.4）と「旧 env のみ設定」（Req 1.3）を区別できるようにする。
 # `[ "${VAR+x}" = "x" ]` で「未設定 vs 空文字列」を識別する標準イディオム。
-# #181 Part 3 で消費側 pi_resolve_max_rounds が modules/pr-iteration.sh へ移動したため、
+# #181 Part 3 で消費側 pi_resolve_max_rounds が idd-codex-modules/pr-iteration.sh へ移動したため、
 # 本体内では参照箇所がなくなった（消費は module 側）。source で同一プロセスに読み込まれる
 # ため共有は維持される。SC2034（本体内未使用）を局所的に抑止する。
 if [ "${PR_ITERATION_MAX_ROUNDS+x}" = "x" ]; then
@@ -264,7 +264,7 @@ ITERATION_TEMPLATE_DESIGN="${ITERATION_TEMPLATE_DESIGN:-$HOME/bin/idd-codex-iter
 # codex-needs-iteration ラベルを付与して既存 PR Iteration Processor (#26) へ接続する。
 # **完全な opt-in**（NFR 1.1）。PR_REVIEWER_ENABLED=true 厳密一致以外は env を読みもせず
 # process_pr_reviewer が早期 return するため、未設定環境では本機能導入前と挙動が等価。
-# 関数本体は modules/pr-reviewer.sh、ロガー pr_log / pr_warn / pr_error は core_utils.sh。
+# 関数本体は idd-codex-modules/pr-reviewer.sh、ロガー pr_log / pr_warn / pr_error は core_utils.sh。
 PR_REVIEWER_ENABLED="${PR_REVIEWER_ENABLED:-false}"
 # 使用ツール選択（canonical 単一値）。codex / antigravity のいずれか。空なら下の
 # *_ENABLED alias で解決する（Decision 1 の解決順序）。
@@ -280,7 +280,7 @@ PR_REVIEWER_CODEX_CMD="${PR_REVIEWER_CODEX_CMD:-codex exec --sandbox read-only \
 # antigravity の実バイナリは agy。-p（=--print）で非対話、--output-format json で
 # 最終 message を JSON 出力（pr_run_review_for_pr が jq で抽出、Decision 3）。
 PR_REVIEWER_ANTIGRAVITY_CMD="${PR_REVIEWER_ANTIGRAVITY_CMD:-agy -p \"\$(cat '{PROMPT_FILE}')\" --output-format json}"
-# レビュー指示プロンプト本体（tool 共通）。空なら modules/pr-reviewer.sh の内蔵 default を
+# レビュー指示プロンプト本体（tool 共通）。空なら idd-codex-modules/pr-reviewer.sh の内蔵 default を
 # 使用（{BASE}/{HEAD}/{PR} を置換）。
 PR_REVIEWER_PROMPT="${PR_REVIEWER_PROMPT:-}"
 # 認証チェックコマンド（終了コード 0 で認証 OK、空文字なら check skip）。codex は
@@ -350,7 +350,7 @@ STAGE_A_VERIFY_COMMAND="${STAGE_A_VERIFY_COMMAND:-}"
 # worktree reset ＋ `.codex` 注入（#237）完了直後・最初の agent stage 起動前に、worktree 内の
 # `.codex/agents` / `.codex/rules` 足場の非空到達性を検査する preflight gate（Req 1）。
 # 欠落検出時は loud WARN ＋ Issue コメント可視シグナルを残す。検査ロジックは
-# modules/scaffolding-health.sh に集約し、本体は call site と `--doctor` dispatch のみを持つ。
+# idd-codex-modules/scaffolding-health.sh に集約し、本体は call site と `--doctor` dispatch のみを持つ。
 #
 #   - SCAFFOLDING_HEALTH_HALT:  足場欠落検出時の挙動切替。既定 `off`（= 可視化のみ・進行継続）。
 #                               `on` 厳密一致のときのみ HALT（agent stage を起動せず claim 系
@@ -673,12 +673,12 @@ codex_exec_prompt() {
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # モジュール動的ロード基盤（#177 Part 1）
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 本体と同階層の modules/ から必須モジュール（低レベル共通ユーティリティ等）を source する。
-# install.sh が local-watcher/bin/modules/ → $HOME/bin/modules/ に配置する。
+# 本体と同階層の idd-codex-modules/ から必須モジュール（低レベル共通ユーティリティ等）を source する。
+# install.sh が local-watcher/bin/idd-codex-modules/ → $HOME/bin/idd-codex-modules/ に配置する。
 # 必須モジュールが欠落していたら、復旧手順を添えて exit 1 で安全停止する（silent fail を作らない）。
 # 配置先解決は $HOME 直書きせず BASH_SOURCE 基準にし、開発 repo 直実行（local-watcher/bin/）と
 # インストール後（$HOME/bin/）の双方で同一ロジックが効くようにする。
-IDD_MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)/modules"
+IDD_MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)/idd-codex-modules"
 # source 順序は機能的に任意（bash の遅延束縛で前方参照は呼び出し時に解決される）が、
 # 可読性のため最も低レベルな core_utils.sh を先頭に置き、以降は #180 Part 2 で切り出した
 # 3 プロセッサ（quota-aware / merge-queue / auto-rebase）、#181 Part 3 で切り出した
@@ -689,7 +689,7 @@ for _idd_mod in "${REQUIRED_MODULES[@]}"; do
   _idd_mod_path="$IDD_MODULE_DIR/$_idd_mod"
   if [ ! -f "$_idd_mod_path" ]; then
     echo "Error: 必須モジュールが見つかりません: $_idd_mod_path" >&2
-    echo "  install.sh --local を再実行して modules/ を配置してください。" >&2
+    echo "  install.sh --local を再実行して idd-codex-modules/ を配置してください。" >&2
     exit 1
   fi
   # shellcheck source=/dev/null
@@ -805,10 +805,10 @@ git checkout "$BASE_BRANCH"
 git pull --ff-only origin "$BASE_BRANCH"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Quota-Aware Watcher Helpers (#66) — modules/quota-aware.sh へ切り出し済み（#180 Part 2）
+# Quota-Aware Watcher Helpers (#66) — idd-codex-modules/quota-aware.sh へ切り出し済み（#180 Part 2）
 #   qa_detect_rate_limit / qa_run_codex_stage / qa_persist_reset_time /
 #   qa_load_reset_time / qa_build_escalation_comment / build_partial_escalation_comment /
-#   qa_handle_quota_exceeded / process_quota_resume は modules/quota-aware.sh が定義する。
+#   qa_handle_quota_exceeded / process_quota_resume は idd-codex-modules/quota-aware.sh が定義する。
 #   call site（process_quota_resume）は実行順序温存のため本体の従来位置に残す。
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -817,23 +817,23 @@ git pull --ff-only origin "$BASE_BRANCH"
 process_quota_resume || qa_warn "process_quota_resume が想定外のエラーで終了しました（後続 Processor は継続）"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Phase A: Merge Queue Processor — modules/merge-queue.sh へ切り出し済み（#180 Part 2）
+# Phase A: Merge Queue Processor — idd-codex-modules/merge-queue.sh へ切り出し済み（#180 Part 2）
 #   mq_pr_has_label / mq_handle_conflict / mq_try_rebase_pr / process_merge_queue は
-#   modules/merge-queue.sh が定義する。Re-check（mqr_* / process_merge_queue_recheck）も
+#   idd-codex-modules/merge-queue.sh が定義する。Re-check（mqr_* / process_merge_queue_recheck）も
 #   同モジュールに同居する。call site（process_merge_queue 等）は実行順序温存のため
 #   本体の従来位置に残す。
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Phase D: Auto Rebase Processor (#17) — modules/auto-rebase.sh へ切り出し済み（#180 Part 2）
+# Phase D: Auto Rebase Processor (#17) — idd-codex-modules/auto-rebase.sh へ切り出し済み（#180 Part 2）
 #   ar_fetch_candidates / ar_build_prompt / ar_run_codex_rebase / ar_classify_diff /
 #   ar_apply_mechanical / ar_dismiss_all_approvals / ar_apply_semantic /
-#   ar_escalate_to_failed / ar_handle_pr / process_auto_rebase は modules/auto-rebase.sh が
+#   ar_escalate_to_failed / ar_handle_pr / process_auto_rebase は idd-codex-modules/auto-rebase.sh が
 #   定義する。call site（process_auto_rebase）は実行順序温存のため本体の従来位置に残す。
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Phase A: Merge Queue Re-check Processor (#27) — modules/merge-queue.sh へ切り出し済み（#180 Part 2）
+# Phase A: Merge Queue Re-check Processor (#27) — idd-codex-modules/merge-queue.sh へ切り出し済み（#180 Part 2）
 #   mqr_log / mqr_warn / mqr_error / process_merge_queue_recheck は merge-queue.sh が定義する。
 #   call site（process_merge_queue_recheck）は実行順序温存のため本体の従来位置に残す。
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -852,12 +852,12 @@ process_auto_rebase || ar_warn "process_auto_rebase が想定外のエラーで�
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Phase B: Promote Pipeline Processor (#15) + Phase E: Path Overlap Checker (#18)
-#   — modules/promote-pipeline.sh へ切り出し済み（#181 Part 3）
+#   — idd-codex-modules/promote-pipeline.sh へ切り出し済み（#181 Part 3）
 #   Promote 関数群（pp_resolve_target_branch / pp_collect_merged_issues / pp_get_st_state /
 #   pp_handle_st_failure / pp_handle_st_success / pp_do_promote / pp_summary /
 #   process_promote_pipeline ほか）と Path Overlap 関数群（po_log / po_warn /
 #   po_parse_triage_edit_paths / po_compute_overlap / po_check_dispatch_gate /
-#   po_apply_awaiting_slot / po_clear_awaiting_slot ほか）は modules/promote-pipeline.sh が
+#   po_apply_awaiting_slot / po_clear_awaiting_slot ほか）は idd-codex-modules/promote-pipeline.sh が
 #   定義する（Path Overlap は独立せず Promote へ同居 / design.md decision 3）。
 #   ロガー pp_log / pp_warn / pp_error は core_utils.sh に定義済み（#180 Part 2）。
 #   call site（process_promote_pipeline / po_check_dispatch_gate）は実行順序温存のため
@@ -870,13 +870,13 @@ process_promote_pipeline \
   || pp_warn "process_promote_pipeline が想定外のエラーで終了しました（後続 Processor は継続）"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# PR Iteration Processor (#26) — modules/pr-iteration.sh へ切り出し済み（#181 Part 3）
+# PR Iteration Processor (#26) — idd-codex-modules/pr-iteration.sh へ切り出し済み（#181 Part 3）
 #   `codex-needs-iteration` ラベル付き PR を fresh context の Codex で反復対応する processor。
 #   pi_pr_has_label / pi_fetch_candidate_prs / pi_resolve_max_rounds / pi_read_round_counter /
 #   pi_read_no_progress_streak / pi_write_marker / pi_finalize_labels / pi_classify_pr_kind /
 #   pi_select_template / build_recovery_hint / pi_escalate_to_failed / pi_build_iteration_prompt /
 #   pi_detect_quota_soft_fail / pi_run_iteration / process_pr_iteration ほかは
-#   modules/pr-iteration.sh が定義する。ロガー pi_log / pi_warn / pi_error は core_utils.sh
+#   idd-codex-modules/pr-iteration.sh が定義する。ロガー pi_log / pi_warn / pi_error は core_utils.sh
 #   に定義済み（#180 Part 2）。call site（process_pr_iteration）は実行順序温存のため
 #   本体の従来位置（Phase A 直後）に残す。標準機能としてデフォルト有効（#112）。
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1152,12 +1152,12 @@ process_pr_iteration || pi_warn "process_pr_iteration が想定外のエラー�
 process_design_review_release || drr_warn "process_design_review_release が想定外のエラーで終了しました（後続 Issue 処理は継続）"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Stage A Verify Module (#125) — modules/stage-a-verify.sh へ切り出し済み（#181 Part 3）
+# Stage A Verify Module (#125) — idd-codex-modules/stage-a-verify.sh へ切り出し済み（#181 Part 3）
 #   Stage A 完了直前に tasks.md 末尾の build/test/lint コマンドを watcher 自身が独立再実行
 #   する verify ゲート。sav_log / sav_warn / sav_error / _sav_cmd_starts_with_keyword /
 #   stage_a_verify_extract_command / stage_a_verify_resolve_command / stage_a_verify_round_path /
 #   stage_a_verify_read_round / stage_a_verify_bump_round / stage_a_verify_reset_round /
-#   _sav_handle_failure / stage_a_verify_run は modules/stage-a-verify.sh が定義する。
+#   _sav_handle_failure / stage_a_verify_run は idd-codex-modules/stage-a-verify.sh が定義する。
 #   Part 1 想定の impl-gates.sh 集約から独立分離（design.md decision 2）。sc_* / tc_* /
 #   stage_checkpoint_* は本モジュールへ移さず本体に残す。call site（run_impl_pipeline 内の
 #   stage_a_verify_run）は実行順序温存のため本体の従来位置に残す。
@@ -5470,7 +5470,7 @@ handle_partial_status() {
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage A Verify の失敗ハンドラ / 統合ランナー（_sav_handle_failure / stage_a_verify_run）
-#   — modules/stage-a-verify.sh へ切り出し済み（#181 Part 3）。
+#   — idd-codex-modules/stage-a-verify.sh へ切り出し済み（#181 Part 3）。
 #   元はここ（mark_issue_failed 定義後の位置）に置かれていたが、Region 1 と共に
 #   stage-a-verify.sh へ統合した。call site（run_impl_pipeline 内の stage_a_verify_run）は
 #   本体の従来位置に残す。cross-module 呼び出し（_sav_handle_failure → mark_issue_failed）は

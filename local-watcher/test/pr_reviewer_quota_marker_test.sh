@@ -9,10 +9,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CORE_UTILS_SH="$SCRIPT_DIR/../bin/modules/core_utils.sh"
-QUOTA_AWARE_SH="$SCRIPT_DIR/../bin/modules/quota-aware.sh"
-PR_REVIEWER_SH="$SCRIPT_DIR/../bin/modules/pr-reviewer.sh"
-PR_ITERATION_SH="$SCRIPT_DIR/../bin/modules/pr-iteration.sh"
+CORE_UTILS_SH="$SCRIPT_DIR/../bin/idd-codex-modules/core_utils.sh"
+QUOTA_AWARE_SH="$SCRIPT_DIR/../bin/idd-codex-modules/quota-aware.sh"
+PR_REVIEWER_SH="$SCRIPT_DIR/../bin/idd-codex-modules/pr-reviewer.sh"
+PR_ITERATION_SH="$SCRIPT_DIR/../bin/idd-codex-modules/pr-iteration.sh"
 FIXTURE_DIR="$SCRIPT_DIR/fixtures/pr_reviewer_usage_limit"
 
 if [ ! -f "$CORE_UTILS_SH" ]; then

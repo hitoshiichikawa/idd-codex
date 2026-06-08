@@ -34,11 +34,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WATCHER_SH="$SCRIPT_DIR/../bin/idd-codex-issue-watcher.sh"
 # #177 Part 1 で低レベル共通ユーティリティ（qa_log 等のロガーを含む）は
 # modules/core_utils.sh へ分離された。関数抽出の探索元に core_utils.sh も含める。
-CORE_UTILS_SH="$SCRIPT_DIR/../bin/modules/core_utils.sh"
+CORE_UTILS_SH="$SCRIPT_DIR/../bin/idd-codex-modules/core_utils.sh"
 # #180 Part 2 で quota 待機制御プロセッサ（qa_detect_rate_limit / qa_run_codex_stage 等）は
 # modules/quota-aware.sh へ分離された。関数抽出の探索元に quota-aware.sh も含める。
-QUOTA_AWARE_SH="$SCRIPT_DIR/../bin/modules/quota-aware.sh"
-RUN_SUMMARY_SH="$SCRIPT_DIR/../bin/modules/run-summary.sh"
+QUOTA_AWARE_SH="$SCRIPT_DIR/../bin/idd-codex-modules/quota-aware.sh"
+RUN_SUMMARY_SH="$SCRIPT_DIR/../bin/idd-codex-modules/run-summary.sh"
 FIXTURE_DIR="$SCRIPT_DIR/fixtures/qa_detect_rate_limit"
 
 if [ ! -f "$WATCHER_SH" ]; then

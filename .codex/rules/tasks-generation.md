@@ -181,7 +181,7 @@ Stage A を通過するのを防ぐゲートです。従来はコマンド特定
 ```markdown
 <!-- stage-a-verify -->
 ```sh
-shellcheck local-watcher/bin/modules/*.sh && bash docs/specs/<番号>-<slug>/test-fixtures/test-extract.sh
+shellcheck local-watcher/bin/idd-codex-modules/*.sh && bash docs/specs/<番号>-<slug>/test-fixtures/test-extract.sh
 ```
 ```
 

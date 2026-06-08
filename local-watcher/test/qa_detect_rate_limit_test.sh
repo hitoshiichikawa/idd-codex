@@ -25,7 +25,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WATCHER_SH="$SCRIPT_DIR/../bin/idd-codex-issue-watcher.sh"
 # #180 Part 2 で qa_detect_rate_limit は modules/quota-aware.sh へ分離された。
 # 関数抽出の探索元に quota-aware.sh も含める。
-QUOTA_AWARE_SH="$SCRIPT_DIR/../bin/modules/quota-aware.sh"
+QUOTA_AWARE_SH="$SCRIPT_DIR/../bin/idd-codex-modules/quota-aware.sh"
 FIXTURE_DIR="$SCRIPT_DIR/fixtures/qa_detect_rate_limit"
 
 if [ ! -f "$WATCHER_SH" ]; then

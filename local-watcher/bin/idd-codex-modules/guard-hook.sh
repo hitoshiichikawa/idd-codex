@@ -12,7 +12,7 @@
 #   前提のもとで、watcher 側の preflight ゲートと Codex profile 引数構築を担う。
 #
 # 配置先:
-#   $HOME/bin/modules/guard-hook.sh（install.sh が local-watcher/bin/modules/ から配置する）
+#   $HOME/bin/idd-codex-modules/guard-hook.sh（install.sh が local-watcher/bin/idd-codex-modules/ から配置する）
 #
 # 依存:
 #   - 本モジュールは issue-watcher.sh 本体から `source` される前提（単体起動しない）。

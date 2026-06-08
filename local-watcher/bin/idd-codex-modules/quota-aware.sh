@@ -18,7 +18,7 @@
 #   - process_quota_resume  : Resume Processor（全 Processor 先頭で起動）
 #
 # 配置先:
-#   $HOME/bin/modules/quota-aware.sh（install.sh が local-watcher/bin/modules/ から配置する）
+#   $HOME/bin/idd-codex-modules/quota-aware.sh（install.sh が local-watcher/bin/idd-codex-modules/ から配置する）
 #
 # 依存:
 #   - 本モジュールは idd-codex-issue-watcher.sh 本体から `source` される前提（単体起動しない）。

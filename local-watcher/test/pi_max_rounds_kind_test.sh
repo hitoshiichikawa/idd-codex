@@ -23,7 +23,7 @@ WATCHER_SH="$SCRIPT_DIR/../bin/idd-codex-issue-watcher.sh"
 # #181 Part 3 で PR Iteration Processor の関数群（pi_resolve_max_rounds /
 # pi_read_no_progress_streak ほか）は modules/pr-iteration.sh へ切り出された。
 # 抽出元を本体から pr-iteration.sh へ repoint する。
-PR_ITERATION_SH="$SCRIPT_DIR/../bin/modules/pr-iteration.sh"
+PR_ITERATION_SH="$SCRIPT_DIR/../bin/idd-codex-modules/pr-iteration.sh"
 
 if [ ! -f "$WATCHER_SH" ]; then
   echo "ERROR: cannot find idd-codex-issue-watcher.sh at $WATCHER_SH" >&2
