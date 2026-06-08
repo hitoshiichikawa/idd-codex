@@ -18,7 +18,10 @@
 #     pr_execute_review_command（subshell + trap で head checkout / BASE 復帰 /
 #     read-only invariant 検査）
 #   - コメント投稿: pr_post_review_comment / pr_post_error_comment（hidden marker 付き）
-#   - VERDICT 検出 / ラベル付与: pr_detect_iteration_keyword / pr_add_iteration_label
+#   - VERDICT 検出 / formal review / ラベル付与:
+#     pr_detect_iteration_keyword / pr_detect_approval_keyword /
+#     pr_resolve_review_verdict / pr_try_post_formal_approval /
+#     pr_add_iteration_label
 #   - 1 PR 分のレビューを統括: pr_run_review_for_pr
 #
 # 配置先:
@@ -765,6 +768,110 @@ pr_detect_iteration_keyword() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# pr_detect_approval_keyword: レビュー結果から approve VERDICT token を検出
+#   入力: $1 = pr_number（ログ用）, $2 = review_text
+#   出力: stdout にマッチ件数（整数。0 のとき "0"）
+#   戻り値: 0 固定
+#
+#   - approve は line-anchored の `VERDICT: approve` 単独行のみを承認 signal とする。
+#   - iteration と同じく grep -E -i で照合し、stdout は件数だけに保つ。
+# ─────────────────────────────────────────────────────────────────────────────
+pr_detect_approval_keyword() {
+  local pr_number="$1"
+  local review_text="$2"
+  local pattern='^[[:space:]]*VERDICT:[[:space:]]*approve[[:space:]]*$'
+
+  local count
+  count=$(printf '%s' "$review_text" | grep -E -i -c "$pattern" 2>/dev/null || true)
+  count="${count:-0}"
+
+  pr_log "PR #${pr_number}: approve keyword 検出 matches=${count} pattern='${pattern}'" >&2
+  printf '%s' "$count"
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# pr_resolve_review_verdict: review_text から approve / iteration / none / conflict を解決
+#   入力: $1 = pr_number, $2 = review_text
+#   出力: stdout に approve | iteration | none | conflict の 1 token
+#   戻り値: 0 固定
+#
+#   - approve と iteration が混在した場合は conflict とし、呼び出し元で iteration
+#     ラベル付与を優先する。approve signal は公開しない。
+# ─────────────────────────────────────────────────────────────────────────────
+pr_resolve_review_verdict() {
+  local pr_number="$1"
+  local review_text="$2"
+
+  local approve_count iteration_count
+  approve_count=$(pr_detect_approval_keyword "$pr_number" "$review_text")
+  iteration_count=$(pr_detect_iteration_keyword "$pr_number" "$review_text")
+  approve_count="${approve_count:-0}"
+  iteration_count="${iteration_count:-0}"
+
+  if [ "$approve_count" -gt 0 ] 2>/dev/null && [ "$iteration_count" -gt 0 ] 2>/dev/null; then
+    pr_warn "PR #${pr_number}: approve と iteration の VERDICT が混在しています。approve signal は公開せず iteration 扱いにします"
+    printf 'conflict'
+    return 0
+  fi
+  if [ "$iteration_count" -gt 0 ] 2>/dev/null; then
+    printf 'iteration'
+    return 0
+  fi
+  if [ "$approve_count" -gt 0 ] 2>/dev/null; then
+    printf 'approve'
+    return 0
+  fi
+  printf 'none'
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# pr_try_post_formal_approval: approve verdict を GitHub formal review として投稿
+#   入力: $1 = pr_number, $2 = sha, $3 = review_text, $4 = tool
+#   戻り値: 0 = formal review 投稿成功 / 1 = 投稿不可または失敗
+#
+#   - failure は非致命 WARN とし、既存の review comment + marker 投稿を継続させる。
+#   - marker は PR comment 側に残すため、formal review body には review_text だけを渡す。
+# ─────────────────────────────────────────────────────────────────────────────
+pr_try_post_formal_approval() {
+  local pr_number="$1"
+  local sha="$2"
+  local review_text="$3"
+  local tool="${4:-none}"
+
+  local body_file err_file
+  if ! body_file=$(mktemp -t idd-codex-pr-review-approve.XXXXXX 2>/dev/null); then
+    pr_warn "PR #${pr_number}: formal approval body 一時ファイルの作成に失敗（marker approval fallback を継続）"
+    return 1
+  fi
+  if ! err_file=$(mktemp -t idd-codex-pr-review-approve-err.XXXXXX 2>/dev/null); then
+    rm -f "$body_file"
+    pr_warn "PR #${pr_number}: formal approval stderr 一時ファイルの作成に失敗（marker approval fallback を継続）"
+    return 1
+  fi
+
+  printf '%s\n' "$review_text" > "$body_file"
+
+  if timeout "$PR_REVIEWER_GIT_TIMEOUT" \
+      gh pr review "$pr_number" --repo "$REPO" --approve --body-file "$body_file" >/dev/null 2>"$err_file"; then
+    rm -f "$body_file" "$err_file"
+    pr_log "PR #${pr_number}: GitHub formal approval を投稿 tool=${tool} sha=${sha}"
+    return 0
+  fi
+
+  local err_excerpt
+  err_excerpt=$(head -c 512 "$err_file" 2>/dev/null || echo "")
+  rm -f "$body_file" "$err_file"
+  if [ -n "$err_excerpt" ]; then
+    pr_warn "PR #${pr_number}: GitHub formal approval 投稿に失敗（${err_excerpt}）。marker approval fallback を継続 tool=${tool} sha=${sha}"
+  else
+    pr_warn "PR #${pr_number}: GitHub formal approval 投稿に失敗（権限/self-review/API 制約または timeout の可能性）。marker approval fallback を継続 tool=${tool} sha=${sha}"
+  fi
+  return 1
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # pr_add_iteration_label: codex-needs-iteration ラベルを付与（task 6）
 #   入力: $1 = pr_number
 #   戻り値: 0 = ok / 1 = 付与失敗
@@ -918,16 +1025,23 @@ pr_run_review_for_pr() {
     return 3
   fi
 
-  # AC 4.4: レビュー結果コメント投稿（marker kind=review）
+  local verdict
+  verdict=$(pr_resolve_review_verdict "$pr_number" "$review_text")
+  pr_log "PR #${pr_number}: review verdict=${verdict} tool=${tool} sha=${sha}"
+
+  if [ "$verdict" = "approve" ]; then
+    pr_try_post_formal_approval "$pr_number" "$sha" "$review_text" "$tool" || true
+  fi
+
+  # AC 4.4: レビュー結果コメント投稿（marker kind=review）。formal approval が失敗しても
+  # current-SHA の marker comment を残し、後段 Merge Queue の fallback signal にする。
   if ! pr_post_review_comment "$pr_number" "$sha" "$review_text" "$tool"; then
     return 1
   fi
 
-  # AC 5.1〜5.4: VERDICT 検出 → 件数 > 0 で codex-needs-iteration ラベル付与
-  local match_count
-  match_count=$(pr_detect_iteration_keyword "$pr_number" "$review_text")
-  match_count="${match_count:-0}"
-  if [ "$match_count" -gt 0 ] 2>/dev/null; then
+  # AC 5.1〜5.4: iteration / conflict は codex-needs-iteration ラベル付与を優先し、
+  # approve signal は公開しない。
+  if [ "$verdict" = "iteration" ] || [ "$verdict" = "conflict" ]; then
     pr_add_iteration_label "$pr_number"
   fi
 
