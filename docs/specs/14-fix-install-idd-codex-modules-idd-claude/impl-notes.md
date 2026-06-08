@@ -1,6 +1,6 @@
 # Implementation Notes
 
-### Task 1 learning
+### Task 1
 
 - 採用方針: `local-watcher/bin/modules` を `local-watcher/bin/idd-codex-modules` へ `git mv` し、module 本体の挙動は変更しない。
 - 重要な判断: ヘッダコメントの配置先だけを新 namespace に揃え、関数名・ファイル名・source 順に影響する記述は触らない。
