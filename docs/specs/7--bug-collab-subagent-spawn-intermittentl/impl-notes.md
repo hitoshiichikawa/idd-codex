@@ -51,3 +51,11 @@ for t in local-watcher/test/*.sh; do echo "== $t =="; bash "$t"; done
 
 - `collab spawn failed: no thread with id` の根本原因は Codex CLI / collab router upstream 側の可能性として扱い、idd-codex 側では診断・fallback 可視化・bounded retry までに留めた。
 - Stage A の raw line に agent role 名が含まれない場合は `StageA-PM-Developer` として記録する。role 名が含まれる通常ログでは `ProductManager` または `Developer` として記録される。
+
+## Reviewer reject 是正
+
+- `local-watcher/test/qa_run_codex_stage_test.sh` に、同一 stage/role の `no thread with id` が初回と retry の両方で発生する bounded retry failure ケースを追加した。
+  - 最終 rc が Codex rc の非 0 のまま透過されること、`fallback=failed` の degraded event と failed result log が残ること、attempt 数が 2 回で止まり 3 回目に進まないことを検証する。
+- StageC/ProjectManager の collab spawn failure fixture と retry success ケースを追加した。
+  - run summary に `stage=StageC` / `role=ProjectManager` / `fallback=retry` / `degraded=yes` が残ること、bounded retry 開始・成功ログが残ることを検証する。
+- 追加後の検証として `bash local-watcher/test/qa_run_codex_stage_test.sh` は PASS 87 / FAIL 0、`for t in local-watcher/test/*.sh; do bash "$t"; done` は全件 exit 0、関連 `shellcheck` も exit 0。

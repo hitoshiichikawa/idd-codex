@@ -219,6 +219,15 @@ fake_codex_sequence() {
   return 0
 }
 
+fake_codex_repeat_failure() {
+  local state_file="$1"
+  local fx="$2"
+  local rc="${3:-1}"
+  printf 'attempt\n' >> "$state_file"
+  cat "$FIXTURE_DIR/$fx"
+  return "$rc"
+}
+
 reset_run_summary_for_test() {
   rs_init
   # shellcheck disable=SC2034  # eval で読み込んだ qa_* 関数が dynamic scope で参照する
@@ -384,6 +393,54 @@ run_collab_bounded_retry_case() {
   assert_contains "collab retry success logged" "$log_body" "collab-spawn fallback result=success stage=Reviewer-r1-a1 reason=bounded-retry degraded=yes"
 }
 
+run_collab_bounded_retry_failed_case() {
+  local reset_file state_file
+  reset_file=$(mktemp -p "$TMPDIR_TEST" "reset.XXXXXX")
+  state_file=$(mktemp -p "$TMPDIR_TEST" "collab-fail-seq.XXXXXX")
+  : > "$state_file"
+  : > "$LOG"
+  reset_run_summary_for_test
+
+  local rc=0
+  qa_run_codex_stage "Reviewer-r1-a1" "$reset_file" -- \
+    fake_codex_repeat_failure "$state_file" "collab-no-thread-reviewer.jsonl" 4 >> "$LOG" 2>&1 || rc=$?
+
+  local summary log_body attempts
+  summary=$(rs_emit)
+  log_body=$(cat "$LOG" 2>/dev/null || true)
+  attempts=$(wc -l < "$state_file" | tr -d '[:space:]')
+  rm -f "$reset_file" "${reset_file}.detect" "${reset_file}.stream" "$state_file"
+
+  assert_eq "collab bounded retry failed rc transparent" "4" "$rc"
+  assert_contains "collab failed retry summary records failed fallback" "$summary" "collab_spawn_failed(stage=Reviewer-r1-a1,role=Reviewer,reason=no_thread_with_id,fallback=failed,degraded=yes,repeated=yes)"
+  assert_contains "collab failed retry result logged" "$log_body" "collab-spawn fallback result=failed stage=Reviewer-r1-a1 reason=bounded-retry degraded=yes codex_rc=4"
+  assert_eq "collab failed retry does not attempt third spawn" "2" "$attempts"
+  assert_not_contains "collab failed retry has no third retry log" "$log_body" "next_attempt=3/"
+}
+
+run_collab_stagec_project_manager_case() {
+  local reset_file state_file
+  reset_file=$(mktemp -p "$TMPDIR_TEST" "reset.XXXXXX")
+  state_file=$(mktemp -p "$TMPDIR_TEST" "collab-stagec-seq.XXXXXX")
+  rm -f "$state_file"
+  : > "$LOG"
+  reset_run_summary_for_test
+
+  local rc=0
+  qa_run_codex_stage "StageC" "$reset_file" -- \
+    fake_codex_sequence "$state_file" "collab-no-thread-project-manager.jsonl" "normal-success.jsonl" >> "$LOG" 2>&1 || rc=$?
+
+  local summary log_body
+  summary=$(rs_emit)
+  log_body=$(cat "$LOG" 2>/dev/null || true)
+  rm -f "$reset_file" "${reset_file}.detect" "${reset_file}.stream" "$state_file"
+
+  assert_eq "collab StageC ProjectManager retry final rc success" "0" "$rc"
+  assert_contains "collab StageC summary stage and role" "$summary" "collab_spawn_failed(stage=StageC,role=ProjectManager,reason=no_thread_with_id,fallback=retry,degraded=yes,repeated=no)"
+  assert_contains "collab StageC retry start logged" "$log_body" "collab-spawn fallback start stage=StageC roles=ProjectManager reason=no_thread_with_id action=bounded-retry next_attempt=2/2"
+  assert_contains "collab StageC retry success logged" "$log_body" "collab-spawn fallback result=success stage=StageC reason=bounded-retry degraded=yes"
+}
+
 # ─── テストケース ───
 
 echo "--- qa_run_codex_stage cases (opt-in) ---"
@@ -475,6 +532,8 @@ run_collab_success_case
 run_collab_repeated_case
 run_collab_cross_role_repeated_case
 run_collab_bounded_retry_case
+run_collab_bounded_retry_failed_case
+run_collab_stagec_project_manager_case
 
 # Issue #12 regression guard: 529 Overloaded の既存 detector は維持する。
 LOG="$TMPDIR_TEST/overloaded-529.log"
