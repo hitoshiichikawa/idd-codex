@@ -1,0 +1,219 @@
+name: バグレポート（不具合報告）
+description: 不具合・誤動作・期待と異なる挙動を報告するテンプレート。再現性と環境情報を構造化して、人間 triage 後の PM エージェントが迷わず受入基準に変換できる粒度で集めます
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## このテンプレートを使うと何が起きるか
+
+        1. `bug` ラベルが自動で付きます（**codex-auto-dev は付きません**）
+        2. **まず人間が** 内容を確認し、再現可能・スコープが妥当と判断したら手動で `codex-auto-dev` ラベルを付けます
+        3. `codex-auto-dev` が付くと、数分以内に idd-codex の Product Manager (PM) エージェントが Triage:
+           - **impl モード**: PM → Developer → PjM が修正 PR を作成（小規模 bug fix）
+           - **design モード**: PM → Architect → PjM が設計 PR を作成（影響範囲が広い／設計判断が必要）
+           - **codex-needs-decisions**: 再現条件や原因が曖昧な場合は Issue コメントで質問、人間の回答待ち
+
+        ## バグレポートで重要なこと
+
+        - **観察した事実と推測を分ける**。「〜が起きた」（事実）と「〜が原因だと思う」（推測）を混ぜない
+        - **再現可能性が最優先**。手元で再現できなくても、ログ・スクリーンショット・発生時刻・操作履歴等の状況証拠を残す
+        - **期待挙動の根拠**を書く（仕様書・過去の挙動・直感のどれか）。期待が曖昧なら PM が `codex-needs-decisions` で確認します
+        - **影響範囲**を書く。誰が・どれくらいの頻度で困っているか。回避策があるか
+
+        ---
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: 重要度
+      description: |
+        参考値。実際の着手順は依存関係と in-flight 状況で PjM が判断します。
+        セキュリティ・データ破壊・サービス停止系は **Critical** を選択してください
+      options:
+        - Critical（データ破壊・セキュリティ・サービス停止）
+        - High（主要機能が動かない／回避策なし）
+        - Mid（主要機能は動くが期待と異なる／回避策あり）
+        - Low（軽微な見た目の崩れ・誤字・周辺機能の問題）
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: 概要（一言で）
+      description: |
+        この bug を 1〜2 文で要約してください。Issue タイトルだけでは伝わらない context をここで補足します
+      placeholder: |
+        例:
+        - cron 経由で起動した watcher が `codex が見つかりません` エラーで全 Issue を処理できない
+        - PR 作成時に Issue の本文が PR description にコピーされず空欄になる
+        - `install.sh --force` で既存の `~/bin/idd-codex-issue-watcher.sh` が `.bak` バックアップを残さずに上書きされる
+    validations:
+      required: true
+
+  - type: textarea
+    id: current-behavior
+    attributes:
+      label: 現状の挙動（実際に起きていること）
+      description: |
+        観察した事実のみを書いてください。エラーメッセージ・スクリーンショット・ログがあれば貼り付け。
+        推測や原因分析は最後の任意フィールド「仮案・判断を委ねたい点」に分けて書く
+      placeholder: |
+        例:
+        - `~/bin/idd-codex-issue-watcher.sh` を cron 経由で起動すると即座に exit 1 する
+        - cron.log: "Error: codex が見つかりません。PATH を確認してください。"
+        - GitHub 側のラベル遷移は発生せず、Issue は `codex-auto-dev` のまま放置される
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: 期待する挙動（本来こうあるべき）
+      description: |
+        どうなっているべきか、**ユーザや呼び出し側から見た観察可能な結果**で書いてください。
+        期待の根拠（仕様書・過去の挙動・README 記述・常識）も簡潔に付記すると PM が判断しやすい
+      placeholder: |
+        例:
+        - cron 起動でも `codex` / `gh` / `jq` 等の依存が解決され、Triage まで進む
+        - 根拠: README の「セットアップ」節で cron 設定例が示されており、特殊な PATH 設定なしで動く前提
+        - 結果として `codex-claimed` → `codex-ready-for-review` までラベル遷移する
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 再現手順（任意・分かれば）
+      description: |
+        最小手順で再現できる形が理想。再現率（毎回 / たまに / 1 回だけ）も書いてください。
+        **再現できなくても OK**。その場合は発生時刻・操作履歴・状況証拠を可能な限り残す
+      placeholder: |
+        例（再現可能なケース）:
+        1. `crontab -e` で `*/2 * * * * $HOME/bin/idd-codex-issue-watcher.sh` を登録
+        2. cron 実行を 2 分待つ
+        3. `~/.idd-codex/logs/cron.log` を確認すると `codex が見つかりません` エラーが記録される
+        - 再現率: 毎回
+
+        例（再現困難なケース）:
+        - 発生時刻: 2026-05-20 14:32 頃
+        - 直前の操作: PR #123 を merge した直後
+        - 状況証拠: cron.log の該当時刻のログ抜粋（後述 references に貼付）
+        - 再現率: 1 回のみ確認、その後再発せず
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 環境情報
+      description: |
+        OS / ランタイムバージョン / 依存ツールのバージョン / 該当 repo の commit hash 等。
+        プロジェクトに依存しない汎用テンプレなので、関係するものだけ埋めてください
+      placeholder: |
+        例:
+        - OS: Ubuntu 24.04 / macOS 15.1 / Windows 11 + WSL2
+        - Shell: bash 5.2.21
+        - 関連ツール: codex code v2.1.142, gh 2.55.0, jq 1.7.1
+        - 該当 repo / commit: idd-codex @ main (35579e5)
+        - 起動方式: cron / launchd / 手動実行 / GitHub Actions
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: ログ・エラーメッセージ・スクリーンショット（任意）
+      description: |
+        該当部分のみ抜粋。長文は Gist や details タグで折りたたみ。
+        **機密情報（トークン・個人情報・社内パス等）は伏字に**
+      placeholder: |
+        例:
+        ```
+        2026-05-20T14:32:00 [ERROR] Error: codex が見つかりません。PATH を確認してください。
+        2026-05-20T14:32:00 [DEBUG] PATH=/usr/bin:/bin
+        ```
+
+        または Gist リンク: https://gist.github.com/...
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: 影響範囲・頻度（任意）
+      description: |
+        誰が・どれくらいの頻度で・どの程度困っているか。回避策があれば併記。
+        PM の優先度判断と修正アプローチに影響します
+      placeholder: |
+        例:
+        - 影響対象: cron で watcher を運用している全ユーザ（README の標準セットアップに該当）
+        - 頻度: 2 分おきに失敗、3 日間で 1000 件以上のエラー
+        - 回避策: `~/bin/idd-codex-issue-watcher.sh` を手動実行する（cron 自動化が機能しない）
+        - 結果: dogfooding 運用が事実上停止
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 受入基準（「修正できた」と言える条件）
+      description: |
+        箇条書きで OK。PM が EARS 形式（`When ..., the system shall ...`）に整形します。
+        **異常系・境界値・後方互換性の観点**を入れると見落としが減ります
+      placeholder: |
+        例:
+        - 最小 PATH 環境（`/usr/bin:/bin`）で起動しても依存が解決される
+        - 既存の cron / launchd 登録文字列を変更せず動作する
+        - 後方互換性: 既存 env var 名（`REPO`, `REPO_DIR` 等）・ラベル名・exit code を変えない
+        - 異常系: 依然として `codex` が見つからない場合は明確なエラーメッセージで exit する（silent fail させない）
+        - 回帰テスト: README のトラブルシューティング節に検証手順が記載される
+    validations:
+      required: true
+
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: スコープ外（今回は含めたくないこと・任意）
+      description: 「ついでにやって欲しくない」ことを書くと scope creep 予防になります
+      placeholder: |
+        例:
+        - systemd timer / launchd 等、cron 以外の起動経路の新規対応
+        - 依存コマンドの追加（`yq` 等）
+        - watcher のリファクタ全般
+
+  - type: textarea
+    id: affected-areas
+    attributes:
+      label: 影響範囲のヒント（任意）
+      description: |
+        触りそうなファイル・モジュール・機能。PM が規模感を測るのに使います。
+        不明なら空欄で OK
+      placeholder: |
+        例:
+        - `local-watcher/bin/idd-codex-issue-watcher.sh` の冒頭（PATH 解決部分）
+        - `README.md` のトラブルシューティング節
+
+  - type: textarea
+    id: references
+    attributes:
+      label: 参考資料（任意）
+      description: 関連 Issue / PR / 過去の同種事象 / 外部ドキュメント / 詳細ログの Gist
+      placeholder: |
+        例:
+        - 関連 Issue: #42（過去の類似事象、当時は別原因で close）
+        - 関連 PR: #11
+        - cron.log 抜粋 Gist: https://gist.github.com/...
+        - 公式ドキュメント: https://...
+
+  - type: textarea
+    id: hypothesis
+    attributes:
+      label: 仮案・判断を委ねたい点（任意）
+      description: |
+        - **原因の仮説**: 「〜が原因だと思う」という推測（事実とは分けて書いてください）
+        - **修正方針の仮案**: 思いつく解決案（commit ではない参考。PM が別案を出すこともある）
+        - **判断を委ねたい点**: 決めきれない選択肢があれば「どう迷っているか」を書く。
+          PM が `codex-needs-decisions` ラベルを付けて人間エスカレーションしてから実装に入ります
+      placeholder: |
+        例:
+        - 原因の仮説: cron の最小 PATH で `~/.local/bin` が含まれず、`codex` バイナリの解決に失敗していると推測
+        - 仮案 A: スクリプト冒頭で PATH prepend（repo 1 ファイル変更で完結）
+        - 仮案 B: crontab 側で PATH 記述（repo 変更不要、全ユーザに周知が必要）
+        - 判断を委ねたい点: ユーザの $HOME/.local/bin が標準でないケースをどこまで吸収するか

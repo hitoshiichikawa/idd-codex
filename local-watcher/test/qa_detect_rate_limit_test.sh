@@ -23,10 +23,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WATCHER_SH="$SCRIPT_DIR/../bin/idd-codex-issue-watcher.sh"
+# #180 Part 2 で qa_detect_rate_limit は modules/quota-aware.sh へ分離された。
+# 関数抽出の探索元に quota-aware.sh も含める。
+QUOTA_AWARE_SH="$SCRIPT_DIR/../bin/modules/quota-aware.sh"
 FIXTURE_DIR="$SCRIPT_DIR/fixtures/qa_detect_rate_limit"
 
 if [ ! -f "$WATCHER_SH" ]; then
   echo "ERROR: cannot find idd-codex-issue-watcher.sh at $WATCHER_SH" >&2
+  exit 2
+fi
+if [ ! -f "$QUOTA_AWARE_SH" ]; then
+  echo "ERROR: cannot find quota-aware.sh at $QUOTA_AWARE_SH" >&2
   exit 2
 fi
 
@@ -35,7 +42,7 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 2
 fi
 
-# idd-codex-issue-watcher.sh から qa_detect_rate_limit() のみを抽出する。
+# idd-codex-issue-watcher.sh / modules から qa_detect_rate_limit() のみを抽出する。
 # awk で「関数開始行」から最初の単独 `}` までを抜き出す。
 extract_function() {
   local script="$1"
@@ -44,7 +51,7 @@ extract_function() {
     $0 == fn { in_fn = 1 }
     in_fn { print }
     in_fn && $0 == "}" { in_fn = 0 }
-  ' "$script"
+  ' "$script" "$QUOTA_AWARE_SH"
 }
 
 # shellcheck disable=SC1090,SC2086

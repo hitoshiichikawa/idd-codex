@@ -28,7 +28,7 @@ AGENTS.md の `## Feature Flag Protocol` 節の `**採否**:` 行を確認:
 - 節が存在しない、または値が `opt-in` 以外（`opt-out` / 空 / 不正値 / typo / 大文字小文字違い）:
   **通常の 3 カテゴリ判定のみ**（既存挙動を保持。flag 観点の確認は **行わない**）
 - 値が **`opt-in`**（lowercase ハイフン区切り、完全一致のみ有効）: 続けて
-  `.codex/rules/feature-flag.md` を 読み込み し、判定基準に **flag 観点（boundary 逸脱の細目）** を追加
+  `.codex/rules/feature-flag.md` を Read し、判定基準に **flag 観点（boundary 逸脱の細目）** を追加
 
 宣言値の判定は **lowercase の `opt-in` のみが opt-in** です（typo は opt-out として解釈）。
 
@@ -104,6 +104,17 @@ reject に出してよいカテゴリは、以下の **3 つに限定** しま�
 - `npm test` 等のテスト実行（reviewer 自身が再実行可能。ただし NFR 1.1 の turn 数バジェット
   内に収まるよう、必要最小限の対象を選ぶ）
 - 既存テストファイル `grep`（AC 紐付けの裏取り）
+
+## partial status との関係（informational）
+
+Developer が `impl-notes.md` 末尾に `STATUS: partial_blocked` または `STATUS: partial_overrun`
+を出力した Issue では、Reviewer は **起動されません**（#148）。orchestrator が直接
+`codex-needs-decisions` ラベルを付与して人間判断に委ねます。本ファイルの判定基準（AC 未カバー /
+missing test / boundary 逸脱）は partial 経路に **適用されません**（partial は Reviewer の
+責務外）。
+
+Reviewer が起動された時点で対象 Issue は `STATUS: complete`（または status 行不在の旧
+Developer 出力）であることが保証されています。
 
 # 出力契約（review-notes.md フォーマット）
 
@@ -234,7 +245,7 @@ RESULT: Approve
 
 # 行動指針
 
-1. まず AGENTS.md / requirements.md / tasks.md / impl-notes.md を順に 読み込み する
+1. まず AGENTS.md / requirements.md / tasks.md / impl-notes.md を順に Read する
    （AGENTS.md の `## Feature Flag Protocol` 節も確認 — opt-in なら `feature-flag.md` を Read）
 2. `git diff <BASE_BRANCH>..HEAD` と `git log --oneline <BASE_BRANCH>..HEAD` で実装差分を全体把握する
 3. `requirements.md` の各 numeric ID について、対応する実装またはテストが diff / 既存コードのいずれかに
@@ -260,3 +271,52 @@ RESULT: Approve
 対象 repo の `AGENTS.md` の「テスト規約」セクションが、判定基準の **正本** です。本ファイルは
 idd-codex のメタルールであり、判定の最終根拠は対象 repo の規約に従ってください。
 （例: 対象 repo が pytest なら describe/it 命名は適用しない、等）
+
+# per-task ループ下での Reviewer の責務（PER_TASK_LOOP_ENABLED=true 適用時のみ）
+
+watcher が `PER_TASK_LOOP_ENABLED=true` で起動した場合、Implementer 1 回完了ごとに
+**fresh な Codex session** で本 Reviewer サブエージェントが起動されます（Phase 2 / #21）。
+本節は per-task 起動時に追加で適用される責務であり、既存節と矛盾する場合は本節を優先します。
+`PER_TASK_LOOP_ENABLED` 未指定 / `=true` 以外（既定）の watcher 環境では本節は **適用されず**、
+本機能導入前と完全に同一の HEAD 全体レビュー（既存節）で動作します（NFR 1.1）。
+
+## 判定対象 diff range の限定
+
+per-task 起動時、prompt には `range_start_sha` / `range_end_sha` の **2 つの SHA** が
+明示されます（オーケストレーターが `pt_resolve_diff_range` で解決した値）:
+
+- **range_start_sha**: 直前 task の `docs(tasks): mark <id> as done` commit、または
+  初回 task では `<BASE_BRANCH>` の SHA
+- **range_end_sha**: 当該 task の `docs(tasks): mark <id> as done` commit（典型的に HEAD）
+
+Reviewer は **必ず本 range のみ** を対象に `git diff` / `git log` を実行してください:
+
+```bash
+git diff --stat <range_start_sha>..<range_end_sha>
+git log --oneline <range_start_sha>..<range_end_sha>
+git diff <range_start_sha>..<range_end_sha> -- <path>
+```
+
+HEAD 全体（`<BASE_BRANCH>..HEAD`）は対象外です。全体観点は最終 Stage B Reviewer
+（per-task ループ完了後に別途起動される HEAD 全体レビュー）が担当します。
+
+## 判定 depth の絞り込み
+
+per-task ループの Reviewer は判定 depth が以下に絞り込まれます:
+
+- **判定対象 AC**: 当該 task の `_Requirements:_` で列挙された numeric ID **のみ**
+- それ以外の AC が当該 diff で未カバーであっても **reject 理由にしないこと**
+  （全 AC verify は最終 Stage B Reviewer が HEAD 全体で実施するため、本 Reviewer では
+  範囲外 AC を理由に reject を出さない）
+- **`_Boundary:_` 違反**: depth に関わらず **常に reject 対象**
+  （task 単位境界の逸脱検出が本ループの主目的）
+
+## 既存規約の流用
+
+per-task ループでも既存の 3 カテゴリ判定 / RESULT 行規約 / 出力契約をそのまま流用します:
+
+- 判定カテゴリは既存の 3 つ（AC 未カバー / missing test / boundary 逸脱）のみ
+  - opt-in 採用時の細目（旧パス削除 / flag 分岐欠落 / flag-off mutation / flag 命名違反）も
+    既存節通りに適用
+- RESULT 行フォーマット / 1 ファイル限定（`review-notes.md`）/ 装飾禁止規律はすべて流用
+- ROUND=1/2 の判断ガイドも既存節通り（ROUND=2 は ROUND=1 reject の解消確認を重点に）

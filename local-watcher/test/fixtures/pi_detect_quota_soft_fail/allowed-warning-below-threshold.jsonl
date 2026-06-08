@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","tools":["Read","Edit"],"model":"gpt-5.5"}
+{"type":"rate_limit_event","status":"allowed_warning","surpassedThreshold":0.85,"resetsAt":"2026-05-15T05:00:00Z"}
+{"type":"result","subtype":"success","is_error":false}

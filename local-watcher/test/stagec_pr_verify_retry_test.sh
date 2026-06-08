@@ -3,16 +3,21 @@
 # 用途: local-watcher/bin/idd-codex-issue-watcher.sh の Stage C PR 実在 verify の
 #       retry-with-backoff ヘルパー (verify_stagec_pr_or_retry) を、fake gh と
 #       fake sleep を注入して end-to-end 検証するスモークテスト。Issue #108 で導入。
+#       Issue #110 で主経路 6 試行 / 代替 API 経路 1 ターンに拡張されたため、本
+#       既存テストも新デフォルトに合わせて assertion を更新した。代替経路固有の
+#       経路網羅（fallback success / fallback empty / fallback error）は別ファイル
+#       stagec_pr_verify_fallback_test.sh で担保する。
 #
 #       検証観点（Req と対応付け）:
-#         - 1 回目の試行で PR URL 取得 → 即時成功 (Req 1.2, 5.1)
-#         - 1 回目空応答 → 2 回目で URL 取得して成功 (Req 1.3, 5.2)
-#         - 3 回目で初めて URL 取得して成功 (Req 1.3, 5.2)
-#         - 4 回全て空応答 → exit 1（呼び出し側で codex-failed 化）(Req 2.1, 5.3)
+#         - 1 回目の試行で PR URL 取得 → 即時成功 (#108 Req 1.2 / #110 Req 1.4 / 4.6, 5.1)
+#         - 1 回目空応答 → 2 回目で URL 取得して成功 (#108 Req 1.3 / #110 Req 1.5, 5.2)
+#         - 3 回目で初めて URL 取得して成功 (#108 Req 1.3 / #110 Req 1.5, 5.2)
+#         - 主経路 6 回全て空応答 + 代替経路も空応答 → exit 1
+#           （呼び出し側で codex-failed 化）(#108 Req 2.1 / #110 Req 2.1 / 2.3, 5.4)
 #         - リトライ間 sleep は STAGEC_VERIFY_SLEEP_CMD で fake 化し
-#           テスト 1 件あたり 30 秒以内に収める (Req 5.6)
+#           テスト 1 件あたり 30 秒以内に収める (#108 Req 5.6 / #110 Req 5.8)
 #         - 進捗ログが $LOG に試行回数 / Issue 番号 / 対象 branch を伴って
-#           記録されること (Req 3.1, 3.2, 3.3, NFR 2.1, 2.2)
+#           記録されること (#108 Req 3.1, 3.2, 3.3 / #110 Req 3.1〜3.5 / NFR 2.1, 2.2)
 #
 # 配置先: local-watcher/test/stagec_pr_verify_retry_test.sh
 # 依存:   bash 4+, awk
@@ -183,7 +188,8 @@ assert_eq "Test 1 (1 回目成功): \$LOG は空（外形互換 / Req 4.1 NFR 1.
 rm -f "$LOG"
 
 # ─────────────────────────────────────────────────────────────────
-# Test 2: 1 回目空応答 → 2 回目で URL 取得して成功（Req 1.3 / Req 5.2）
+# Test 2: 1 回目空応答 → 2 回目で URL 取得して成功
+#         (#108 Req 1.3 / Req 5.2 / #110 Req 1.5)
 # ─────────────────────────────────────────────────────────────────
 reset_state
 GH_RESPONSES=("" "https://github.com/owner/test/pull/108")
@@ -196,20 +202,24 @@ assert_eq "Test 2 (2 回目で成功): stdout に PR URL" \
   "https://github.com/owner/test/pull/108" "$stdout"
 
 LOG_CONTENT=$(cat "$LOG" 2>/dev/null || echo "")
-# Req 3.1: 試行回数 / Issue 番号 / 対象 branch を含む単一行
-assert_contains "Test 2 (2 回目で成功): \$LOG に attempt=1/4 outcome=empty (Req 3.1)" \
-  "attempt=1/4 outcome=empty" "$LOG_CONTENT"
+# #108 Req 3.1 / #110 Req 3.1: 試行回数 / Issue 番号 / 対象 branch を含む単一行
+assert_contains "Test 2 (2 回目で成功): \$LOG に attempt=1/6 outcome=empty (Req 3.1)" \
+  "attempt=1/6 outcome=empty" "$LOG_CONTENT"
 assert_contains "Test 2 (2 回目で成功): \$LOG に issue=#108" \
   "issue=#108" "$LOG_CONTENT"
 assert_contains "Test 2 (2 回目で成功): \$LOG に対象 branch" \
   "branch=${BRANCH}" "$LOG_CONTENT"
-# Req 3.2: 成功までに要した試行回数を $LOG に残す
-assert_contains "Test 2 (2 回目で成功): \$LOG に SUCCESS attempt=2/4 (Req 3.2)" \
-  "SUCCESS attempt=2/4" "$LOG_CONTENT"
+# #108 Req 3.2 / #110 Req 3.2: 成功までに要した試行回数を $LOG に残す
+assert_contains "Test 2 (2 回目で成功): \$LOG に SUCCESS attempt=2/6 (Req 3.2)" \
+  "SUCCESS attempt=2/6" "$LOG_CONTENT"
+# #110 Req 2.7: 主経路で見つかったので代替経路は呼ばれない
+assert_not_contains "Test 2 (2 回目で成功): \$LOG に fallback start なし (#110 Req 2.7)" \
+  "fallback start" "$LOG_CONTENT"
 rm -f "$LOG"
 
 # ─────────────────────────────────────────────────────────────────
-# Test 3: 3 回目で初めて URL 取得して成功（Req 1.3 / Req 5.2）
+# Test 3: 3 回目で初めて URL 取得して成功
+#         (#108 Req 1.3 / Req 5.2 / #110 Req 1.5)
 # 1, 2 回目で異なる失敗種別（empty / timeout）を発生させて分類ログを検証
 # ─────────────────────────────────────────────────────────────────
 reset_state
@@ -224,55 +234,71 @@ assert_eq "Test 3 (3 回目で成功): stdout に PR URL" \
 
 LOG_CONTENT=$(cat "$LOG" 2>/dev/null || echo "")
 # NFR 2.1: 試行結果の種別（empty / timeout / exit=N）を識別可能に
-assert_contains "Test 3 (3 回目で成功): \$LOG に attempt=1/4 outcome=empty (NFR 2.1)" \
-  "attempt=1/4 outcome=empty" "$LOG_CONTENT"
-assert_contains "Test 3 (3 回目で成功): \$LOG に attempt=2/4 outcome=timeout (NFR 2.1)" \
-  "attempt=2/4 outcome=timeout" "$LOG_CONTENT"
-assert_contains "Test 3 (3 回目で成功): \$LOG に SUCCESS attempt=3/4 (Req 3.2)" \
-  "SUCCESS attempt=3/4" "$LOG_CONTENT"
+assert_contains "Test 3 (3 回目で成功): \$LOG に attempt=1/6 outcome=empty (NFR 2.1)" \
+  "attempt=1/6 outcome=empty" "$LOG_CONTENT"
+assert_contains "Test 3 (3 回目で成功): \$LOG に attempt=2/6 outcome=timeout (NFR 2.1)" \
+  "attempt=2/6 outcome=timeout" "$LOG_CONTENT"
+assert_contains "Test 3 (3 回目で成功): \$LOG に SUCCESS attempt=3/6 (Req 3.2)" \
+  "SUCCESS attempt=3/6" "$LOG_CONTENT"
 rm -f "$LOG"
 
 # ─────────────────────────────────────────────────────────────────
-# Test 4: 4 回全て空応答 → exit 1（Req 2.1 / Req 5.3）
+# Test 4: 主経路 6 回 + 代替経路すべて空応答 → exit 1
+#         (#108 Req 2.1 / Req 5.3 / #110 Req 2.1 / 2.3 / 3.5 / Req 5.4)
 # ─────────────────────────────────────────────────────────────────
 reset_state
-GH_RESPONSES=("" "" "" "")
+# GH_RESPONSES = 主経路 6 + 代替経路 1 = 7 件全て空応答
+GH_RESPONSES=("" "" "" "" "" "" "")
 rc=0
 stdout=$(verify_stagec_pr_or_retry "$BRANCH" "$NUMBER") || rc=$?
 
-assert_eq "Test 4 (4 回全失敗): rc=1 (Req 2.1)" "1" "$rc"
-assert_eq "Test 4 (4 回全失敗): gh 呼出回数=4 (Req 1.6)" "4" "$(gh_call_count)"
-assert_eq "Test 4 (4 回全失敗): stdout 空" "" "$stdout"
+assert_eq "Test 4 (全失敗): rc=1 (#108 Req 2.1 / #110 Req 2.3)" "1" "$rc"
+assert_eq "Test 4 (全失敗): gh 呼出回数=7 (主経路 6 + 代替経路 1) (#110 Req 1.2 / 2.6)" \
+  "7" "$(gh_call_count)"
+assert_eq "Test 4 (全失敗): stdout 空" "" "$stdout"
 
 LOG_CONTENT=$(cat "$LOG" 2>/dev/null || echo "")
-# Req 3.1: 試行回数 / Issue 番号 / 対象 branch を伴う進捗行が attempt=1..4 すべて
-for n in 1 2 3 4; do
-  assert_contains "Test 4 (4 回全失敗): \$LOG に attempt=${n}/4 (Req 3.1)" \
-    "attempt=${n}/4 outcome=empty" "$LOG_CONTENT"
+# #108 Req 3.1 / #110 Req 3.1: attempt=1..6 すべての進捗が残る
+for n in 1 2 3 4 5 6; do
+  assert_contains "Test 4 (全失敗): \$LOG に attempt=${n}/6 (Req 3.1)" \
+    "attempt=${n}/6 outcome=empty" "$LOG_CONTENT"
 done
-# Req 3.3: 全リトライ失敗時に Issue 番号 / 対象 branch / 試行回数 / 最終失敗要因
-assert_contains "Test 4 (4 回全失敗): \$LOG に FAILED after 4 attempts (Req 3.3)" \
-  "FAILED after 4 attempts" "$LOG_CONTENT"
-assert_contains "Test 4 (4 回全失敗): \$LOG に Issue 番号 (Req 3.3)" \
+# #110 Req 3.3: 代替経路の開始と結果が記録される
+assert_contains "Test 4 (全失敗): \$LOG に fallback start (#110 Req 3.3)" \
+  "fallback start (List Pulls API)" "$LOG_CONTENT"
+assert_contains "Test 4 (全失敗): \$LOG に fallback FAILED outcome=empty (#110 Req 3.3)" \
+  "fallback FAILED outcome=empty" "$LOG_CONTENT"
+# #110 Req 3.5: 最終失敗時に主経路試行回数 / 最終 primary outcome / fallback outcome を残す
+assert_contains "Test 4 (全失敗): \$LOG に FAILED after 6 attempts + fallback (#110 Req 3.5)" \
+  "FAILED after 6 attempts + fallback" "$LOG_CONTENT"
+assert_contains "Test 4 (全失敗): \$LOG に last_primary_outcome=empty (#110 Req 3.5)" \
+  "last_primary_outcome=empty" "$LOG_CONTENT"
+assert_contains "Test 4 (全失敗): \$LOG に fallback_outcome=empty (#110 Req 3.5)" \
+  "fallback_outcome=empty" "$LOG_CONTENT"
+# Req 3.5: Issue 番号 / 対象 branch
+assert_contains "Test 4 (全失敗): \$LOG に Issue 番号 (Req 3.5)" \
   "issue=#108" "$LOG_CONTENT"
-assert_contains "Test 4 (4 回全失敗): \$LOG に対象 branch (Req 3.3)" \
+assert_contains "Test 4 (全失敗): \$LOG に対象 branch (Req 3.5)" \
   "branch=${BRANCH}" "$LOG_CONTENT"
-# Req 2.2: 成功ログを出さない
-assert_not_contains "Test 4 (4 回全失敗): \$LOG に SUCCESS 行なし (Req 2.2)" \
+# Req 2.2 (#108): 成功ログを出さない
+assert_not_contains "Test 4 (全失敗): \$LOG に SUCCESS 行なし (#108 Req 2.2)" \
   "SUCCESS" "$LOG_CONTENT"
 rm -f "$LOG"
 
 # ─────────────────────────────────────────────────────────────────
-# Test 5: 全試行で非 0 終了 → exit 1（Req 2.4 / NFR 2.1）
-# 一時的失敗が混在しても上限まで継続する（Req 2.4）。
+# Test 5: 主経路全試行で非 0 終了混在 + 代替経路も非 0 → exit 1
+#         (#108 Req 2.4 / NFR 2.1 / #110 Req 2.4 / 3.5)
+# 一時的失敗が混在しても上限まで継続する。
 # ─────────────────────────────────────────────────────────────────
 reset_state
-GH_RESPONSES=("ERR:1" "" "ERR:124" "ERR:1")
+# 主経路 6 件（exit=1 / empty / timeout 混在）+ 代替経路 1 件（exit=1）
+GH_RESPONSES=("ERR:1" "" "ERR:124" "ERR:1" "" "ERR:1" "ERR:1")
 rc=0
 stdout=$(verify_stagec_pr_or_retry "$BRANCH" "$NUMBER") || rc=$?
 
-assert_eq "Test 5 (失敗種別混在): rc=1 (Req 2.4)" "1" "$rc"
-assert_eq "Test 5 (失敗種別混在): gh 呼出回数=4 (Req 2.4 上限まで継続)" "4" "$(gh_call_count)"
+assert_eq "Test 5 (失敗種別混在): rc=1 (#108 Req 2.4 / #110 Req 2.4)" "1" "$rc"
+assert_eq "Test 5 (失敗種別混在): gh 呼出回数=7 (主経路 6 + 代替経路 1)" \
+  "7" "$(gh_call_count)"
 LOG_CONTENT=$(cat "$LOG" 2>/dev/null || echo "")
 # NFR 2.1: 失敗種別の分類（exit=N / empty / timeout）が事後識別可能
 assert_contains "Test 5 (失敗種別混在): \$LOG に outcome=exit=1 (NFR 2.1)" \
@@ -281,20 +307,25 @@ assert_contains "Test 5 (失敗種別混在): \$LOG に outcome=empty (NFR 2.1)"
   "outcome=empty" "$LOG_CONTENT"
 assert_contains "Test 5 (失敗種別混在): \$LOG に outcome=timeout (NFR 2.1)" \
   "outcome=timeout" "$LOG_CONTENT"
+# #110 Req 3.3: 代替経路の失敗結果が exit=N で残る
+assert_contains "Test 5 (失敗種別混在): \$LOG に fallback FAILED outcome=exit=1 (#110 Req 3.3)" \
+  "fallback FAILED outcome=exit=1" "$LOG_CONTENT"
 rm -f "$LOG"
 
 # ─────────────────────────────────────────────────────────────────
-# Test 6: 実時間待機が走らないこと（Req 5.6 / テスト 1 件 30 秒以内）
+# Test 6: 実時間待機が走らないこと
+#         (#108 Req 5.6 / #110 Req 5.8 / テスト 1 件 30 秒以内)
 # STAGEC_VERIFY_SLEEP_CMD=":" でテスト全体が（即時実行で）十分高速に完了することを
-# 計測で担保。実時間 sleep が走っていれば最低 35 秒以上経過するはず。
+# 計測で担保。実時間 sleep が走っていれば最低 135 秒（新デフォルト主経路 sleep 合計）
+# 以上経過するはず。
 # ─────────────────────────────────────────────────────────────────
 TEST_END=$(date +%s)
 ELAPSED=$((TEST_END - TEST_START))
 if [ "$ELAPSED" -lt 30 ]; then
-  echo "PASS: Test 6 (実時間待機なし): 全テスト経過 ${ELAPSED}s < 30s (Req 5.6)"
+  echo "PASS: Test 6 (実時間待機なし): 全テスト経過 ${ELAPSED}s < 30s (#110 Req 5.8)"
   PASS_COUNT=$((PASS_COUNT + 1))
 else
-  echo "FAIL: Test 6 (実時間待機なし): 全テスト経過 ${ELAPSED}s >= 30s (Req 5.6)"
+  echo "FAIL: Test 6 (実時間待機なし): 全テスト経過 ${ELAPSED}s >= 30s (#110 Req 5.8)"
   echo "  STAGEC_VERIFY_SLEEP_CMD の fake 注入が効いていない可能性がある"
   FAIL_COUNT=$((FAIL_COUNT + 1))
 fi

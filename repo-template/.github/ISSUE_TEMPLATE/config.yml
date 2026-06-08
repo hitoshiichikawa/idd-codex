@@ -1,8 +1,8 @@
 # GitHub web UI で Issue を作成する際は必ず ISSUE_TEMPLATE/idd-codex-feature.yml を経由させる。
 # - blank_issues_enabled: false にすると `/issues/new` 直アクセスや「Open a blank issue」リンクが
-#   無効化され、picker（テンプレート 1 件のみなら自動的に feature.yml）に倒れる。
+#   無効化され、picker（テンプレート 1 件のみなら自動的に idd-codex-feature.yml）に倒れる。
 # - これにより PM Triage が前提とするフィールド構造（問題 / 受入基準 / Out of Scope 等）が
 #   常に埋まる状態で Issue が起票される。
-# - `gh issue create --template idd-codex-feature.yml` 経由なら template が使われる。
+# - `gh issue create --template idd-codex-feature.yml` 経由なら従来どおり template が使われる。
 #   `gh issue create` を素で叩いた場合は body を手書きするフローでもそのまま通る（CLI 側の挙動）。
 blank_issues_enabled: false

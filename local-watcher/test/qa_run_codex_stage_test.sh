@@ -28,10 +28,24 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WATCHER_SH="$SCRIPT_DIR/../bin/idd-codex-issue-watcher.sh"
+# #177 Part 1 で低レベル共通ユーティリティ（qa_log 等のロガーを含む）は
+# modules/core_utils.sh へ分離された。関数抽出の探索元に core_utils.sh も含める。
+CORE_UTILS_SH="$SCRIPT_DIR/../bin/modules/core_utils.sh"
+# #180 Part 2 で quota 待機制御プロセッサ（qa_detect_rate_limit / qa_run_codex_stage 等）は
+# modules/quota-aware.sh へ分離された。関数抽出の探索元に quota-aware.sh も含める。
+QUOTA_AWARE_SH="$SCRIPT_DIR/../bin/modules/quota-aware.sh"
 FIXTURE_DIR="$SCRIPT_DIR/fixtures/qa_detect_rate_limit"
 
 if [ ! -f "$WATCHER_SH" ]; then
   echo "ERROR: cannot find idd-codex-issue-watcher.sh at $WATCHER_SH" >&2
+  exit 2
+fi
+if [ ! -f "$CORE_UTILS_SH" ]; then
+  echo "ERROR: cannot find core_utils.sh at $CORE_UTILS_SH" >&2
+  exit 2
+fi
+if [ ! -f "$QUOTA_AWARE_SH" ]; then
+  echo "ERROR: cannot find quota-aware.sh at $QUOTA_AWARE_SH" >&2
   exit 2
 fi
 
@@ -49,7 +63,7 @@ extract_function() {
     $0 == fn { in_fn = 1 }
     in_fn { print }
     in_fn && $0 == "}" { in_fn = 0 }
-  ' "$script"
+  ' "$script" "$CORE_UTILS_SH" "$QUOTA_AWARE_SH"
 }
 
 # qa_log / qa_warn / qa_error は qa_run_codex_stage が呼ぶので必ず loaded する
@@ -90,7 +104,7 @@ assert_eq() {
   fi
 }
 
-# fake-Codex: fixture を stdout にダンプし、指定された exit code を返す。
+# fake-codex: fixture を stdout にダンプし、指定された exit code を返す。
 # qa_run_codex_stage は "$@" を実行するため、引数として fixture と rc を受け取る。
 fake_codex() {
   local fx_path="$1"
@@ -162,8 +176,8 @@ run_case "synthetic-429-no-reset (Req 3.2)" \
 run_case "normal-success (Req 3.4)" \
   0 "" "normal-success.jsonl" 0
 
-# 補助: Codex が非 0 で終了する場合は素通し（quota 検出なし時）
-run_case "normal-success with Codex rc=2 (NFR 1.2 既存 rc 透過)" \
+# 補助: codex が非 0 で終了する場合は素通し（quota 検出なし時）
+run_case "normal-success with codex rc=2 (NFR 1.2 既存 rc 透過)" \
   2 "" "normal-success.jsonl" 2
 
 # Req 5.4: malformed line 混入でも検出を継続
@@ -190,13 +204,13 @@ else
   FAIL_COUNT=$((FAIL_COUNT + 1))
 fi
 
-# opt-out で Codex rc を透過
+# opt-out で codex rc を透過
 reset_file=$(mktemp -p "$TMPDIR_TEST" "reset.XXXXXX")
 rm -f "$reset_file"
 rc=0
 qa_run_codex_stage "TestStage" "$reset_file" -- \
   fake_codex "$FIXTURE_DIR/normal-success.jsonl" 7 >/dev/null 2>&1 || rc=$?
-assert_eq "opt-out preserves Codex rc=7 (NFR 1.1, 1.2)" "7" "$rc"
+assert_eq "opt-out preserves codex rc=7 (NFR 1.1, 1.2)" "7" "$rc"
 
 echo ""
 echo "==========================================="

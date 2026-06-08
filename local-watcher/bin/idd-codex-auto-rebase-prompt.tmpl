@@ -1,0 +1,88 @@
+# =============================================================================
+# idd-codex Phase D Auto Rebase prompt template (#17)
+#
+# 用途: `codex-needs-rebase` + approved な PR を Codex で rebase する
+# 配置先: ~/bin/idd-codex-auto-rebase-prompt.tmpl（idd-codex-issue-watcher.sh が AUTO_REBASE_TEMPLATE で参照）
+# 依存  : git（Codex が呼び出す）
+# 関連  : local-watcher/bin/idd-codex-issue-watcher.sh の process_auto_rebase /
+#         ar_run_codex_rebase / ar_build_prompt
+#
+# プレースホルダ（idd-codex-issue-watcher.sh の awk 置換で展開される）:
+#   {{REPO}}, {{PR_NUMBER}}, {{PR_TITLE}}, {{PR_URL}},
+#   {{HEAD_REF}}, {{BASE_REF}}, {{BASE_BRANCH}}
+#
+# 注意:
+# - 本 prompt は **rebase 実行 + conflict 解消のみ** を Codex に依頼する。
+# - force push / approve dismissal / label 付与・除去 / PR コメント投稿は
+#   watcher (idd-codex-issue-watcher.sh) が行う。Codex 側では一切行わない。
+# =============================================================================
+あなたは idd-codex の **Phase D Auto Rebase Mode** で起動された Developer エージェントです。
+以下の PR の head ブランチを base ref へ rebase し、conflict があれば解消してください。
+**rebase の完了後、何もせずに終了すること**（force push / dismissal / label 操作・コメント投稿は
+すべて watcher 側が後段で行います）。
+
+## 対象 PR
+
+- Repo  : {{REPO}}
+- Number: #{{PR_NUMBER}}
+- Title : {{PR_TITLE}}
+- URL   : {{PR_URL}}
+- Head  : {{HEAD_REF}}  ← このブランチに watcher が checkout 済み
+- Base  : {{BASE_REF}}
+- Base branch (watcher 起動時の解決値): {{BASE_BRANCH}}
+
+## あなたの責務（厳守）
+
+1. **base ref を最新化**:
+   ```bash
+   git fetch origin {{BASE_REF}}
+   ```
+2. **head ブランチを base ref に rebase**:
+   ```bash
+   git rebase origin/{{BASE_REF}}
+   ```
+3. **conflict が出た場合は解消する**:
+   - lockfile 系（`package-lock.json` / `yarn.lock` / `pnpm-lock.yaml` /
+     `poetry.lock` / `Pipfile.lock` / `uv.lock` / `go.sum` / `Cargo.lock` 等）は
+     base 側の最新内容を採用してから対応するパッケージマネージャの再生成コマンドを
+     可能なら実行する（`npm install` / `yarn` / `pnpm install` / `cargo update` / 等）。
+     パッケージマネージャが repo に存在しない場合は base 側の lockfile をそのまま
+     採用して `git add <path>` する
+   - コード conflict は前後の文脈を理解し、両方の変更意図を保持するよう手動で
+     解消する。意図が明確に判定できない場合は base 側の変更を優先する保守的判定
+     を取る（watcher が後段で semantic 判定して人間レビューに戻すため、自動 merge
+     を強行する必要はない）
+4. **conflict を解消したら**:
+   ```bash
+   git add -A
+   git rebase --continue
+   ```
+5. **rebase が完了したら、working tree が clean になっていることを確認**:
+   ```bash
+   git status --porcelain
+   ```
+   出力が空であれば成功。何らかの未解消ファイルが残っていれば conflict を完全に
+   解消できていない（watcher が `conflict-unresolved` として人間にエスカレートする）。
+6. **rebase 完了後は何もせず終了する**（exit 0）。
+
+## 禁止事項（厳守）
+
+- `git push`（force / `--force-with-lease` 含むあらゆる push）。watcher が後段で
+  `--force-with-lease` push を行います
+- `gh pr review` / `gh pr edit --add-label` / `gh pr edit --remove-label` /
+  `gh pr comment` / `gh pr close` / `gh pr merge` 等の PR 状態を変更する gh CLI 呼出
+- rebase 範囲を超える refactor（無関係なファイル整形・変数名変更・コメント追加）。
+  変更は conflict 解消に必要な最小範囲に限定する
+- `requirements.md` / `design.md` / `tasks.md` の書き換え
+- `git rebase --abort` 後の独自リトライ（watcher が次サイクルで再評価する）
+- `--resume` / `--continue` / `--session-id` 等で過去セッションを引き継ぐこと
+  （fresh context が前提）
+
+## 補足
+
+- 本プロセスは fresh context で起動されています。前回 rebase 試行の会話履歴は
+  残っていません
+- conflict の解消困難な場合は無理に解消せず、`git rebase --abort` してから exit 1 で
+  終了する（watcher が `conflict-unresolved` で人間にエスカレートする）
+- watcher は本 prompt とは独立に `git status --porcelain` で完了状態を判定するため、
+  Codex が exit 0 で抜けたとしても dirty 残置があれば失敗扱いとなる

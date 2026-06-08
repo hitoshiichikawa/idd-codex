@@ -1,0 +1,15 @@
+# idd-codex shellcheck 設定
+#
+# AGENTS.md「テスト・検証 / 静的解析」の基準は **warning ゼロ（info は許容）**。
+# 以下の info 級 false-positive / accepted baseline を抑止し、素の `shellcheck`
+# （stage-a-verify の構造化 verify ブロックや手動チェック）がプロジェクトの bar を
+# 反映するようにする。これにより、verify ブロックが素の `shellcheck` を使っていても
+# accepted な info ノイズで exit 1 にならず、stage-a-verify が正しく通る。
+#
+# - SC2317: Command appears to be unreachable — 間接呼び出し（dr_/po_/sc_ 系ロガー等）の
+#           false-positive。`idd-codex-issue-watcher.sh` に多数存在し、AGENTS.md でも accepted と明記。
+# - SC2012: Use find instead of ls — 既存実装で許容している info 級スタイル指摘。
+#
+# 注: warning / error 級は引き続き検出される（severity を下げているわけではなく、
+#     accepted な info 2 種のみを個別 disable している）。
+disable=SC2317,SC2012

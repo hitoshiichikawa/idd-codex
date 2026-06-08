@@ -1,6 +1,6 @@
-# プロジェクトガイド（Codex 全エージェント共通）
+# プロジェクトガイド（Codex CLI 全エージェント共通）
 
-このファイルは Codex 本体、および idd-codex watcher が stage ごとに使う各役割が参照するプロジェクト憲章です。
+このファイルは Codex CLI 本体および全サブエージェントが毎回参照するプロジェクト憲章です。
 **すべてのエージェントは、作業開始前にこのファイルを読み直してください。**
 
 ---
@@ -166,17 +166,22 @@ PjM）は、以下の方針で **内部思考言語と出力言語を使い分�
 - Architect は Triage の `needs_architect: true` 判定時のみ PM と Developer の間に挟まれる
 - Architect が起動した Issue では **設計 PR ゲート**を経由する（設計 PR を merge してから実装 PR が別途作られる）
 - Reviewer は impl / impl-resume の Developer 完了直後に **独立 context** で起動され、reject 時は Developer に最大 1 回だけ自動差し戻し、再 reject では `codex-failed` で人間に委ねる（差し戻しループは Reviewer 最大 2 回 / Developer 最大 2 回で打ち切り）
-- **`impl-resume` の branch policy（idd-codex 側 opt-in / #67）**:
-  - idd-codex 側で `IMPL_RESUME_PRESERVE_COMMITS=true` を有効化したリポジトリの場合、`impl-resume` モードは既存 origin branch の commit を温存したまま resume する。Developer は `git reset` / `git rebase` / branch 切替を行わず、未完了タスクの先頭から続行すること
+- **Debugger**（`DEBUGGER_ENABLED=true` の opt-in 環境でのみ起動 / #22 Phase 3）はコード書き換え・判定・ラベル付け替え・commit / PR 作成を **一切行わず**、`docs/specs/<番号>-<slug>/debugger-notes.md` に Fix Plan（根本原因 / 修正手順 / 検証方法 / 関連参考資料）を構造化 markdown で出力するだけの独立サブエージェント。Reviewer Round 2 reject 直前 / Developer の `BLOCKED: <reason>` 宣言時に fresh な Codex セッション + web search 権限で起動され、**1 Issue（Phase 2 per-task loop 有効時は 1 task）あたり最大 1 回**に制限される（sentinel file: `debugger-notes.md` の存在）。Debugger 経由で再起動された Developer は Fix Plan の `修正手順` を inline 注入された prompt から参照して再実装する
+- **`impl-resume` の branch policy（#67 / #112 以降デフォルト有効）**:
+  - `IMPL_RESUME_PRESERVE_COMMITS=true`（#112 以降の既定）の状態では、`impl-resume` モードは既存 origin branch の commit を温存したまま resume する。Developer は `git reset` / `git rebase` / branch 切替を行わず、未完了タスクの先頭から続行すること
   - 同条件下で `IMPL_RESUME_PROGRESS_TRACKING=true`（既定）が有効なら、Developer は各タスク完了ごとに `tasks.md` の `- [ ]` → `- [x]` 行内編集を行い、`docs(tasks): mark <task-id> as done` で **専用 commit** を積む。タスク本文 / `_Requirements:_` / `_Boundary:_` / `_Depends:_` / 順序は変更しない
   - 詳細規約は `.codex/agents/developer.md` の「impl-resume / tasks.md 進捗追跡規約」節を参照
-  - opt-in 機能 OFF / 無宣言の場合は本ルールは適用されない（既定挙動: `origin/<BASE_BRANCH>` 起点で fresh init + force-push、`<BASE_BRANCH>` 未指定時は `main`）
+  - `IMPL_RESUME_PRESERVE_COMMITS=false` を明示した場合のみ、本ルールは適用されず本機能導入前の挙動（`origin/<BASE_BRANCH>` 起点で fresh init + force-push、`<BASE_BRANCH>` 未指定時は `main`）に戻る
 - Developer は **実装 PR** で `design.md` / `tasks.md` / `requirements.md` を書き換えない（設計 PR で人間レビュー済みのため）。矛盾は PR 本文「確認事項」で指摘する
 - **PR Iteration（`codex-needs-iteration` ラベル）の責務境界**:
   - **設計 PR (`codex/issue-<N>-design-<slug>`)** で `codex-needs-iteration` が付いた場合、watcher が次サイクルで Architect 役割の iteration を起動する。`docs/specs/<N>-<slug>/` 配下（`requirements.md` / `design.md` / `tasks.md`）の **書き換えは許容** され、成功時 `codex-awaiting-design-review` に遷移する
   - **実装 PR (`codex/issue-<N>-impl-<slug>`)** で `codex-needs-iteration` が付いた場合、watcher が次サイクルで Developer 役割の iteration を起動する。`docs/specs/<N>-<slug>/` 配下の **spec 書き換えは禁止** で、矛盾は PR 本文「確認事項」で指摘するに留める。成功時 `codex-ready-for-review` に遷移する
   - **1 PR = design or impl のどちらか**（混在禁止）。1 PR で spec 編集と実装変更を同居させない（branch 名が両 pattern に合致するケースは watcher が `ambiguous` として skip する）
-  - 設計 PR iteration は idd-codex 側で `PR_ITERATION_DESIGN_ENABLED=true` の opt-in が必要
+  - 設計 PR iteration は #112 以降デフォルト有効（`PR_ITERATION_DESIGN_ENABLED=true`）。`PR_ITERATION_DESIGN_ENABLED=false` を明示した watcher 環境では設計 PR iteration が無効になる
+- **Phase D Auto Rebase Processor（`AUTO_REBASE_MODE=codex` opt-in 時のみ起動 / #17）**:
+  - `codex-needs-rebase` + approved な open PR について、Codex が rebase を試行し、変更ファイルが `MECHANICAL_PATHS` allowlist に閉じていれば既存 approve を維持して auto-merge へ、allowlist 外なら approving review を **review dismissal API** で剥がして `codex-ready-for-review` に戻す
+  - 失敗時（conflict 未解消 / timeout / push 失敗 / dismissal API 失敗）は `codex-failed` で人間にエスカレートし、`codex-needs-rebase` を残置する。再試行は `codex-failed` ラベル除去まで自動では行われない
+  - 既定 `AUTO_REBASE_MODE=off` のため、未設定環境では本機能は完全に no-op（NFR 1.1）。導入する場合は idd-codex README「Auto Rebase Processor (Phase D)」節を参照
 - 各エージェントの成果物は `docs/specs/<番号>-<slug>/` 配下に保存する（Kiro / cc-sdd 互換）
   - `requirements.md`（PM）— EARS 形式の AC、numeric 階層 ID
   - `design.md`（Architect、条件付き）— File Structure Plan / Components and Interfaces / Traceability
@@ -196,6 +201,7 @@ PjM）は、以下の方針で **内部思考言語と出力言語を使い分�
 | `design-principles.md` | Architect | design.md の必須セクションと詳細度の方針 |
 | `design-review-gate.md` | Architect | design.md の自己レビュー（traceability / File Structure Plan 充填 / orphan 検出） |
 | `tasks-generation.md` | Architect / Developer | tasks.md のアノテーション規約と numeric ID 階層 |
+| `issue-dependency.md` | PM / Triage / Architect | Issue 間依存・親子関係の canonical 記法（`Depends on:` / `Parent:` 他）と互換 alias マッピング |
 
 ルール群は [cc-sdd](https://github.com/gotalab/cc-sdd)（MIT License, Copyright gotalab）から
 adapt したものです。
@@ -261,6 +267,6 @@ adapt したものです。
 
 ## 参考資料
 
-- 各役割の詳細定義: `.codex/agents/*.md`
+- 各サブエージェントの詳細定義: `.codex/agents/*.md`
 - Triage プロンプト: `~/bin/idd-codex-triage-prompt.tmpl`
 - ワークフロー全体像: `README.md`（または idd-codex テンプレート）

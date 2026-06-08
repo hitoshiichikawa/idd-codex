@@ -174,15 +174,39 @@ assert_eq "tail-reject: TSV (Req 2.1 / Req 4.4 backward compat)" "$expected" "$o
 out=$(run_parse "inline-approve-backticks.txt") || true
 assert_eq "inline-approve-backticks: TSV (Req 1.1 + 2.2)" "$(printf 'approve\t\t')" "$out"
 
-# Req 1.6: RESULT 行なしは rc=2
+# Req 1.6: RESULT 行なしは rc=2（装飾起因 parse 失敗）
+# Issue #296 Req 1.2: ファイル存在下での RESULT 抽出失敗は装飾起因として rc=2 を維持する。
 rc=0
 out=$(parse_review_result "$FIXTURE_DIR/no-result.txt") || rc=$?
-assert_rc "no-result: parse rc=2 (Req 1.6)" 2 "$rc"
+assert_rc "no-result: parse rc=2 (Req 1.6 / Issue #296 Req 1.2 ファイルあり RESULT 欠落 = parse-failed 維持)" 2 "$rc"
 
-# Req 1.5: ファイル不存在は rc=2
+# Issue #296 Req 1.1: ファイル不存在は装飾起因 parse 失敗（rc=2）と区別して rc=3 を返す。
+# 旧仕様（rc=2）から本要件で rc=3 に変更。`run_reviewer_stage` / `run_per_task_reviewer` 側で
+# 同一 round 内 1 回限定リトライを発火させるためのシグナル。
 rc=0
 out=$(parse_review_result "$FIXTURE_DIR/__no_such_file__.txt") || rc=$?
-assert_rc "missing file: parse rc=2 (Req 1.5)" 2 "$rc"
+assert_rc "missing file: parse rc=3 (Issue #296 Req 1.1 ファイル不在 = missing-file rc=3 / 旧 rc=2 から変更)" 3 "$rc"
+
+# Issue #296 Req 5.1 / Req 5.2 / NFR 1.2: 既存装飾耐性パース (#63) のリグレッション防止。
+# ファイル存在 + RESULT 行が装飾されている既存ケースは引き続き rc=0 (approve / reject) を返す。
+echo ""
+echo "--- Issue #296 backward compatibility (decoration parse retention) ---"
+
+rc=0
+out=$(parse_review_result "$FIXTURE_DIR/inline-approve-backticks.txt") || rc=$?
+assert_rc "decoration approve: parse rc=0 (Issue #296 Req 5.1 / NFR 1.2 装飾耐性パース維持)" 0 "$rc"
+
+rc=0
+out=$(parse_review_result "$FIXTURE_DIR/inline-reject-backticks.txt") || rc=$?
+assert_rc "decoration reject: parse rc=0 (Issue #296 Req 5.1 / NFR 1.2 装飾耐性パース維持)" 0 "$rc"
+
+rc=0
+out=$(parse_review_result "$FIXTURE_DIR/multi-last-wins-approve.txt") || rc=$?
+assert_rc "multi-last-wins approve: parse rc=0 (Issue #296 Req 5.2 / NFR 1.2 最後マッチ採用維持)" 0 "$rc"
+
+rc=0
+out=$(parse_review_result "$FIXTURE_DIR/multi-last-wins-reject.txt") || rc=$?
+assert_rc "multi-last-wins reject: parse rc=0 (Issue #296 Req 5.2 / NFR 1.2 最後マッチ採用維持)" 0 "$rc"
 
 echo ""
 echo "==========================================="

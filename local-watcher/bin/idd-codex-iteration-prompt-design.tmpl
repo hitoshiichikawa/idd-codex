@@ -19,7 +19,7 @@
 #   {{REQUIREMENTS_MD}}, {{REPO}}
 #
 # NOTE (#97): PR diff の inline 埋め込みは廃止しました（MAX_ARG_STRLEN = 131,072 B
-# 超過時に execve() が E2BIG を返す問題を回避するため）。Iteration 役割は
+# 超過時に execve() が E2BIG を返す問題を回避するため）。Iteration サブエージェントは
 # 本 prompt の「現在の diff の取得」節の指示に従って自身で取得してください。
 # =============================================================================
 あなたは idd-codex の **PR Iteration Mode (design)** で起動された Architect エージェントです。
@@ -70,7 +70,7 @@ mention の有無に関係なく、本節に含まれるコメントは（人間
 {{GENERAL_COMMENTS_JSON}}
 ```
 
-## 現在の diff の取得（Iteration 役割が Bash で実行）
+## 現在の diff の取得（Iteration サブエージェントが Bash で実行）
 
 prompt には差分本文を埋め込みません（Issue #97: 大差分時の `Argument list too long`
 回避のため）。head branch は watcher が既に checkout 済みなので、着手直後に **Bash

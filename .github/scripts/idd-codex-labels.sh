@@ -65,15 +65,19 @@ LABELS=(
   "codex-auto-dev|1f77b4|【Issue 用】 自動開発対象"
   "codex-needs-decisions|f1c40f|【Issue 用】 人間の判断が必要"
   "codex-awaiting-design-review|e67e22|【Issue 用】 設計 PR レビュー待ち（Architect 発動時）"
-  "codex-claimed|c39bd3|【Issue 用】 Codex が claim 済（Triage 実行中）"
-  "codex-picked-up|9b59b6|【Issue 用】 Codex 実行中"
+  "codex-claimed|c39bd3|【Issue 用】 Codex CLI が claim 済（Triage 実行中）"
+  "codex-picked-up|9b59b6|【Issue 用】 Codex CLI 実行中"
   "codex-ready-for-review|2ecc71|【Issue 用】 PR 作成完了"
   "codex-failed|e74c3c|【Issue 用】 自動実行が失敗（復旧時は codex-ready-for-review を先に付与してから外す）"
   "codex-skip-triage|95a5a6|【Issue 用】 Triage をスキップ"
   "codex-needs-rebase|fbca04|【PR 用】 approved PR で base が古い／conflict が発生済み（Phase A: Merge Queue Processor が付与）"
   "codex-needs-iteration|d4c5f9|【PR 用】 PR レビューコメントの反復対応待ち（#26 PR Iteration Processor が処理）"
-  "codex-needs-quota-wait|c5def5|【Issue 用】 Codex quota 超過で reset 待ち（Quota Resume Processor が自動除去）"
+  "codex-needs-quota-wait|c5def5|【Issue 用】 Codex Max quota 超過で reset 待ち（Quota Resume Processor が自動除去）"
   "codex-staged-for-release|b8e0d2|【Issue 用】 develop に merge 済み、main 到達待ち（multi-branch 運用専用）"
+  "codex-st-failed|d73a4a|【Issue 用】 ST failure 検知後 revert 済み（Phase B Promote Pipeline が付与）"
+  "codex-awaiting-slot|c5def5|【Issue 用】 hot file 競合予防で同サイクル dispatch を見送り中（Phase E Path Overlap Checker が付与・除去）"
+  "codex-blocked|b60205|【Issue 用】 依存 Issue 未 merge により codex-auto-dev 進行不能"
+  "codex-hotfix|d93f0b|【Issue 用】 codex-hotfix 優先処理対象（Dispatcher が非 codex-hotfix より先に投入）"
 )
 
 echo "📌 idd-codex ラベルを作成します"
@@ -100,16 +104,12 @@ if ! EXISTING_LABELS_JSON=$(gh label list "${REPO_ARG[@]}" --limit 1000 --json n
   exit 1
 fi
 
-# 取得結果を name → 1 の連想配列に展開する。
-declare -A EXISTING_LABELS=()
-while IFS= read -r existing_name; do
-  [ -n "$existing_name" ] && EXISTING_LABELS["$existing_name"]=1
-done < <(printf '%s' "$EXISTING_LABELS_JSON" | jq -r '.[].name')
+EXISTING_LABEL_NAMES=$(printf '%s' "$EXISTING_LABELS_JSON" | jq -r '.[].name')
 
 for spec in "${LABELS[@]}"; do
   IFS="|" read -r NAME COLOR DESC <<< "$spec"
   printf "  %-25s ... " "$NAME"
-  if [ -n "${EXISTING_LABELS[$NAME]:-}" ]; then
+  if printf '%s\n' "$EXISTING_LABEL_NAMES" | grep -qxF "$NAME"; then
     # 既存ラベル
     if [ -n "$FORCE" ]; then
       if gh label create "$NAME" --color "$COLOR" --description "$DESC" --force "${REPO_ARG[@]}" >/dev/null 2>&1; then

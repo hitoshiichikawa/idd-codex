@@ -41,7 +41,10 @@ fi
 # Issue #108: 元々の inline `gh pr view --repo "$REPO" --head "$BRANCH"` 呼び出しは
 # verify_stagec_pr_or_retry ヘルパーに置き換えられた。サニティチェックは
 # (a) 新ヘルパー関数定義と (b) Stage C 完了時の呼び出し配線、(c) ヘルパー内部の
-# gh pr view --head 呼び出し（PR URL 取得ロジック）が残っていることを確認する。
+# gh pr list --head --state all 呼び出し（PR URL 取得ロジック）が残っていることを確認する。
+# （`gh pr view` は `--head` 非対応で常に失敗し、open のみ探索だと高速 merge 済み PR を
+#  取りこぼすため、list + `--state all` で open/merged 双方を検出する。stageC-pr-missing
+#  誤検知の回帰ガード。）
 if ! grep -q "verify_stagec_pr_or_retry()" "$WATCHER_SH"; then
   echo "ERROR: idd-codex-issue-watcher.sh に verify_stagec_pr_or_retry 定義が見つからない (Issue #108)" >&2
   exit 2
@@ -55,8 +58,8 @@ if ! grep -q 'verify_stagec_pr_or_retry "\$BRANCH" "\$NUMBER"' "$WATCHER_SH"; th
 fi
 # 同上（"$REPO" / "$branch" の文字列リテラルを grep する）
 # shellcheck disable=SC2016
-if ! grep -q 'gh pr view --repo "\$REPO" --head "\$branch"' "$WATCHER_SH"; then
-  echo "ERROR: idd-codex-issue-watcher.sh に PR 実在 verify (gh pr view --head) が見つからない" >&2
+if ! grep -q 'gh pr list --repo "\$REPO" --head "\$branch" --state all' "$WATCHER_SH"; then
+  echo "ERROR: idd-codex-issue-watcher.sh に PR 実在 verify (gh pr list --head --state all) が見つからない" >&2
   exit 2
 fi
 
@@ -68,8 +71,8 @@ _test_stagec_complete() {
 
   rm -f "$_qa_reset_file_c"
   local _stagec_pr_url _stagec_verify_rc=0
-  _stagec_pr_url=$(gh pr view --repo "$REPO" --head "$BRANCH" \
-                      --json url --jq '.url' 2>/dev/null) || _stagec_verify_rc=$?
+  _stagec_pr_url=$(gh pr list --repo "$REPO" --head "$BRANCH" --state all \
+                      --json url --jq '.[0].url // empty' 2>/dev/null) || _stagec_verify_rc=$?
   if [ "$_stagec_verify_rc" -eq 0 ] && [ -n "$_stagec_pr_url" ]; then
     echo "Stage C 完了 / PR 作成済み"
     return 0
@@ -120,7 +123,7 @@ echo "--- Stage C PR verify cases ---"
 
 # Req 4.1, 4.3: gh が PR URL を返す → return 0
 gh() {
-  # gh pr view --repo X --head Y --json url --jq '.url'
+  # gh pr list --repo X --head Y --state all --json url --jq '.[0].url // empty'
   echo "https://github.com/owner/test/pull/45"
   return 0
 }
@@ -136,9 +139,9 @@ assert_eq "PR 実在あり: mark_issue_failed 未呼出 (Req 4.3)" "" "$LAST_MAR
 
 # Req 4.2: gh は成功 (rc=0) だが URL が空（--head に対応 PR が無い） → codex-failed
 gh() {
-  # gh は対応 PR 無しでも成功で終了するが --jq '.url' が空文字列 / null になる
-  # （gh pr view は head に該当 PR が無いと exit 1 を返すケースもあるが、
-  # gh 1.x の挙動差を吸収するため空文字 + 成功も同等に扱う）
+  # gh は対応 PR 無しでも成功で終了するが --jq '.[0].url // empty' が空文字列になる
+  # （gh pr list は head に該当 PR が無いと空配列 [] + exit 0 を返すため空文字 + 成功と
+  # して扱う。旧 gh pr view --head 経路が返した exit 1 ケースも空文字 + 成功と同等に吸収する）
   echo ""
   return 0
 }

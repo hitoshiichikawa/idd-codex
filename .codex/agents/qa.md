@@ -50,6 +50,6 @@ Product Manager の要件定義（`docs/specs/<番号>-<slug>/requirements.md`�
 
 2026 年 4 月時点、本エージェントは idd-codex の自動ワークフロー（Triage / ローカル watcher / GitHub Actions）
 には **組み込まれていません**。Developer が書いたテストに対して独立レビューが欲しい場面で、
-人間が Codex の対話セッションから `qa` 役割を明示的に呼び出して使用してください。
+人間が Codex CLI の対話セッションから `qa` サブエージェントを明示的に呼び出して使用してください。
 
 将来的には Triage で「高リスク Issue」と判定された場合に自動起動する運用を検討しています。
