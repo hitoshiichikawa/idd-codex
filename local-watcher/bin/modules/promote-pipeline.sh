@@ -1069,9 +1069,66 @@ pp_issue_has_label() {
     '.labels // [] | map(.name) | index($l)' >/dev/null 2>&1
 }
 
+# pp_pr_issue_candidate_rows: merged PR JSON から staged-for-release 自動付与候補を抽出する。
+# stdout は `<issue_number>\t<source>\t<pr_number>` の 1 行 1 候補。human-readable log は出さない。
+# closing refs は既存互換として managed 判定なしで読むが、body plain reference は managed PR
+# （同一 repo の `codex/issue-<N>-impl-*` branch、または codex/ branch + title issue 表記）
+# に限定して読む。caller 側は fork PR を除外済みだが、本 helper でも same-repo を再確認する。
+pp_pr_issue_candidate_rows() {
+  local pr_json="$1"
+  local repo_owner="$2"
+  echo "$pr_json" | jq -r --arg owner "$repo_owner" '
+    def issue_nums_from_text:
+      (. // "" | tostring) as $text
+      | [ $text
+          | scan("(#|[Ii][Ss][Ss][Uu][Ee][ -]?)([0-9]+)")
+          | .[1]
+          | tonumber?
+        ];
+    def issue_nums_from_head:
+      [ try ((.headRefName // "")
+          | capture("^codex/issue-(?<n>[0-9]+)-impl(-resume)?-").n
+          | tonumber) catch empty ];
+    def same_repo:
+      ((.headRepositoryOwner.login // "") == $owner)
+      and ((.isCrossRepository // false) != true);
+    def codex_head:
+      ((.headRefName // "") | startswith("codex/"));
+    . as $pr
+    | ($pr.number // "") as $pr_number
+    | if (same_repo | not) then
+        empty
+      else
+        (issue_nums_from_head) as $head_nums
+        | (($pr.title // "") | issue_nums_from_text) as $title_nums
+        | ((($head_nums | length) > 0)
+            or (codex_head and (($title_nums | length) > 0))) as $managed
+        | [
+            (($pr.closingIssuesReferences // [])[]
+              | (.number? | tonumber?)
+              | select(. != null)
+              | { issue: ., source: "closing-ref" }),
+            (if ($head_nums | length) > 0 then
+              ($head_nums[] | { issue: ., source: "head" })
+            else empty end),
+            (if (codex_head and (($title_nums | length) > 0)) then
+              ($title_nums[] | { issue: ., source: "title" })
+            else empty end),
+            (if $managed then
+              (($pr.body // "") | issue_nums_from_text[] | { issue: ., source: "body-plain" })
+            else empty end)
+          ]
+        | unique_by(.issue, .source)
+        | sort_by(.issue, .source)
+        | .[]
+        | "\(.issue)\t\(.source)\t\($pr_number)"
+      end
+  ' 2>/dev/null
+}
+
 # pp_collect_merged_issues: Phase A 直後の状態で「`BASE_BRANCH` に merge 済みかつ
-# `Closes #N` でリンクされている Issue」を抽出し、未付与の Issue には
-# `codex-staged-for-release` を自動付与する。fork PR は除外する（NFR 2.4）。
+# closing refs / managed PR の branch・title・plain reference から対象 Issue を抽出し、
+# 未付与の Issue には `codex-staged-for-release` を自動付与する。fork PR は除外する（NFR 2.4）。
 # 自動付与と人間付与の source 区別は行わない（Req 2.1.2、同一ラベル共有）。
 #
 # stdout: 現時点で `codex-staged-for-release` を持つ全 open Issue の番号を 1 行 1 件で出力
@@ -1085,21 +1142,55 @@ pp_collect_merged_issues() {
       --repo "$REPO" \
       --state merged \
       --base "$BASE_BRANCH" \
-      --json number,headRepositoryOwner,closingIssuesReferences \
+      --json number,headRepositoryOwner,isCrossRepository,headRefName,baseRefName,title,body,mergeCommit,closingIssuesReferences,mergedAt,updatedAt \
       --limit 50 2>/dev/null); then
     pp_warn "merged PR の取得に失敗しました（gh pr list タイムアウトまたはエラー）"
     return 0
   fi
 
-  # 2. fork PR を除外（NFR 2.4）し、closingIssuesReferences から Issue 番号を抽出
-  local linked_issues
-  linked_issues=$(echo "$recent_merged_prs_json" | jq -r \
-    --arg owner "$repo_owner" \
-    '[.[]
-      | select((.headRepositoryOwner.login // "") == $owner)
-      | (.closingIssuesReferences // [])[]
-      | .number
-    ] | unique | .[]')
+  # 2. fork PR を除外（NFR 2.4）し、closing refs / managed PR resolver から Issue 番号を抽出
+  local pr_objects
+  if ! pr_objects=$(echo "$recent_merged_prs_json" | jq -c '
+      sort_by(.mergedAt // .updatedAt // "") | reverse | .[]
+    ' 2>/dev/null); then
+    pp_warn "merged PR JSON の解析に失敗しました（auto-label は安全側で skip）"
+    pr_objects=""
+  fi
+
+  local candidate_rows=""
+  local pr_json pr_number pr_base pr_rows
+  while IFS= read -r pr_json; do
+    [ -n "$pr_json" ] || continue
+    pr_number=$(echo "$pr_json" | jq -r '.number // "unknown"' 2>/dev/null || echo "unknown")
+    pr_base=$(echo "$pr_json" | jq -r '.baseRefName // ""' 2>/dev/null || echo "")
+    # gh pr list --base が主フィルタ。baseRefName が取れる場合のみ二重確認する。
+    if [ -n "$pr_base" ] && [ "$pr_base" != "$BASE_BRANCH" ]; then
+      pp_warn "pr=#${pr_number} baseRefName=${pr_base} が BASE_BRANCH=${BASE_BRANCH} と一致しないため auto-label skip"
+      continue
+    fi
+    if ! pr_rows=$(pp_pr_issue_candidate_rows "$pr_json" "$repo_owner"); then
+      pp_warn "pr=#${pr_number} Issue 候補の解析に失敗しました（当該 PR の auto-label は skip）"
+      continue
+    fi
+    if [ -n "$pr_rows" ]; then
+      if [ -n "$candidate_rows" ]; then
+        candidate_rows="${candidate_rows}
+${pr_rows}"
+      else
+        candidate_rows="$pr_rows"
+      fi
+    fi
+  done <<< "$pr_objects"
+
+  local linked_issues=""
+  if [ -n "$candidate_rows" ]; then
+    linked_issues=$(printf '%s\n' "$candidate_rows" | awk -F '\t' '
+      $1 ~ /^[0-9]+$/ { seen[$1] = 1 }
+      END {
+        for (n in seen) print n
+      }
+    ' | sort -n)
+  fi
 
   # 3. 各 Issue について `codex-staged-for-release` ラベルの有無を確認し、
   #    未付与なら自動付与する（重複付与は抑止 / Req 2.1.1, 2.1.3）
@@ -1108,6 +1199,19 @@ pp_collect_merged_issues() {
   if [ -n "$linked_issues" ]; then
     while IFS= read -r issue_number; do
       [ -n "$issue_number" ] || continue
+      local candidate_sources candidate_prs
+      candidate_sources=$(printf '%s\n' "$candidate_rows" | awk -F '\t' -v issue="$issue_number" '
+        $1 == issue && !seen[$2]++ {
+          out = out (out ? "," : "") $2
+        }
+        END { print out }
+      ')
+      candidate_prs=$(printf '%s\n' "$candidate_rows" | awk -F '\t' -v issue="$issue_number" '
+        $1 == issue && !seen[$3]++ {
+          out = out (out ? "," : "") "#" $3
+        }
+        END { print out }
+      ')
       if pp_issue_has_label "$issue_number" "$LABEL_STAGED_FOR_RELEASE"; then
         # AC 2.1.3: 既付与なら API 再送しない
         skipped=$((skipped + 1))
@@ -1117,7 +1221,7 @@ pp_collect_merged_issues() {
       if timeout "$PROMOTE_GIT_TIMEOUT" \
           gh issue edit "$issue_number" --repo "$REPO" \
             --add-label "$LABEL_STAGED_FOR_RELEASE" >/dev/null 2>&1; then
-        pp_log "issue=#${issue_number} action=label-add label=${LABEL_STAGED_FOR_RELEASE} source=auto" >&2
+        pp_log "issue=#${issue_number} action=label-add label=${LABEL_STAGED_FOR_RELEASE} source=auto resolver_sources=${candidate_sources:-unknown} prs=${candidate_prs:-unknown}" >&2
         added=$((added + 1))
       else
         pp_warn "issue=#${issue_number} codex-staged-for-release 自動付与に失敗（後続 Issue は継続）"
@@ -1135,39 +1239,87 @@ pp_collect_merged_issues() {
     || pp_warn "codex-staged-for-release 付き Issue 一覧の取得に失敗（per-Issue 処理を見送る）"
 }
 
-# pp_resolve_merge_sha: Issue にリンクされた直近の merge commit SHA を解決する。
-# GitHub の `gh issue view --json closedByPullRequestsReferences` で Issue を閉じた
-# PR を取得し、各 PR の mergeCommit.oid を最新（updatedAt 降順）から拾う。
+# pp_resolve_merge_sha: Issue に対応する直近の merge commit SHA を解決する。
+# まず既存互換の closedByPullRequestsReferences 経路を使い、解決できない場合は
+# BASE_BRANCH merged PR の managed resolver で no-closing-keyword PR の mergeCommit.oid を探す。
 #
 # 入力: $1 = Issue 番号
 # 出力（stdout）: merge commit SHA（解決できた場合）
-# 戻り値: 0 = 解決成功 / 1 = 失敗（Issue が PR 経由で閉じられていない・取得失敗等）
+# 戻り値: 0 = 解決成功 / 1 = 失敗（対応 PR が見つからない・取得失敗等）
 pp_resolve_merge_sha() {
   local issue_number="$1"
   local pr_list_json
   if ! pr_list_json=$(timeout "$PROMOTE_GIT_TIMEOUT" \
       gh issue view "$issue_number" --repo "$REPO" \
         --json closedByPullRequestsReferences 2>/dev/null); then
+    pp_warn "issue=#${issue_number} closedByPullRequestsReferences の取得に失敗"
+  else
+    # PR ごとに mergeCommit.oid を取得（必要に応じて gh pr view で補完）
+    local pr_numbers
+    if pr_numbers=$(echo "$pr_list_json" | jq -r \
+        '[.closedByPullRequestsReferences // [] | .[]
+          | select(.state == "MERGED")
+          | .number] | sort | reverse | .[]' 2>/dev/null); then
+      local pr_number merge_sha
+      while IFS= read -r pr_number; do
+        [ -n "$pr_number" ] || continue
+        merge_sha=$(timeout "$PROMOTE_GIT_TIMEOUT" \
+          gh pr view "$pr_number" --repo "$REPO" \
+            --json mergeCommit --jq '.mergeCommit.oid // ""' 2>/dev/null) || continue
+        if [ -n "$merge_sha" ] && [ "$merge_sha" != "null" ]; then
+          echo "$merge_sha"
+          return 0
+        fi
+      done <<< "$pr_numbers"
+    else
+      pp_warn "issue=#${issue_number} closedByPullRequestsReferences JSON の解析に失敗"
+    fi
+  fi
+
+  # no-closing-keyword managed PR では Issue 側の closedBy refs が空になるため、
+  # BASE_BRANCH merged PR の managed resolver から対象 Issue を含む PR を探す。
+  local repo_owner="${REPO%%/*}"
+  local recent_merged_prs_json
+  if ! recent_merged_prs_json=$(timeout "$PROMOTE_GIT_TIMEOUT" gh pr list \
+      --repo "$REPO" \
+      --state merged \
+      --base "$BASE_BRANCH" \
+      --json number,headRepositoryOwner,isCrossRepository,headRefName,baseRefName,title,body,mergeCommit,closingIssuesReferences,mergedAt,updatedAt \
+      --limit 50 2>/dev/null); then
+    pp_warn "issue=#${issue_number} merge SHA fallback 用 merged PR 取得に失敗"
     return 1
   fi
-  # PR ごとに mergeCommit.oid を取得（必要に応じて gh pr view で補完）
-  local pr_numbers
-  pr_numbers=$(echo "$pr_list_json" | jq -r \
-    '[.closedByPullRequestsReferences // [] | .[]
-      | select(.state == "MERGED")
-      | .number] | sort | reverse | .[]' 2>/dev/null) || return 1
-  [ -n "$pr_numbers" ] || return 1
-  local pr_number merge_sha
-  while IFS= read -r pr_number; do
-    [ -n "$pr_number" ] || continue
-    merge_sha=$(timeout "$PROMOTE_GIT_TIMEOUT" \
-      gh pr view "$pr_number" --repo "$REPO" \
-        --json mergeCommit --jq '.mergeCommit.oid // ""' 2>/dev/null) || continue
+
+  local pr_objects
+  if ! pr_objects=$(echo "$recent_merged_prs_json" | jq -c '
+      sort_by(.mergedAt // .updatedAt // "") | reverse | .[]
+    ' 2>/dev/null); then
+    pp_warn "issue=#${issue_number} merge SHA fallback 用 merged PR JSON の解析に失敗"
+    return 1
+  fi
+
+  local pr_json pr_number pr_base pr_rows merge_sha
+  while IFS= read -r pr_json; do
+    [ -n "$pr_json" ] || continue
+    pr_number=$(echo "$pr_json" | jq -r '.number // "unknown"' 2>/dev/null || echo "unknown")
+    pr_base=$(echo "$pr_json" | jq -r '.baseRefName // ""' 2>/dev/null || echo "")
+    if [ -n "$pr_base" ] && [ "$pr_base" != "$BASE_BRANCH" ]; then
+      continue
+    fi
+    if ! pr_rows=$(pp_pr_issue_candidate_rows "$pr_json" "$repo_owner"); then
+      pp_warn "issue=#${issue_number} pr=#${pr_number} merge SHA fallback 候補の解析に失敗"
+      continue
+    fi
+    if ! printf '%s\n' "$pr_rows" | awk -F '\t' -v issue="$issue_number" '$1 == issue { found=1 } END { exit(found ? 0 : 1) }'; then
+      continue
+    fi
+    merge_sha=$(echo "$pr_json" | jq -r '.mergeCommit.oid // ""' 2>/dev/null || echo "")
     if [ -n "$merge_sha" ] && [ "$merge_sha" != "null" ]; then
       echo "$merge_sha"
       return 0
     fi
-  done <<< "$pr_numbers"
+    pp_warn "issue=#${issue_number} pr=#${pr_number} managed PR を検出したが mergeCommit.oid が空"
+  done <<< "$pr_objects"
   return 1
 }
 
