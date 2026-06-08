@@ -10,7 +10,7 @@
   - _Requirements:_ 1.1, 1.4, 2.1, 2.2, 2.3, 2.4, 2.5, 3.1, 3.2, 3.3, 3.5, 4.1, 4.2, 5.1, 5.2, 5.4
   - _Boundary:_ Shared Task Rule, Architect Guidance, Task Boundary Fixture Driver
 
-- [ ] 2. Developer / Reviewer prompt を同じ contract に接続する
+- [x] 2. Developer / Reviewer prompt を同じ contract に接続する
   - `.codex/agents/developer.md` と `repo-template/.codex/agents/developer.md` に、対象 task の `_Requirements:_` に含まれる AC の必要 test は同 task 作業として扱うことを byte-identical で追加する。
   - Developer guidance で、`- [ ]*` または後続 task に defer された coverage AC を対象 task の完了条件へ混ぜないことを明記する。
   - `.codex/agents/reviewer.md` と `repo-template/.codex/agents/reviewer.md` に、per-task review の `missing test` 判定対象は当該 task の `_Requirements:_` のみであることを byte-identical で追加する。
