@@ -29,7 +29,7 @@
   - _Boundary:_ README Contract Documentation, Task Boundary Fixture Driver
   - _Depends:_ 1, 2
 
-- [ ] 4. Regression fixture coverage と sync verification を完成させる
+- [x] 4. Regression fixture coverage と sync verification を完成させる
   - `tests/local-watcher/task-boundary-contract/fixtures/tasks-same-task-coverage.md` で、coverage AC を持つ task が同 task detail に regression / failure / safety test work を含む valid case を固定する。
   - `tests/local-watcher/task-boundary-contract/fixtures/tasks-deferred-coverage.md` で、先行 partial task が deferred coverage AC を `_Requirements:_` に含めず、後続 coverage task が `_Depends:_` で依存する valid case を固定する。
   - `tests/local-watcher/task-boundary-contract/fixtures/tasks-invalid-deferred-ac.md` で、先行 task が coverage AC を含むのに test work を後続へ defer する invalid case を検出する。
