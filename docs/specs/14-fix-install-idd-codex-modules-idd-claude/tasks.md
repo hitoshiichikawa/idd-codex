@@ -20,7 +20,7 @@
   - `$HOME/bin/modules/` への fallback や旧 directory 要求は追加しない。
   - _Requirements: 2.1, 2.2, 2.3, 2.4, 3.2, 3.3, 3.4, 3.5_
 
-- [ ] 4. local watcher tests を新 module directory へ追従する
+- [x] 4. local watcher tests を新 module directory へ追従する
   - `local-watcher/test/*.sh` の `../bin/modules/` 参照を `../bin/idd-codex-modules/` へ更新する。
   - `module_loader_missing_test.sh` の `MODULES_DIR` と一時コピー先を `idd-codex-modules` に変更する。
   - missing module ケースで stderr が欠落ファイル名と新 directory を識別できることを確認する assertion を必要に応じて追加する。
