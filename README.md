@@ -492,7 +492,7 @@ bash .github/scripts/idd-codex-labels.sh --repo owner/repo
 | `codex-skip-triage` | 灰 | Triage をスキップ |
 | `codex-needs-rebase` | 黄 | approved PR で base 古い／conflict 発生済（Phase A Merge Queue Processor が付与） |
 | `codex-needs-iteration` | 紫 | PR レビューコメントの反復対応待ち（PR Iteration Processor #26 が処理） |
-| `codex-needs-quota-wait` | 雪 | Codex Max quota 超過で reset 待ち（Quota-Aware Watcher #66 / Quota Resume Processor が自動除去） |
+| `codex-needs-quota-wait` | 雪 | Codex Max quota 超過で reset 待ち（Issue/PR 共用。watcher が自動復帰） |
 | `codex-staged-for-release` | 薄緑 | `develop` に merge 済み、`main` 到達待ち（multi-branch 運用専用 / 人間 または future automation が付与） |
 | `codex-st-failed` | 赤系 (`d73a4a`) | ST failure 検知後に revert 済み（Phase B Promote Pipeline が付与）。Issue に適用 |
 | `codex-awaiting-slot` | 薄水色 (`c5def5`) | hot file 競合予防で同サイクル dispatch を見送り中（Phase E Path Overlap Checker が付与・自動除去）。Issue に適用 |
@@ -512,7 +512,7 @@ gh label create codex-failed           --repo owner/repo --color e74c3c --descri
 gh label create codex-skip-triage             --repo owner/repo --color 95a5a6 --description "Triage をスキップ"
 gh label create codex-needs-rebase            --repo owner/repo --color fbca04 --description "approved PR で base が古い／conflict 発生済（Phase A: Merge Queue Processor が付与）"
 gh label create codex-needs-iteration         --repo owner/repo --color d4c5f9 --description "PR レビューコメントの反復対応待ち（#26 PR Iteration Processor が処理）"
-gh label create codex-needs-quota-wait        --repo owner/repo --color c5def5 --description "Codex Max quota 超過で reset 待ち（Quota Resume Processor が自動除去）"
+gh label create codex-needs-quota-wait        --repo owner/repo --color c5def5 --description "【Issue/PR 用】 Codex Max quota 超過で reset 待ち（watcher が自動復帰）"
 gh label create codex-staged-for-release      --repo owner/repo --color b8e0d2 --description "develop に merge 済み、main 到達待ち（multi-branch 運用専用）"
 gh label create codex-st-failed               --repo owner/repo --color d73a4a --description "ST failure 検知後 revert 済み（Phase B Promote Pipeline が付与）"
 gh label create codex-awaiting-slot           --repo owner/repo --color c5def5 --description "hot file 競合予防で同サイクル dispatch を見送り中（Phase E Path Overlap Checker が付与・除去）"
@@ -1006,7 +1006,7 @@ PR #184）を防ぐための「最後の砦」です。
 | `codex-failed` | Issue | 自動実行停止中（impl 系では Stage A 失敗 / Stage A' 失敗 / Reviewer 異常終了 / Reviewer round=2 reject も含む）／**手動復旧時の手順**: [`codex-failed` 状態の Issue から手動復旧する手順](#codex-failed-状態の-issue-から手動復旧する手順) | Codex（エラー連続時） |
 | `codex-needs-rebase` | PR | approved PR で base 古い／conflict 発生済 | Codex（Phase A Merge Queue Processor）／解除は人間が conflict 解消後に手動で除去 |
 | `codex-needs-iteration` | PR | PR レビューコメントの反復対応待ち | 人間（レビュワー）が **PR に** 付与／解除は PR Iteration Processor (#26) が成功時 `codex-ready-for-review` に、上限到達時 `codex-failed` に切り替え |
-| `codex-needs-quota-wait` | Issue | Codex Max quota 超過で reset 待ち（codex CLI の `rate_limit_event` 検知時） | Codex（Quota-Aware Watcher #66）／解除は Quota Resume Processor が `reset 予定時刻 + QUOTA_RESUME_GRACE_SEC` 経過後に自動除去（人間の手動除去でも即時再開可能） |
+| `codex-needs-quota-wait` | Issue / PR | Codex Max quota 超過または usage-limit 風 fatal error で reset 待ち | Issue: Quota-Aware Watcher #66 が付与し Quota Resume Processor が自動除去。PR: PR Iteration Processor が `codex-needs-iteration` を外して付与し、reset 経過後に `codex-needs-iteration` へ戻す。 |
 | `codex-staged-for-release` | Issue | `develop` merge 済み、`main` 到達待ち（multi-branch 運用専用。`main` 到達 = GitHub auto-close が発火して Issue は close される前提） | 人間（もしくは Phase B Promote Pipeline の自動付与）／解除は ST success → Phase B が自動除去（`PROMOTE_PIPELINE_ENABLED=true` 時）、または `main` merge 時に GitHub auto-close で Issue が閉じることで実質的に意味を失う |
 | `codex-st-failed` | Issue | ST failure 検知後に revert 済み（Phase B Promote Pipeline が付与） | Codex（Phase B Promote Pipeline）／解除は ST failure を修正する PR を merge した運用者が手動で除去 |
 | `codex-awaiting-slot` | Issue | hot file 競合予防で同サイクル dispatch を見送り中（Phase E Path Overlap Checker 付与） | Codex（Phase E Path Overlap Checker）／解除は同 Phase が次サイクルで自動除去（先行 Issue PR merge で in-flight 集合縮小 → overlap empty）、または運用者が手動除去 |
@@ -2339,6 +2339,7 @@ watcher が Codex prompt に積むのは以下の 2 種類です。**`@codex` me
 | `PR_ITERATION_MAX_ROUNDS_IMPL` | `3`（未設定時） | impl PR で素早く escalate したい場合に明示 | **#122 新設**。実装 PR (`codex/issue-<N>-impl-<slug>`) の累計 iteration 上限。明示設定時は旧 `PR_ITERATION_MAX_ROUNDS` より優先 |
 | `PR_ITERATION_MAX_ROUNDS_DESIGN` | `0`（無制限、未設定時） | 設計レビューが収束しないと判断したら有限値を指定 | **#122 新設**。設計 PR (`codex/issue-<N>-design-<slug>`) の累計 iteration 上限。`0` は **「round 数超過のみによる escalate を行わない」** sentinel（無制限）。`0` でも下記 no-progress 検知は有効 |
 | `PR_ITERATION_NO_PROGRESS_LIMIT` | `3` | 進捗が無いまま連続して round を消費し続けるのを 3 round 程度で打ち切る | **#122 新設**。round 終了時に head branch への新規 commit が連続して観測されなかった回数。本値以上に達したら kind 共通で `codex-failed` に escalate（no-progress ループ検知） |
+| `PR_ITERATION_USAGE_FATAL_RETRY_LIMIT` | `1` | 既定のまま初回で人間判断待ちに退避 | usage-limit 風 fatal error で reset 時刻を抽出できない場合の有界 retry 上限。上限到達で `codex-needs-iteration` を外し `codex-needs-decisions` に退避 |
 | `PR_ITERATION_HEAD_PATTERN` | `^codex/issue-[0-9]+-impl-` | idd-codex 自動生成の実装 PR のみを対象とする | 実装 PR の自動 iteration 対象とする head branch の正規表現（jq `test()` 互換）。**#35 で既定厳格化**（旧 `^codex/`） |
 | `PR_ITERATION_DESIGN_ENABLED` | `true`（#112） | 無効化する場合のみ `false` | 設計 PR 拡張全体の有効化フラグ（**#35 新設**） |
 | `PR_ITERATION_DESIGN_HEAD_PATTERN` | `^codex/issue-[0-9]+-design-` | idd-codex 自動生成の設計 PR を対象とする既定値 | 設計 PR の自動 iteration 対象とする head branch の正規表現（**#35 新設**） |
@@ -3140,18 +3141,19 @@ Anthropic アカウント token を共有する場合は、reset 直後に複数
 ### reset 時刻の永続化方式
 
 reset 時刻は **`LOG_DIR` 配下のローカルファイル** `quota-reset-times.json` に
-Issue 番号 keyed の JSON として永続化される（#169）:
+Issue / PR keyed の JSON として永続化される（#169）:
 
 ```json
 {
   "<issue_number>": <epoch_seconds>,
-  "<issue_number>": <epoch_seconds>
+  "pr-<pr_number>": <epoch_seconds>
 }
 ```
 
 - ファイルパス: `$LOG_DIR/quota-reset-times.json`（`LOG_DIR` は `$HOME/.idd-codex/issue-watcher/logs/<repo_slug>`。
   repo slug 単位で分離済みのため、異なる repo の reset 時刻は同一ファイルに混在しない）
 - `<issue_number>`: GitHub Issue 番号（文字列キー）
+- `pr-<pr_number>`: PR Iteration usage-limit 風 fatal error で待機中の PR 番号（文字列キー）
 - `<epoch_seconds>`: UNIX 秒（整数。例: `1745928000`）
 - 1 Issue につき最新値 1 件のみ（書き込み時は当該 Issue 番号 key を upsert。`jq` で
   temp file → `mv` のアトミック書込）
@@ -3182,8 +3184,21 @@ Issue 番号 keyed の JSON として永続化される（#169）:
 - `StageC`: Stage C（PjM 実装 PR 作成）
 - `design`: design ルート（PM → Architect → PjM）
 
-PR Iteration Processor / Reviewer Gate / Merge Queue Processor 等の **PR 系
-Processor 内の codex 呼び出しは本機能の対象外**（Out of Scope）。
+PR Iteration Processor の通常の `rate_limit_event` 横断 wrapper は Issue Stage 用
+Quota-Aware Watcher の対象外です。ただし PR Iteration 中に Codex CLI が
+usage-limit 風 fatal error を返した場合は、PR Iteration Processor が同じ
+`codex-needs-quota-wait` ラベルを PR に付与し、`codex-needs-iteration` を除去して
+同一 round の無制限再試行を止めます。reset 時刻を抽出できた場合は repo slug 単位の
+`quota-reset-times.json` に `pr-<PR番号>` key で保存し、reset + grace 経過後に
+PR 側の resume 処理が `codex-needs-quota-wait` を外して `codex-needs-iteration` に戻します。
+reset 時刻を抽出できない場合は `codex-needs-decisions` に退避し、人間判断を要求します。
+
+PR Iteration の round 開始コメントは `idd-codex:pr-iteration-processing round=N` marker で
+重複確認され、同一 PR・同一 round の processing コメントは再投稿されません。これにより、
+fatal error で round marker が更新されない場合もコメントが cron tick ごとに増殖しません。
+
+Reviewer Gate / Merge Queue Processor 等、上記以外の PR 系 Processor 内の codex 呼び出しは
+本機能の対象外です。
 
 ### escalation コメントフォーマット
 
@@ -3215,7 +3230,7 @@ watcher が `<StageLabel>` 実行中に Codex CLI から `rate_limit_event (stat
 
 ### 自動 resume の条件
 
-- Quota Resume Processor が `gh issue list --label codex-needs-quota-wait --state open` で
+- Issue 側は Quota Resume Processor が `gh issue list --label codex-needs-quota-wait --state open` で
   対象 Issue を取得し、各 Issue について reset epoch を読み出す（ローカルファイル
   `quota-reset-times.json` を優先し、無ければ移行期フォールバックとして Issue body の
   旧 marker を読む）
@@ -3223,6 +3238,10 @@ watcher が `<StageLabel>` 実行中に Codex CLI から `rate_limit_event (stat
   codex-needs-quota-wait` で除去
 - 除去後はラベル状態のみ変更し、claim や Stage 実行を直接トリガーしない（次サイクルの
   Dispatcher が通常 pickup ループの対象として再選定する）
+- PR 側は PR Iteration Processor が `codex-needs-quota-wait` 付き open PR を取得し、
+  `quota-reset-times.json` の `pr-<PR番号>` key を読み出す。現在時刻 ≥
+  `reset_epoch + QUOTA_RESUME_GRACE_SEC` のとき `codex-needs-quota-wait` を外し、
+  `codex-needs-iteration` を付け直す
 - 永続化値が読み出せない / 不正値（破損ファイル含む）の場合はラベル維持で人間判断に委ねる
   （自動除去しない）
 

@@ -55,11 +55,12 @@ pi_pr_has_label() {
 pi_fetch_candidate_prs() {
   local repo_owner="${REPO%%/*}"
   local prs_json
-  # AC 1.1 / 1.4 / 1.5 / 8.4: codex-needs-iteration 付き、codex-failed / codex-needs-rebase 無し、非 draft
+  # AC 1.1 / 1.4 / 1.5 / 8.4: codex-needs-iteration 付き、codex-failed /
+  # codex-needs-rebase / codex-needs-quota-wait / codex-needs-decisions 無し、非 draft
   if ! prs_json=$(timeout "$PR_ITERATION_GIT_TIMEOUT" gh pr list \
       --repo "$REPO" \
       --state open \
-      --search "label:\"$LABEL_NEEDS_ITERATION\" -label:\"$LABEL_FAILED\" -label:\"$LABEL_NEEDS_REBASE\" -draft:true" \
+      --search "label:\"$LABEL_NEEDS_ITERATION\" -label:\"$LABEL_FAILED\" -label:\"$LABEL_NEEDS_REBASE\" -label:\"$LABEL_NEEDS_QUOTA_WAIT\" -label:\"$LABEL_NEEDS_DECISIONS\" -draft:true" \
       --json number,headRefName,baseRefName,isDraft,url,labels,headRepositoryOwner,body \
       --limit 50 2>/dev/null); then
     pi_warn "codex-needs-iteration PR の取得に失敗しました（gh pr list タイムアウトまたはエラー）"
@@ -221,6 +222,28 @@ pi_read_last_run() {
     | sed -E 's|.*last-run=||' \
     | tail -1)
   echo "${last_run:-}"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# pi_read_usage_fatal_count: PR body から usage-limit 風 fatal error の連続回数を取得
+#   入力: $1=pr_body, $2=round
+#   出力: stdout に整数（marker 不在なら "0"）
+#   marker 形式: <!-- idd-codex:pr-iteration-usage-fatal round=N count=K -->
+# ─────────────────────────────────────────────────────────────────────────────
+pi_read_usage_fatal_count() {
+  local pr_body="${1-}"
+  local round="${2:-0}"
+  if [ -z "$pr_body" ]; then
+    echo "0"
+    return 0
+  fi
+  local count
+  count=$(echo "$pr_body" \
+    | grep -oE "idd-codex:pr-iteration-usage-fatal round=${round} count=[0-9]+" \
+    | grep -oE 'count=[0-9]+' \
+    | grep -oE '[0-9]+$' \
+    | tail -1)
+  echo "${count:-0}"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -491,11 +514,37 @@ pi_post_processing_comment() {
   processing_msg=$(printf '%s\n%s' \
     ":robot: PR Iteration Processor が処理を開始しました (round ${new_round}/${max_display})。" \
     "<!-- idd-codex:pr-iteration-processing round=${new_round} -->")
+  if pi_processing_comment_exists "$pr_number" "$new_round"; then
+    pi_log "PR #${pr_number}: round=${new_round} の着手表明コメントは既に存在するため再投稿しません"
+    return 0
+  fi
   if ! timeout "$PR_ITERATION_GIT_TIMEOUT" \
       gh pr comment "$pr_number" --repo "$REPO" --body "$processing_msg" >/dev/null 2>&1; then
     pi_warn "PR #${pr_number}: 着手表明コメントの投稿に失敗"
   fi
   return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# pi_processing_comment_exists: 同一 round の processing marker が既存コメントにあるか判定
+#   入力: $1=pr_number, $2=round
+#   戻り値: 0=存在する / 1=存在しない（取得失敗時も WARN のうえ存在しない扱い）
+# ─────────────────────────────────────────────────────────────────────────────
+pi_processing_comment_exists() {
+  local pr_number="$1"
+  local round="$2"
+  local marker="<!-- idd-codex:pr-iteration-processing round=${round} -->"
+  local bodies
+  if ! bodies=$(timeout "$PR_ITERATION_GIT_TIMEOUT" \
+      gh api --paginate "/repos/${REPO}/issues/${pr_number}/comments?per_page=100" \
+        --jq '.[].body' 2>/dev/null); then
+    pi_warn "PR #${pr_number}: 既存 processing コメント取得に失敗、重複チェックをスキップ"
+    return 1
+  fi
+  if printf '%s\n' "$bodies" | grep -Fq "$marker"; then
+    return 0
+  fi
+  return 1
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -993,6 +1042,217 @@ pi_detect_quota_soft_fail() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# pi_extract_usage_limit_reset_epoch: usage-limit 風 message から reset epoch を抽出
+#   入力: $1=message
+#   出力: stdout に UNIX epoch（抽出不能なら空）
+# ─────────────────────────────────────────────────────────────────────────────
+pi_extract_usage_limit_reset_epoch() {
+  local message="${1:-}"
+  if [ -z "$message" ]; then
+    echo ""
+    return 0
+  fi
+
+  local raw
+  raw=$(printf '%s\n' "$message" \
+    | sed -nE 's/.*try again at ([A-Z][a-z]{2} [0-9]{1,2}(st|nd|rd|th)?, [0-9]{4} [0-9]{1,2}:[0-9]{2} (AM|PM)).*/\1/p' \
+    | tail -1)
+  if [ -z "$raw" ]; then
+    echo ""
+    return 0
+  fi
+
+  local normalized
+  normalized=$(printf '%s\n' "$raw" | sed -E 's/([0-9]+)(st|nd|rd|th)/\1/g')
+  local epoch=""
+  if epoch=$(date -d "$normalized" '+%s' 2>/dev/null); then
+    echo "$epoch"
+    return 0
+  fi
+  if epoch=$(date -j -f '%b %e, %Y %I:%M %p' "$normalized" '+%s' 2>/dev/null); then
+    echo "$epoch"
+    return 0
+  fi
+  echo ""
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# pi_detect_usage_limit_fatal: stream-json log から usage-limit 風 fatal error を検出
+#   入力: $1=log_path
+#   出力: 検出時のみ `<path>\t<reset_epoch>\t<message>` を 1 行
+#   戻り値: 0=検出 / 1=検出なし / 2=log 不在
+# ─────────────────────────────────────────────────────────────────────────────
+pi_detect_usage_limit_fatal() {
+  local log_path="${1:-}"
+  if [ -z "$log_path" ] || [ ! -f "$log_path" ] || [ ! -r "$log_path" ]; then
+    return 2
+  fi
+
+  local message
+  message=$(jq -R -r '
+    . as $line
+    | (try ($line | fromjson) catch null)
+    | select(type == "object") as $j
+    | [
+        ($j.message? // empty),
+        ($j.error? // {} | .message? // empty),
+        ($j.item? // {} | .message? // empty)
+      ][]
+    | select(type == "string")
+    | select(test("usage limit|purchase more credits|try again at"; "i"))
+  ' "$log_path" 2>/dev/null | tail -1)
+
+  if [ -z "$message" ]; then
+    return 1
+  fi
+
+  local epoch
+  epoch=$(pi_extract_usage_limit_reset_epoch "$message")
+  printf 'usage_limit_fatal\t%s\t%s\n' "$epoch" "$message"
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# pi_write_usage_fatal_marker: reset 不明 usage-limit 風 fatal の有界 retry marker を更新
+#   入力: $1=pr_number, $2=round, $3=count
+# ─────────────────────────────────────────────────────────────────────────────
+pi_write_usage_fatal_marker() {
+  local pr_number="$1"
+  local round="$2"
+  local count="$3"
+  local body
+  if ! body=$(timeout "$PR_ITERATION_GIT_TIMEOUT" \
+      gh pr view "$pr_number" --repo "$REPO" --json body --jq '.body // ""' 2>/dev/null); then
+    pi_warn "PR #${pr_number}: usage-limit fatal marker 用 body 取得に失敗"
+    return 1
+  fi
+
+  local marker="<!-- idd-codex:pr-iteration-usage-fatal round=${round} count=${count} -->"
+  local new_body
+  if echo "$body" | grep -qE "idd-codex:pr-iteration-usage-fatal round=${round} count=[0-9]+"; then
+    new_body=$(echo "$body" | sed -E "s|<!-- idd-codex:pr-iteration-usage-fatal round=${round} count=[0-9]+ -->|${marker}|g")
+  else
+    new_body="${body}
+
+${marker}"
+  fi
+
+  if ! timeout "$PR_ITERATION_GIT_TIMEOUT" \
+      gh pr edit "$pr_number" --repo "$REPO" --body "$new_body" >/dev/null 2>&1; then
+    pi_warn "PR #${pr_number}: usage-limit fatal marker 更新に失敗"
+    return 1
+  fi
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# pi_handle_usage_limit_fatal: PR Iteration の usage-limit 風 fatal error を退避分類する
+#   入力: $1=pr_number, $2=kind, $3=round, $4=log_path, $5=detect_line
+#   戻り値: 0=退避済み / 1=退避失敗または bounded retry 継続
+# ─────────────────────────────────────────────────────────────────────────────
+pi_handle_usage_limit_fatal() {
+  local pr_number="$1"
+  local kind="$2"
+  local round="$3"
+  local log_path="$4"
+  local detect_line="$5"
+
+  local rest reset_epoch message
+  rest="${detect_line#*$'\t'}"
+  reset_epoch="${rest%%$'\t'*}"
+  message="${rest#*$'\t'}"
+  local reset_iso=""
+  if [ -n "$reset_epoch" ]; then
+    reset_iso=$(qa_format_iso8601 "$reset_epoch")
+    qa_persist_reset_time "pr-${pr_number}" "$reset_epoch" \
+      || pi_warn "PR #${pr_number}: reset_epoch=${reset_epoch} の永続化に失敗（ラベル退避は継続）"
+    if ! timeout "$PR_ITERATION_GIT_TIMEOUT" gh pr edit "$pr_number" --repo "$REPO" \
+        --remove-label "$LABEL_NEEDS_ITERATION" \
+        --add-label "$LABEL_NEEDS_QUOTA_WAIT" >/dev/null 2>&1; then
+      pi_warn "PR #${pr_number}: usage-limit fatal quota-wait ラベル遷移に失敗"
+      return 1
+    fi
+
+    local wait_body
+    read -r -d '' wait_body <<EOF || true
+## ⏸️ PR Iteration quota wait
+
+PR Iteration 中に Codex CLI が usage-limit 風の fatal error を返したため、本 PR を
+\`${LABEL_NEEDS_QUOTA_WAIT}\` に退避し、\`${LABEL_NEEDS_ITERATION}\` を除去しました。
+
+### 検知情報
+
+- kind: \`${kind}\`
+- round: ${round}
+- reset 予定時刻 (UNIX epoch): \`${reset_epoch}\`
+- reset 予定時刻 (ISO 8601): \`${reset_iso}\`
+- log: \`${log_path}\`
+
+reset 予定時刻 + grace 経過後、PR Iteration Processor が本 PR を
+\`${LABEL_NEEDS_ITERATION}\` に戻します。即時再開する場合は
+\`${LABEL_NEEDS_QUOTA_WAIT}\` を外して \`${LABEL_NEEDS_ITERATION}\` を付け直してください。
+
+<!-- idd-codex:pr-iteration-quota-wait round=${round} reset=${reset_epoch} -->
+EOF
+    if ! timeout "$PR_ITERATION_GIT_TIMEOUT" \
+        gh pr comment "$pr_number" --repo "$REPO" --body "$wait_body" >/dev/null 2>&1; then
+      pi_warn "PR #${pr_number}: usage-limit fatal quota-wait コメント投稿に失敗"
+    fi
+    pi_log "PR #${pr_number}: kind=${kind} round=${round} usage-limit fatal detected reset_epoch=${reset_epoch} action=quota-wait"
+    return 0
+  fi
+
+  local pr_body prev_count new_count retry_limit
+  pr_body=$(timeout "$PR_ITERATION_GIT_TIMEOUT" \
+    gh pr view "$pr_number" --repo "$REPO" --json body --jq '.body // ""' 2>/dev/null || echo "")
+  prev_count=$(pi_read_usage_fatal_count "$pr_body" "$round")
+  new_count=$((prev_count + 1))
+  retry_limit="${PR_ITERATION_USAGE_FATAL_RETRY_LIMIT:-1}"
+  pi_write_usage_fatal_marker "$pr_number" "$round" "$new_count" || true
+
+  if [ "$new_count" -lt "$retry_limit" ]; then
+    pi_warn "PR #${pr_number}: kind=${kind} round=${round} usage-limit fatal reset 不明 count=${new_count}/${retry_limit} (bounded retry)"
+    return 1
+  fi
+
+  if ! timeout "$PR_ITERATION_GIT_TIMEOUT" gh pr edit "$pr_number" --repo "$REPO" \
+      --remove-label "$LABEL_NEEDS_ITERATION" \
+      --add-label "$LABEL_NEEDS_DECISIONS" >/dev/null 2>&1; then
+    pi_warn "PR #${pr_number}: usage-limit fatal decisions ラベル遷移に失敗"
+    return 1
+  fi
+
+  local decisions_body
+  read -r -d '' decisions_body <<EOF || true
+## 🤔 PR Iteration usage-limit 風 fatal error
+
+PR Iteration 中に Codex CLI が usage-limit 風の fatal error を返しましたが、reset 予定時刻を
+抽出できませんでした。同一 round の無制限再試行を止めるため、本 PR から
+\`${LABEL_NEEDS_ITERATION}\` を除去し、\`${LABEL_NEEDS_DECISIONS}\` に退避しています。
+
+### 検知情報
+
+- kind: \`${kind}\`
+- round: ${round}
+- bounded retry count: ${new_count}/${retry_limit}
+- log: \`${log_path}\`
+- message: \`${message}\`
+
+人間が quota 起因と判断して再開する場合は \`${LABEL_NEEDS_DECISIONS}\` を外し、
+\`${LABEL_NEEDS_ITERATION}\` を付け直してください。
+
+<!-- idd-codex:pr-iteration-usage-fatal round=${round} count=${new_count} -->
+EOF
+  if ! timeout "$PR_ITERATION_GIT_TIMEOUT" \
+      gh pr comment "$pr_number" --repo "$REPO" --body "$decisions_body" >/dev/null 2>&1; then
+    pi_warn "PR #${pr_number}: usage-limit fatal decisions コメント投稿に失敗"
+  fi
+  pi_log "PR #${pr_number}: kind=${kind} round=${round} usage-limit fatal reset unknown count=${new_count}/${retry_limit} action=needs-decisions"
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # pi_branch_is_codex_pr_head: branch 名が auto-commit 許可規約に一致するか判定
 #   入力: $1 = branch 名
 #   返り値: 0 = 一致（`codex/issue-<N>-<slug>` 形式）/ 1 = 不一致
@@ -1066,6 +1326,62 @@ pi_resolve_success_action() {
   fi
 
   echo "success"
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# pi_process_quota_resume: usage-limit 風 fatal で待機中の PR を reset 後に iteration へ戻す
+#   戻り値: 0 固定（API 失敗は WARN で後続継続）
+# ─────────────────────────────────────────────────────────────────────────────
+pi_process_quota_resume() {
+  local prs_json
+  if ! prs_json=$(timeout "$PR_ITERATION_GIT_TIMEOUT" gh pr list \
+      --repo "$REPO" \
+      --state open \
+      --search "label:\"$LABEL_NEEDS_QUOTA_WAIT\"" \
+      --json number,url \
+      --limit 50 2>/dev/null); then
+    pi_warn "codex-needs-quota-wait PR の取得に失敗（PR Iteration 本処理は継続）"
+    return 0
+  fi
+
+  local count
+  count=$(printf '%s\n' "$prs_json" | jq 'length' 2>/dev/null || echo 0)
+  if [ "$count" -eq 0 ]; then
+    return 0
+  fi
+
+  local now_epoch
+  now_epoch=$(date -u +%s)
+  local pr_number pr_url reset_epoch threshold
+  while IFS=$'\t' read -r pr_number pr_url; do
+    [ -z "$pr_number" ] && continue
+    if ! reset_epoch=$(qa_load_reset_time "pr-${pr_number}"); then
+      pi_warn "PR #${pr_number}: quota wait reset 時刻読み出し失敗 → ラベル維持"
+      continue
+    fi
+    threshold=$((reset_epoch + QUOTA_RESUME_GRACE_SEC))
+    if [ "$now_epoch" -lt "$threshold" ]; then
+      pi_log "PR #${pr_number}: quota-wait 継続 reset_epoch=${reset_epoch} wait_sec=$((threshold - now_epoch)) (${pr_url})"
+      continue
+    fi
+    if timeout "$PR_ITERATION_GIT_TIMEOUT" gh pr edit "$pr_number" --repo "$REPO" \
+        --remove-label "$LABEL_NEEDS_QUOTA_WAIT" \
+        --add-label "$LABEL_NEEDS_ITERATION" >/dev/null 2>&1; then
+      local resume_body
+      resume_body=":arrow_forward: PR Iteration quota wait の reset 時刻を経過したため、\`${LABEL_NEEDS_QUOTA_WAIT}\` を外し \`${LABEL_NEEDS_ITERATION}\` に戻しました。
+
+<!-- idd-codex:pr-iteration-quota-resume reset=${reset_epoch} -->"
+      if ! timeout "$PR_ITERATION_GIT_TIMEOUT" \
+          gh pr comment "$pr_number" --repo "$REPO" --body "$resume_body" >/dev/null 2>&1; then
+        pi_warn "PR #${pr_number}: quota resume コメント投稿に失敗"
+      fi
+      pi_log "PR #${pr_number}: quota-wait resumed reset_epoch=${reset_epoch} elapsed_sec=$((now_epoch - reset_epoch))"
+    else
+      pi_warn "PR #${pr_number}: quota wait resume ラベル遷移に失敗"
+    fi
+  done < <(printf '%s\n' "$prs_json" | jq -r '.[] | [.number, .url] | @tsv')
+
   return 0
 }
 
@@ -1164,13 +1480,15 @@ pi_run_iteration() {
   #                                `none:` （回復不要 / dirty なし）
   # Issue #122 Req 3: subshell <-> 親 で SHA 比較用に before/after の 2 行も tmpfile に書き出す。
   #   - $pi_sha_file : 1 行目=before_sha, 2 行目=after_sha
-  local pi_soft_fail_file pi_recover_file pi_sha_file
+  local pi_soft_fail_file pi_recover_file pi_sha_file pi_usage_fatal_file
   pi_soft_fail_file=$(mktemp -t "pi-softfail-${pr_number}-XXXXXX" 2>/dev/null || mktemp)
   pi_recover_file=$(mktemp -t "pi-recover-${pr_number}-XXXXXX" 2>/dev/null || mktemp)
   pi_sha_file=$(mktemp -t "pi-sha-${pr_number}-XXXXXX" 2>/dev/null || mktemp)
+  pi_usage_fatal_file=$(mktemp -t "pi-usage-fatal-${pr_number}-XXXXXX" 2>/dev/null || mktemp)
   : > "$pi_soft_fail_file"
   : > "$pi_recover_file"
   : > "$pi_sha_file"
+  : > "$pi_usage_fatal_file"
 
   # サブシェル + trap で必ず base branch に戻す（AC 8.3）
   local rc=0
@@ -1225,8 +1543,17 @@ pi_run_iteration() {
     set -e
     codex_rc="${_pi_pipestatus[0]:-0}"
 
+    local usage_limit_fatal_observed=false
     if [ "$codex_rc" -ne 0 ]; then
       pi_warn "PR #${pr_number}: kind=${kind} Codex 実行が失敗 (log: ${pi_log_file})"
+      local _pi_usage_rc=0
+      local _pi_usage_line=""
+      _pi_usage_line=$(pi_detect_usage_limit_fatal "$pi_log_file") || _pi_usage_rc=$?
+      if [ "$_pi_usage_rc" -eq 0 ]; then
+        pi_handle_usage_limit_fatal "$pr_number" "$kind" "$next_round" "$pi_log_file" "$_pi_usage_line" || true
+        usage_limit_fatal_observed=true
+        printf '%s' "usage-limit-fatal" > "$pi_usage_fatal_file"
+      fi
       # codex 失敗時も round 中に部分編集が残っている可能性があるため、後段の自動回復に
       # 続ける。検出 file の有無にかかわらず post-round-recover 経路で dirty を退避する。
       #
@@ -1238,27 +1565,29 @@ pi_run_iteration() {
       #   - 検知あり (rc=0) → PR コメント投稿 + INFO ログ
       #   - 検知なし (rc=1) → INFO ログのみ
       #   - ログ不在 (rc=2) → WARN ログのみ（既存処理は継続 / Req 1.5）
-      local _pi_529_rc=0
-      codex_log_detect_529 "$pi_log_file" || _pi_529_rc=$?
-      case "$_pi_529_rc" in
-        0)
-          pi_log "PR #${pr_number}: kind=${kind} round=${next_round} 529-overloaded detected (log: ${pi_log_file})"
-          local _pi_529_body
-          _pi_529_body=":warning: **Codex API 一時混雑エラー (529 Overloaded)**: 混雑のため一時処理を中断しました。進捗（Round数等）は据え置かれ、次のポーリングサイクルで自動再試行します。
+      if [ "$usage_limit_fatal_observed" != "true" ]; then
+        local _pi_529_rc=0
+        codex_log_detect_529 "$pi_log_file" || _pi_529_rc=$?
+        case "$_pi_529_rc" in
+          0)
+            pi_log "PR #${pr_number}: kind=${kind} round=${next_round} 529-overloaded detected (log: ${pi_log_file})"
+            local _pi_529_body
+            _pi_529_body=":warning: **Codex API 一時混雑エラー (529 Overloaded)**: 混雑のため一時処理を中断しました。進捗（Round数等）は据え置かれ、次のポーリングサイクルで自動再試行します。
 
 <!-- idd-codex:pr-iteration-529-warning round=${next_round} -->"
-          if ! timeout "$PR_ITERATION_GIT_TIMEOUT" \
-              gh pr comment "$pr_number" --repo "$REPO" --body "$_pi_529_body" >/dev/null 2>&1; then
-            pi_warn "PR #${pr_number}: kind=${kind} round=${next_round} 529 警告コメントの投稿に失敗 (既存処理は継続)"
-          fi
-          ;;
-        2)
-          pi_warn "PR #${pr_number}: kind=${kind} round=${next_round} 529 検知用ログファイルが不在または読み取り不能のためスキップ (log: ${pi_log_file})"
-          ;;
-        *)
-          pi_log "PR #${pr_number}: kind=${kind} round=${next_round} 529-overloaded not detected"
-          ;;
-      esac
+            if ! timeout "$PR_ITERATION_GIT_TIMEOUT" \
+                gh pr comment "$pr_number" --repo "$REPO" --body "$_pi_529_body" >/dev/null 2>&1; then
+              pi_warn "PR #${pr_number}: kind=${kind} round=${next_round} 529 警告コメントの投稿に失敗 (既存処理は継続)"
+            fi
+            ;;
+          2)
+            pi_warn "PR #${pr_number}: kind=${kind} round=${next_round} 529 検知用ログファイルが不在または読み取り不能のためスキップ (log: ${pi_log_file})"
+            ;;
+          *)
+            pi_log "PR #${pr_number}: kind=${kind} round=${next_round} 529-overloaded not detected"
+            ;;
+        esac
+      fi
     else
       pi_log "PR #${pr_number}: kind=${kind} Codex 実行完了 (log: ${pi_log_file})"
     fi
@@ -1349,7 +1678,11 @@ pi_run_iteration() {
     before_sha=$(sed -n '1p' "$pi_sha_file")
     after_sha=$(sed -n '2p' "$pi_sha_file")
   fi
-  rm -f "$pi_soft_fail_file" "$pi_recover_file" "$pi_sha_file"
+  local usage_fatal_status=""
+  if [ -s "$pi_usage_fatal_file" ]; then
+    usage_fatal_status=$(cat "$pi_usage_fatal_file")
+  fi
+  rm -f "$pi_soft_fail_file" "$pi_recover_file" "$pi_sha_file" "$pi_usage_fatal_file"
 
   # Issue #122 Req 5: 失敗扱い（quota soft-fail / codex crash / post-round-commit fail）の
   # round では marker を据え置く（round counter / no-progress streak いずれも増減させない）。
@@ -1385,6 +1718,11 @@ pi_run_iteration() {
       return 1
       ;;
   esac
+
+  if [ "$usage_fatal_status" = "usage-limit-fatal" ]; then
+    pi_log "PR #${pr_number}: kind=${kind} round=${next_round} action=usage-limit-fatal-handled"
+    return 1
+  fi
 
   if [ $rc -eq 0 ]; then
     # Issue #122 Req 3.1 / 3.2: SHA 比較で「新規 commit が push されたか」判定。
@@ -1516,6 +1854,8 @@ process_pr_iteration() {
       return 0
     fi
   fi
+
+  pi_process_quota_resume
 
   # Issue #122 Req 6.1 / NFR 3.1: kind 別 round 上限の解決値と no-progress 上限を
   # 1 行サマリログで出力（grep 'max_rounds_impl=' で機械抽出可能）。
