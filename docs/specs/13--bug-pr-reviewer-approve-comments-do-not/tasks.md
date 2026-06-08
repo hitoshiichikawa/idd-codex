@@ -29,7 +29,7 @@
   - _Boundary:_ Merge Queue Candidate Fetcher, Merge Queue Approval Resolver
   - _Depends:_ 2
 
-- [ ] 4. regression tests を追加する
+- [x] 4. regression tests を追加する
   - `local-watcher/test/pr_reviewer_approval_signal_test.sh` を追加し、approve / iteration / mixed verdict と formal review success / failure fallback を mock で検証する
   - `local-watcher/test/merge_queue_approval_signal_test.sh` を追加し、formal review approval、current-SHA approve marker、old-SHA approve marker、current-SHA iteration / reject marker、comments API failure を検証する
   - 既存 `pr_reviewer_quota_marker_test.sh` の関数抽出 pattern を踏襲し、実 GitHub API には接続しない
