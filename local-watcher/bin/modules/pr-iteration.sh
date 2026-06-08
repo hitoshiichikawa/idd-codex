@@ -229,13 +229,14 @@ pi_read_last_run() {
 #   出力: stdout にフィルタ後の JSON 配列
 #   AC #55 Req 2.1, 2.7
 #
-#   判定: comment.body 中に `idd-codex:` で始まる HTML hidden marker を含むなら
-#   watcher 投稿として除外する。GitHub user 同一性に依存しない（cron 実行ホストが
-#   異なる GitHub user で動いていても確実に除外できる）。`@codex` 文字列には
-#   一切依存しない（Req 2.7）。
+#   判定: comment.body 中に PR Iteration Processor 自身の HTML hidden marker
+#   (`idd-codex:pr-iteration` 系) を含むなら watcher 投稿として除外する。
+#   PR reviewer の `idd-codex:pr-reviewer` marker は iteration 入力として残す。
+#   GitHub user 同一性に依存しない（cron 実行ホストが異なる GitHub user で動いていても
+#   確実に除外できる）。`@codex` 文字列には一切依存しない（Req 2.7）。
 # ─────────────────────────────────────────────────────────────────────────────
 pi_general_filter_self() {
-  jq '[.[] | select((.body // "") | contains("idd-codex:") | not)]'
+  jq '[.[] | select((.body // "") | test("<!--[[:space:]]*idd-codex:pr-iteration([[:space:]>-]|$)") | not)]'
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
