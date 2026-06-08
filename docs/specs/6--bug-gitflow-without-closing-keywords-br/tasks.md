@@ -20,7 +20,7 @@
   - _Boundary:_ Promote Pipeline, Managed PR Issue Resolver, Promote Pipeline Merge SHA Resolver
   - _Depends:_ 1
 
-- [ ] 3. Project Manager guidance と README を Gitflow/no-closing-keyword 方針に更新する
+- [x] 3. Project Manager guidance と README を Gitflow/no-closing-keyword 方針に更新する
   - `.codex/agents/project-manager.md` と `repo-template/.codex/agents/project-manager.md` の implementation PR body guidance を更新する
   - `BASE_BRANCH != PROMOTION_TARGET_BRANCH` では final / design-less を含め `Refs #N` を採用し、design-review mode の `Refs #N` 固定は維持する
   - 両 agent 定義を byte 一致に保つ
