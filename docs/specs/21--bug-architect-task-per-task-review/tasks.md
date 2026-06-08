@@ -20,7 +20,7 @@
   - _Boundary:_ Developer Guidance, Reviewer Guidance, Task Boundary Fixture Driver
   - _Depends:_ 1
 
-- [ ] 3. README に per-task review semantics を追記する
+- [x] 3. README に per-task review semantics を追記する
   - `Reviewer Gate (#20 Phase 1)` の判定カテゴリ説明に、per-task review では `missing test` の scope が当該 task の `_Requirements:_` に限定されることを追記する。
   - `Per-task TDD Implementation Loop (#21)` の新挙動説明に、coverage / failure / safety AC は同 task test work と結び付けること、defer 時は先行 task の `_Requirements:_` から未実施 coverage AC を外すことを追記する。
   - `- [ ]*` は既存 optional / deferrable 規約として維持され、deferred test task の表記として使えることを既存説明と矛盾しない形で補足する。
