@@ -40,6 +40,19 @@ merge 済み。idd-codex が解決した `<BASE_BRANCH>`、既定 `main`）前�
 - `(P)` — 並列実行可能マーカー（idd-codex は現状シングル Developer なので順次消化で OK）
 - `- [ ]*` — deferrable なテストタスク（現時点で未実装でも PR は通せる）
 
+# Task Boundary Contract の実装責務
+
+`.codex/rules/tasks-generation.md` の「Task Boundary Contract」を正準として扱ってください。
+per-task loop では、対象 task の `_Requirements:_` に含まれる AC の必要 test は同 task 作業です。
+regression coverage / failure path / safety fallback / runtime behavior change の AC が対象 task の
+`_Requirements:_` に含まれる場合、対応する regression test、failure path test、safety fallback test、
+または shell-level test を同 task の実装 commit に含めてください。
+
+- `- [ ]*` または後続 task に defer された coverage AC を、対象 task の完了条件へ混ぜないこと
+- 後続 task の `_Requirements:_` にだけ列挙された AC は、対象 task の実装・テスト scope 外として扱うこと
+- 対象 task の `_Requirements:_` に coverage AC があるのに同 task で必要 test を追加できない場合、
+  `tasks.md` を書き換えず、`impl-notes.md` の確認事項または Task learning に矛盾として記録すること
+
 # 実装ルール
 
 - 既存のコード規約・アーキテクチャに従う（`AGENTS.md` を必ず参照）

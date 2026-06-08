@@ -305,11 +305,18 @@ HEAD 全体（`<BASE_BRANCH>..HEAD`）は対象外です。全体観点は最終
 per-task ループの Reviewer は判定 depth が以下に絞り込まれます:
 
 - **判定対象 AC**: 当該 task の `_Requirements:_` で列挙された numeric ID **のみ**
+- **missing test 判定対象**: 当該 task の `_Requirements:_` に含まれる AC の必要テスト **のみ**
 - それ以外の AC が当該 diff で未カバーであっても **reject 理由にしないこと**
   （全 AC verify は最終 Stage B Reviewer が HEAD 全体で実施するため、本 Reviewer では
   範囲外 AC を理由に reject を出さない）
+- `- [ ]*` または後続 deferred test task の未実施は、当該 task の `_Requirements:_` に含まれて
+  いない限り `missing test` として reject しないこと
 - **`_Boundary:_` 違反**: depth に関わらず **常に reject 対象**
   （task 単位境界の逸脱検出が本ループの主目的）
+
+この scope は `.codex/rules/tasks-generation.md` の「Task Boundary Contract」と同じ契約です。
+ただし、当該 diff が `_Boundary:_` を逸脱している場合は、deferred coverage の有無に関係なく
+既存どおり `boundary 逸脱` で reject してください。
 
 ## 既存規約の流用
 

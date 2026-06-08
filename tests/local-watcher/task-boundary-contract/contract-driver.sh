@@ -2,7 +2,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # contract-driver.sh — task-boundary contract の fixture 回帰テスト
 #
-# 用途: shared rule / Architect prompt の key phrase と root / repo-template
+# 用途: shared rule / Architect / Developer / Reviewer prompt の key phrase と root / repo-template
 #       byte-identical 同期、valid / invalid tasks.md fixture の same-task
 #       coverage と deferred coverage 境界を検証する。
 #
@@ -181,6 +181,16 @@ assert_contains "architect prompt references Task Boundary Contract" \
   "$_REPO_ROOT/.codex/agents/architect.md" 'Task Boundary Contract'
 assert_contains "architect prompt has self-check for deferred coverage" \
   "$_REPO_ROOT/.codex/agents/architect.md" 'deferred coverage は先行 task の'
+assert_contains "developer prompt references Task Boundary Contract" \
+  "$_REPO_ROOT/.codex/agents/developer.md" 'Task Boundary Contract'
+assert_contains "developer prompt treats Requirements tests as same-task work" \
+  "$_REPO_ROOT/.codex/agents/developer.md" '必要 test は同 task 作業'
+assert_contains "developer prompt excludes deferred coverage from current scope" \
+  "$_REPO_ROOT/.codex/agents/developer.md" '後続 task に defer された coverage AC'
+assert_contains "reviewer prompt limits missing test scope to current task" \
+  "$_REPO_ROOT/.codex/agents/reviewer.md" 'missing test 判定対象.*当該 task の .*Requirements'
+assert_contains "reviewer prompt does not reject deferred test task absence" \
+  "$_REPO_ROOT/.codex/agents/reviewer.md" '後続 deferred test task の未実施'
 
 expect_valid "fixture same-task coverage is valid" \
   "same-task" "$_FIXTURE_DIR/tasks-same-task-coverage.md"
