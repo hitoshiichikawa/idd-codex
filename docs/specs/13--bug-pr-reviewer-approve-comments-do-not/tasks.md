@@ -1,6 +1,6 @@
 # Implementation Plan
 
-- [ ] 1. PR Reviewer の approve verdict と formal review fallback を実装する
+- [x] 1. PR Reviewer の approve verdict と formal review fallback を実装する
   - `pr_detect_approval_keyword` と `pr_resolve_review_verdict` を追加し、`VERDICT: approve` / `VERDICT: codex-needs-iteration` / 混在 / none を区別する
   - approve verdict のときだけ `pr_try_post_formal_approval` で `gh pr review --approve` を試行する
   - formal review 投稿失敗は WARN として扱い、既存 review comment + marker 投稿を継続する
