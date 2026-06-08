@@ -13,3 +13,10 @@
 - 重要な判断: current SHA の `VERDICT: codex-needs-iteration` / `VERDICT: reject` 系は approve より優先して `rejected|iteration-marker` とし、old-SHA approve は `rejected|stale-marker` に固定した。
 - 重要な判断: comments API failure と marker JSON parse failure は WARN + `unknown|api-error` + rc=1 とし、後段が接続されても merge へ進まない契約にした。
 - 残存課題: task 3 で main / recheck の candidate selection を resolver に接続し、task 4 で regression test を追加する必要がある。
+
+### Task 3
+
+- 採用方針: main / recheck の候補抽出から `review:approved` 固定依存を外し、client-side filter 後に `mq_resolve_approval_signal` で approved PR だけを残す。
+- 重要な判断: `headRefOid` を PR list fields に追加し、draft / rebase-needed / failed / head pattern / fork 除外は jq filter と既存 label 契約で維持した。
+- 重要な判断: approval source は approved 候補 JSON に付与し、main / recheck の PR 単位ログで `github` または `idd-codex-marker` として可視化する。
+- 残存課題: task 4 で process_merge_queue / process_merge_queue_recheck の candidate selection regression を mock で固定する必要がある。
