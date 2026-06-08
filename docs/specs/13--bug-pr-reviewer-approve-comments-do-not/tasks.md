@@ -19,7 +19,7 @@
   - _Boundary:_ Merge Queue Approval Resolver
   - _Depends:_ 1
 
-- [ ] 3. Merge Queue main / recheck の candidate selection を approval resolver に接続する
+- [x] 3. Merge Queue main / recheck の candidate selection を approval resolver に接続する
   - `gh pr list` の取得 fields に `headRefOid` を追加し、`review:approved` だけに依存しない候補集合へ変更する
   - draft、`codex-needs-rebase`、`codex-failed`、head pattern、fork 除外を client-side filter として維持する
   - `process_merge_queue` と `process_merge_queue_recheck` が同じ approval resolver semantics を使うようにする
