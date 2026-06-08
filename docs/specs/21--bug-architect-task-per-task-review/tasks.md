@@ -1,6 +1,6 @@
 # Implementation Plan
 
-- [ ] 1. Shared rule と Architect prompt に task-boundary contract を追加する
+- [x] 1. Shared rule と Architect prompt に task-boundary contract を追加する
   - `.codex/rules/tasks-generation.md` と `repo-template/.codex/rules/tasks-generation.md` に `Task Boundary Contract` 節を byte-identical で追加する。
   - `_Requirements:_` がその task 完了時点で実装・テスト・レビュー可能な AC のみを表すことを明記する。
   - regression coverage / failure path / safety fallback / runtime behavior change の AC を含む task には、同 task の詳細項目に対応 test work を明記するよう規定する。
