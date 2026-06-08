@@ -15,6 +15,10 @@
 #           (Req 3.4)
 #         - synthetic 429 のみで reset 不在 → codex_rc 透過 + warn
 #           (Req 3.2)
+#         - usage-limit fatal + reset あり → exit 99 + reset_file = epoch
+#           (Issue #12 Req 1, 2, 3, 6)
+#         - usage-limit fatal + reset なし → codex_rc 透過
+#           (Issue #12 Option B / Req 4)
 #         - opt-out (QUOTA_AWARE_ENABLED!=true) → 素通し
 #           (NFR 1.1)
 #
@@ -76,9 +80,13 @@ eval "$(extract_function "$WATCHER_SH" "qa_error")"
 # shellcheck disable=SC1090
 eval "$(extract_function "$WATCHER_SH" "qa_detect_rate_limit")"
 # shellcheck disable=SC1090
+eval "$(extract_function "$WATCHER_SH" "qa_extract_usage_limit_reset_epoch")"
+# shellcheck disable=SC1090
 eval "$(extract_function "$WATCHER_SH" "qa_run_codex_stage")"
+# shellcheck disable=SC1090
+eval "$(extract_function "$WATCHER_SH" "codex_log_detect_529")"
 
-for fn in qa_log qa_warn qa_error qa_detect_rate_limit qa_run_codex_stage; do
+for fn in qa_log qa_warn qa_error qa_detect_rate_limit qa_extract_usage_limit_reset_epoch qa_run_codex_stage codex_log_detect_529; do
   if ! declare -F "$fn" >/dev/null; then
     echo "ERROR: $fn not loaded" >&2
     exit 2
@@ -114,7 +122,7 @@ fake_codex() {
 }
 
 # テスト 1 件を実行する補助関数。
-# Args: <test_label> <expected_rc> <expected_reset_file_content> <fixture> [fake_codex_rc]
+# Args: <test_label> <expected_rc> <expected_reset_file_content> <fixture> [fake_codex_rc] [stage_label]
 # QUOTA_AWARE_ENABLED は呼び出し側で export する想定。
 run_case() {
   local label="$1"
@@ -122,11 +130,12 @@ run_case() {
   local expected_reset="$3"
   local fx="$4"
   local fake_rc="${5:-0}"
+  local stage_label="${6:-TestStage}"
 
   local reset_file
   reset_file=$(mktemp -p "$TMPDIR_TEST" "reset.XXXXXX")
   local rc=0
-  qa_run_codex_stage "TestStage" "$reset_file" -- \
+  qa_run_codex_stage "$stage_label" "$reset_file" -- \
     fake_codex "$FIXTURE_DIR/$fx" "$fake_rc" >/dev/null 2>&1 || rc=$?
 
   local actual_reset
@@ -183,6 +192,43 @@ run_case "normal-success with codex rc=2 (NFR 1.2 既存 rc 透過)" \
 # Req 5.4: malformed line 混入でも検出を継続
 run_case "v2-rate-limit-malformed-line (Req 5.4)" \
   99 "1778821200" "v2-rate-limit-malformed-line.jsonl" 0
+
+usage_reset_epoch=$(qa_extract_usage_limit_reset_epoch "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Jun 9th, 2026 1:16 AM.")
+if [[ "$usage_reset_epoch" =~ ^[0-9]+$ ]]; then
+  assert_eq "usage-limit reset parser returns numeric epoch (Issue #12 Req 3, 6)" "true" "true"
+else
+  assert_eq "usage-limit reset parser returns numeric epoch (Issue #12 Req 3, 6)" "true" "false"
+fi
+
+run_case "StageA usage-limit-with-reset → quota wait (Issue #12 Req 1, 6)" \
+  99 "$usage_reset_epoch" "usage-limit-with-reset.jsonl" 1 "StageA"
+
+run_case "Reviewer usage-limit-with-reset → quota wait (Issue #12 Req 1, 6)" \
+  99 "$usage_reset_epoch" "usage-limit-with-reset.jsonl" 1 "Reviewer-r1-a1"
+
+run_case "Debugger後 Reviewer usage-limit-with-reset → quota wait (Issue #12 Req 1, 6)" \
+  99 "$usage_reset_epoch" "usage-limit-with-reset.jsonl" 1 "Reviewer-r3-a1"
+
+run_case "Triage usage-limit-with-reset → quota wait (Issue #12 Req 2, 6)" \
+  99 "$usage_reset_epoch" "usage-limit-with-reset.jsonl" 1 "Triage"
+
+run_case "StageC usage-limit-with-reset → quota wait (Issue #12 Req 1, 6)" \
+  99 "$usage_reset_epoch" "usage-limit-with-reset.jsonl" 1 "StageC"
+
+run_case "usage-limit-no-reset → codex rc透過 (Issue #12 Option B)" \
+  1 "" "usage-limit-no-reset.jsonl" 1 "StageA"
+
+run_case "normal-error with codex rc=1 remains normal failure (Issue #12 Req 5)" \
+  1 "" "normal-error.jsonl" 1 "StageA"
+
+# Issue #12 regression guard: 529 Overloaded の既存 detector は維持する。
+LOG="$TMPDIR_TEST/overloaded-529.log"
+export LOG
+run_case "529-overloaded is not reclassified by usage-limit path (Issue #12 regression)" \
+  2 "" "529-overloaded.jsonl" 2 "StageA"
+_rc_529=0
+codex_log_detect_529 "$LOG" || _rc_529=$?
+assert_eq "codex_log_detect_529 still detects 529 Overloaded (Issue #12 regression)" "0" "$_rc_529"
 
 echo ""
 echo "--- qa_run_codex_stage cases (opt-out) ---"

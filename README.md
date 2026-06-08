@@ -1006,7 +1006,7 @@ PR #184）を防ぐための「最後の砦」です。
 | `codex-failed` | Issue | 自動実行停止中（impl 系では Stage A 失敗 / Stage A' 失敗 / Reviewer 異常終了 / Reviewer round=2 reject も含む）／**手動復旧時の手順**: [`codex-failed` 状態の Issue から手動復旧する手順](#codex-failed-状態の-issue-から手動復旧する手順) | Codex（エラー連続時） |
 | `codex-needs-rebase` | PR | approved PR で base 古い／conflict 発生済 | Codex（Phase A Merge Queue Processor）／解除は人間が conflict 解消後に手動で除去 |
 | `codex-needs-iteration` | PR | PR レビューコメントの反復対応待ち | 人間（レビュワー）が **PR に** 付与／解除は PR Iteration Processor (#26) が成功時 `codex-ready-for-review` に、上限到達時 `codex-failed` に切り替え |
-| `codex-needs-quota-wait` | Issue / PR | Codex Max quota 超過または usage-limit 風 fatal error で reset 待ち | Issue: Quota-Aware Watcher #66 が付与し Quota Resume Processor が自動除去。PR: PR Iteration Processor が `codex-needs-iteration` を外して付与し、reset 経過後に `codex-needs-iteration` へ戻す。 |
+| `codex-needs-quota-wait` | Issue / PR | Codex Max quota 超過または usage-limit 風 fatal error で reset 待ち | Issue: Quota-Aware Watcher #66 が付与し Quota Resume Processor が自動除去。PR: PR Iteration Processor は `codex-needs-iteration` を外して付与し、reset 経過後に `codex-needs-iteration` へ戻す。PR Reviewer Processor は PR Reviewer marker 付きで付与し、reset 経過後に quota label だけ外して再レビュー候補へ戻す。 |
 | `codex-staged-for-release` | Issue | `develop` merge 済み、`main` 到達待ち（multi-branch 運用専用。`main` 到達 = GitHub auto-close が発火して Issue は close される前提） | 人間（もしくは Phase B Promote Pipeline の自動付与）／解除は ST success → Phase B が自動除去（`PROMOTE_PIPELINE_ENABLED=true` 時）、または `main` merge 時に GitHub auto-close で Issue が閉じることで実質的に意味を失う |
 | `codex-st-failed` | Issue | ST failure 検知後に revert 済み（Phase B Promote Pipeline が付与） | Codex（Phase B Promote Pipeline）／解除は ST failure を修正する PR を merge した運用者が手動で除去 |
 | `codex-awaiting-slot` | Issue | hot file 競合予防で同サイクル dispatch を見送り中（Phase E Path Overlap Checker 付与） | Codex（Phase E Path Overlap Checker）／解除は同 Phase が次サイクルで自動除去（先行 Issue PR merge で in-flight 集合縮小 → overlap empty）、または運用者が手動除去 |
@@ -3086,13 +3086,15 @@ cd ~/.idd-codex && git pull && ./install.sh --local
 ## Quota-Aware Watcher (#66)
 
 Codex Max サブスクリプションは 5 時間ローリングウィンドウの quota を持っており、
-quota 超過時に codex CLI は `rate_limit_event (status=exceeded)` を含む JSON を
+quota 超過時に codex CLI は `rate_limit_event (status=exceeded)` を含む JSON、または
+`You've hit your usage limit ... try again at ...` のような usage-limit fatal message を
 出力して非ゼロ exit します。本機能を有効化すると、watcher は当該 Stage の出力を
 解析して quota 起因の停止を検知し、`codex-needs-quota-wait` ラベルを付与します。reset
 予定時刻が経過したら、cron tick 冒頭の **Quota Resume Processor** が自動的に
 ラベルを除去して通常 pickup ループへ戻します。`codex-failed` への一律 escalation を
 回避し、quota 起因と他失敗（parse-failed / coverage 不足等）をラベルだけで分離
-できます。
+できます。usage-limit 風 fatal message でも reset 時刻を抽出できない場合は自動 resume
+条件が確定できないため、従来どおり通常失敗へ透過します。
 
 > **注**: `QUOTA_AWARE_ENABLED` は #112 以降デフォルト `true`。明示的に opt-out したい
 > 場合は `QUOTA_AWARE_ENABLED=false` を渡すと本機能の全コードパスが skip され、本機能
@@ -3101,11 +3103,12 @@ quota 超過時に codex CLI は `rate_limit_event (status=exceeded)` を含む 
 
 ### 機能概要
 
-- 6 stage（Triage / Stage A / Stage A' / Reviewer round=1 / Reviewer round=2 /
-  Stage C / design）の `codex_exec_prompt` 実行を `qa_run_codex_stage` ラッパーが
-  横断的に包む
+- Triage / Stage A / Stage A' / Reviewer / Debugger 後 Reviewer / Stage C / design /
+  per-task loop の `codex_exec_prompt` 実行を `qa_run_codex_stage` ラッパーが横断的に包む
 - codex CLI の stream-json 出力から `type=="rate_limit_event"` かつ
   `status=="exceeded"` を per-line jq fold で抽出。複数 event 検出時は最新値を採用
+- codex CLI の usage-limit fatal message から `try again at ...` の reset 時刻を抽出し、
+  reset 時刻を epoch 化できた場合のみ quota wait として扱う
 - 検知時:
   - `codex-claimed` / `codex-picked-up` を除去 → `codex-needs-quota-wait` 付与（atomic
     1 PATCH）。`codex-failed` は **付与しない**
@@ -3174,13 +3177,15 @@ Issue / PR keyed の JSON として永続化される（#169）:
 
 ### 検知 Stage 一覧
 
-`qa_run_codex_stage` が wrap するのは以下 7 種類の Stage Label:
+`qa_run_codex_stage` が wrap する代表的な Stage Label:
 
 - `Triage`: Triage 実行
 - `StageA`: Stage A（PM + Developer）
 - `StageA-redo`: Stage A'（Reviewer reject 後の Developer 再実行）
 - `Reviewer-r1`: Reviewer round=1
 - `Reviewer-r2`: Reviewer round=2
+- `Reviewer-r3`: Debugger 後 Reviewer round=3
+- `PerTask-Impl-*` / `PerTask-Rev-*`: per-task loop の Implementer / Reviewer
 - `StageC`: Stage C（PjM 実装 PR 作成）
 - `design`: design ルート（PM → Architect → PjM）
 
@@ -3192,6 +3197,14 @@ usage-limit 風 fatal error を返した場合は、PR Iteration Processor が�
 `quota-reset-times.json` に `pr-<PR番号>` key で保存し、reset + grace 経過後に
 PR 側の resume 処理が `codex-needs-quota-wait` を外して `codex-needs-iteration` に戻します。
 reset 時刻を抽出できない場合は `codex-needs-decisions` に退避し、人間判断を要求します。
+
+PR Reviewer Processor 中に Codex CLI が reset 時刻付きの usage-limit fatal error を返した場合は、
+PR Reviewer が `codex-needs-quota-wait` を PR に付与し、`quota-reset-times.json` に
+`pr-reviewer-<PR番号>` key で reset 時刻を保存します。PR Reviewer 由来の待機は
+`idd-codex:pr-reviewer-quota-wait` marker で PR Iteration 由来の待機と区別されます。
+reset + grace 経過後は PR Reviewer Processor が `codex-needs-quota-wait` だけを外し、
+次サイクルで同じ PR を再レビュー候補に戻します。PR Iteration Processor はこの marker が
+ある PR を自身の quota resume では処理しません。
 
 PR Iteration の round 開始コメントは `idd-codex:pr-iteration-processing round=N` marker で
 重複確認され、同一 PR・同一 round の processing コメントは再投稿されません。これにより、

@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"test-thread"}
+{"type":"turn.started"}
+{"type":"error","message":"A different fatal error occurred."}
+{"type":"turn.failed","error":{"message":"A different fatal error occurred."}}
