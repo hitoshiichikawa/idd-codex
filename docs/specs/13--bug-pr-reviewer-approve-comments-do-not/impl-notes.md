@@ -20,3 +20,10 @@
 - 重要な判断: `headRefOid` を PR list fields に追加し、draft / rebase-needed / failed / head pattern / fork 除外は jq filter と既存 label 契約で維持した。
 - 重要な判断: approval source は approved 候補 JSON に付与し、main / recheck の PR 単位ログで `github` または `idd-codex-marker` として可視化する。
 - 残存課題: task 4 で process_merge_queue / process_merge_queue_recheck の candidate selection regression を mock で固定する必要がある。
+
+### Task 4
+
+- 採用方針: 既存の function extraction pattern で PR Reviewer / Merge Queue の approval signal helper を mock `gh` 配下の shell test として固定する。
+- 重要な判断: PR Reviewer 側は approve / iteration / mixed verdict と formal review success / failure fallback を `pr_run_review_for_pr` 経由で検証し、mixed は formal approval なし + iteration label に倒す。
+- 重要な判断: Merge Queue 側は `reviewDecision == APPROVED`、current-SHA approve marker、old-SHA approve marker、current-SHA iteration / reject marker、comments API failure、approved selection の source 付与を検証する。
+- 残存課題: なし。

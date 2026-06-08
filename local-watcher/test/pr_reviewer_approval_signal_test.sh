@@ -94,6 +94,23 @@ assert_eq() {
   fi
 }
 
+assert_file_contains() {
+  local label="$1"
+  local pattern="$2"
+  local file="$3"
+  if grep -Fq "$pattern" "$file"; then
+    echo "PASS: $label"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    echo "FAIL: $label"
+    echo "  expected substring: $pattern"
+    echo "  file: $file"
+    echo "  content:"
+    sed 's/^/    /' "$file" || true
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  fi
+}
+
 tmp_dir=$(mktemp -d)
 trap 'rm -rf "$tmp_dir"' EXIT
 comments_file="$tmp_dir/comments.json"
@@ -118,6 +135,7 @@ if [ "${1:-}" = "pr" ] && [ "${2:-}" = "review" ]; then
     shift || true
   done
   if [ "${PR_REVIEWER_APPROVAL_SIGNAL_TEST_FORMAL_FAIL:-false}" = "true" ]; then
+    echo "GraphQL: Resource not accessible by integration" >&2
     exit 22
   fi
   cat "$body_file" >> "$PR_REVIEWER_APPROVAL_SIGNAL_TEST_FORMAL"
@@ -236,12 +254,21 @@ assert_eq "approve では iteration label を付けない" \
 reset_state
 export PR_REVIEWER_APPROVAL_SIGNAL_TEST_FORMAL_FAIL="true"
 export PR_REVIEWER_APPROVAL_SIGNAL_TEST_REVIEW_TEXT=$'## 概要\nfallback case\n## 結論\nVERDICT: approve'
+fallback_stderr="$tmp_dir/formal-fallback.stderr"
 rc=0
-pr_run_review_for_pr "$pr_json" "codex" >/dev/null 2>&1 || rc=$?
+pr_run_review_for_pr "$pr_json" "codex" >/dev/null 2>"$fallback_stderr" || rc=$?
 assert_eq "formal approval 失敗でも正常終了する" "0" "$rc"
 assert_eq "formal approval 失敗時も marker comment を残す" \
   "true" \
   "$(jq -r 'any(.[]; (.body // "") | contains("idd-codex:pr-reviewer sha=abc123 kind=review tool=codex"))' "$comments_file")"
+assert_file_contains "formal approval 失敗時に WARN を出す" \
+  "WARN: PR #57: GitHub formal approval 投稿に失敗" "$fallback_stderr"
+assert_file_contains "formal approval 失敗理由を WARN に含める" \
+  "GraphQL: Resource not accessible by integration" "$fallback_stderr"
+assert_file_contains "formal approval fallback 継続を WARN に含める" \
+  "marker approval fallback を継続" "$fallback_stderr"
+assert_file_contains "formal approval WARN に tool と sha を含める" \
+  "tool=codex sha=abc123" "$fallback_stderr"
 
 reset_state
 export PR_REVIEWER_APPROVAL_SIGNAL_TEST_REVIEW_TEXT=$'## 概要\niteration case\n## 結論\nVERDICT: codex-needs-iteration'
@@ -252,6 +279,18 @@ assert_eq "iteration では formal approval を投稿しない" \
   "false" \
   "$(grep -q 'VERDICT:' "$formal_file" && echo true || echo false)"
 assert_eq "iteration label を付ける" \
+  "true" \
+  "$(grep -qx 'codex-needs-iteration' "$labels_file" && echo true || echo false)"
+
+reset_state
+export PR_REVIEWER_APPROVAL_SIGNAL_TEST_REVIEW_TEXT=$'## 概要\nmixed case\n## 結論\nVERDICT: approve\nVERDICT: codex-needs-iteration'
+rc=0
+pr_run_review_for_pr "$pr_json" "codex" >/dev/null 2>&1 || rc=$?
+assert_eq "mixed verdict は正常終了する" "0" "$rc"
+assert_eq "mixed verdict では formal approval を投稿しない" \
+  "false" \
+  "$(grep -q 'VERDICT:' "$formal_file" && echo true || echo false)"
+assert_eq "mixed verdict は iteration label を付ける" \
   "true" \
   "$(grep -qx 'codex-needs-iteration' "$labels_file" && echo true || echo false)"
 
