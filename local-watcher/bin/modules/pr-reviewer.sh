@@ -558,6 +558,185 @@ pr_post_error_comment() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# pr_detect_usage_limit_reset_epoch: review command の stdout/stderr から usage-limit reset を抽出
+#   入力: 任意個の log file path
+#   出力: reset epoch（抽出不能なら空）
+#   戻り値: 0 固定
+# ─────────────────────────────────────────────────────────────────────────────
+pr_detect_usage_limit_reset_epoch() {
+  local file detect_line rest epoch message raw
+  for file in "$@"; do
+    if [ ! -f "$file" ] || [ ! -r "$file" ]; then
+      continue
+    fi
+    detect_line=$(qa_detect_rate_limit < "$file" \
+      | awk -F '\t' '$1 == "usage_limit_fatal" { last = $0 } END { print last }')
+    if [ -n "$detect_line" ]; then
+      rest="${detect_line#*$'\t'}"
+      epoch="${rest%%$'\t'*}"
+      message="${rest#*$'\t'}"
+      if ! [[ "$epoch" =~ ^[0-9]+$ ]]; then
+        epoch=$(qa_extract_usage_limit_reset_epoch "$message")
+      fi
+      if [[ "$epoch" =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "$epoch"
+        return 0
+      fi
+    fi
+  done
+
+  for file in "$@"; do
+    if [ ! -f "$file" ] || [ ! -r "$file" ]; then
+      continue
+    fi
+    raw=$(grep -iE 'usage limit|purchase more credits|try again at' "$file" 2>/dev/null | tail -1 || true)
+    [ -n "$raw" ] || continue
+    epoch=$(qa_extract_usage_limit_reset_epoch "$raw")
+    if [[ "$epoch" =~ ^[0-9]+$ ]]; then
+      printf '%s\n' "$epoch"
+      return 0
+    fi
+  done
+  printf '\n'
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# pr_handle_quota_wait: PR Reviewer 由来の usage-limit fatal を quota wait へ退避
+#   入力: $1=pr_number, $2=sha, $3=tool, $4=reset_epoch
+#   戻り値: 0=退避処理済み / 1=ラベル遷移失敗
+# ─────────────────────────────────────────────────────────────────────────────
+pr_handle_quota_wait() {
+  local pr_number="$1"
+  local sha="$2"
+  local tool="$3"
+  local reset_epoch="$4"
+  local reset_iso
+  reset_iso=$(qa_format_iso8601 "$reset_epoch")
+
+  qa_persist_reset_time "pr-reviewer-${pr_number}" "$reset_epoch" \
+    || pr_warn "PR #${pr_number}: PR Reviewer quota reset_epoch=${reset_epoch} の永続化に失敗（ラベル退避は継続）"
+
+  if ! timeout "$PR_REVIEWER_GIT_TIMEOUT" gh pr edit "$pr_number" --repo "$REPO" \
+      --add-label "$LABEL_NEEDS_QUOTA_WAIT" >/dev/null 2>&1; then
+    pr_warn "PR #${pr_number}: PR Reviewer quota wait ラベル付与に失敗"
+    return 1
+  fi
+
+  local body marker
+  marker="<!-- idd-codex:pr-reviewer-quota-wait reset=${reset_epoch} sha=${sha} tool=${tool} -->"
+  body="## ⏸️ PR Reviewer quota wait
+
+PR Reviewer 実行中に Codex CLI が usage-limit fatal error を返したため、本 PR を
+\`${LABEL_NEEDS_QUOTA_WAIT}\` に退避しました。
+
+### 検知情報
+
+- tool: \`${tool}\`
+- sha: \`${sha}\`
+- reset 予定時刻 (UNIX epoch): \`${reset_epoch}\`
+- reset 予定時刻 (ISO 8601): \`${reset_iso}\`
+
+reset 予定時刻 + grace 経過後、PR Reviewer Processor が \`${LABEL_NEEDS_QUOTA_WAIT}\` を外し、
+次サイクルで同じ PR を再レビュー候補として扱います。
+
+${marker}"
+
+  if ! timeout "$PR_REVIEWER_GIT_TIMEOUT" \
+      gh pr comment "$pr_number" --repo "$REPO" --body "$body" >/dev/null 2>&1; then
+    pr_warn "PR #${pr_number}: PR Reviewer quota wait コメント投稿に失敗"
+  fi
+  pr_log "PR #${pr_number}: usage-limit fatal detected reset_epoch=${reset_epoch} action=quota-wait"
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# pr_reviewer_quota_marker_reset: PR Reviewer quota wait marker から reset epoch を読む
+#   入力: $1=pr_number
+#   出力: reset epoch（marker 不在なら空）
+#   戻り値: 0=marker あり / 1=marker なし or API failure
+# ─────────────────────────────────────────────────────────────────────────────
+pr_reviewer_quota_marker_reset() {
+  local pr_number="$1"
+  local comments_json
+  if ! comments_json=$(timeout "$PR_REVIEWER_GIT_TIMEOUT" \
+      gh api "/repos/${REPO}/issues/${pr_number}/comments" 2>/dev/null); then
+    return 1
+  fi
+
+  local reset_epoch
+  reset_epoch=$(printf '%s\n' "$comments_json" | jq -r '
+    [
+      .[]?.body // ""
+      | if test("idd-codex:pr-reviewer-quota-wait reset=[0-9]+") then
+          (match("idd-codex:pr-reviewer-quota-wait reset=([0-9]+)") | {kind: "wait", reset: .captures[0].string})
+        elif test("idd-codex:pr-reviewer-quota-resume reset=[0-9]+") then
+          (match("idd-codex:pr-reviewer-quota-resume reset=([0-9]+)") | {kind: "resume", reset: .captures[0].string})
+        else empty end
+    ] | last // {} | select(.kind == "wait") | .reset // ""
+  ' 2>/dev/null)
+  if [[ "$reset_epoch" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$reset_epoch"
+    return 0
+  fi
+  return 1
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# pr_process_quota_resume: PR Reviewer 由来の quota wait を reset 後に再レビュー候補へ戻す
+#   戻り値: 0 固定（API 失敗は WARN で後続継続）
+# ─────────────────────────────────────────────────────────────────────────────
+pr_process_quota_resume() {
+  local prs_json
+  if ! prs_json=$(timeout "$PR_REVIEWER_GIT_TIMEOUT" gh pr list \
+      --repo "$REPO" \
+      --state open \
+      --search "label:\"$LABEL_NEEDS_QUOTA_WAIT\"" \
+      --json number,url \
+      --limit 50 2>/dev/null); then
+    pr_warn "PR Reviewer quota wait PR の取得に失敗（後続処理は継続）"
+    return 0
+  fi
+
+  local now_epoch
+  now_epoch=$(date -u +%s)
+  local pr_number pr_url reset_epoch marker_epoch reset_epoch_state threshold
+  while IFS=$'\t' read -r pr_number pr_url; do
+    [ -n "$pr_number" ] || continue
+    if ! marker_epoch=$(pr_reviewer_quota_marker_reset "$pr_number"); then
+      continue
+    fi
+    reset_epoch="$marker_epoch"
+    if reset_epoch_state=$(qa_load_reset_time "pr-reviewer-${pr_number}" 2>/dev/null); then
+      if [[ "$reset_epoch_state" =~ ^[0-9]+$ ]]; then
+        reset_epoch="$reset_epoch_state"
+      fi
+    fi
+    threshold=$((reset_epoch + QUOTA_RESUME_GRACE_SEC))
+    if [ "$now_epoch" -lt "$threshold" ]; then
+      pr_log "PR #${pr_number}: reviewer quota-wait 継続 reset_epoch=${reset_epoch} wait_sec=$((threshold - now_epoch)) (${pr_url})"
+      continue
+    fi
+    if timeout "$PR_REVIEWER_GIT_TIMEOUT" gh pr edit "$pr_number" --repo "$REPO" \
+        --remove-label "$LABEL_NEEDS_QUOTA_WAIT" >/dev/null 2>&1; then
+      local resume_body
+      resume_body=":arrow_forward: PR Reviewer quota wait の reset 時刻を経過したため、\`${LABEL_NEEDS_QUOTA_WAIT}\` を外しました。次サイクルで再レビュー候補になります。
+
+<!-- idd-codex:pr-reviewer-quota-resume reset=${reset_epoch} -->"
+      if ! timeout "$PR_REVIEWER_GIT_TIMEOUT" \
+          gh pr comment "$pr_number" --repo "$REPO" --body "$resume_body" >/dev/null 2>&1; then
+        pr_warn "PR #${pr_number}: PR Reviewer quota resume コメント投稿に失敗"
+      fi
+      pr_log "PR #${pr_number}: reviewer quota-wait resumed reset_epoch=${reset_epoch} elapsed_sec=$((now_epoch - reset_epoch))"
+    else
+      pr_warn "PR #${pr_number}: PR Reviewer quota wait resume ラベル遷移に失敗"
+    fi
+  done < <(printf '%s\n' "$prs_json" | jq -r '.[] | [.number, .url] | @tsv')
+
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # pr_detect_iteration_keyword: レビュー結果から VERDICT token を検出（task 6）
 #   入力: $1 = pr_number（ログ用）, $2 = review_text
 #   出力: stdout にマッチ件数（整数。0 のとき "0"）
@@ -699,6 +878,13 @@ pr_run_review_for_pr() {
 
   # 実行失敗（非ゼロ終了）→ exec-failed エラーコメント（stderr 1KB 抜粋付き、AC 4.5）
   if [ "$exec_rc" -ne 0 ]; then
+    local quota_reset_epoch
+    quota_reset_epoch=$(pr_detect_usage_limit_reset_epoch "$out_file" "$err_file")
+    if [[ "$quota_reset_epoch" =~ ^[0-9]+$ ]]; then
+      pr_handle_quota_wait "$pr_number" "$sha" "$tool" "$quota_reset_epoch" || true
+      return 2
+    fi
+
     local err_excerpt detail
     err_excerpt=$(head -c 1024 "$err_file" 2>/dev/null || echo "")
     pr_error "PR #${pr_number}: レビュー実行コマンドが非ゼロ終了 (exit=${exec_rc}, tool=${tool})"
@@ -816,6 +1002,10 @@ process_pr_reviewer() {
   if [ "$resolve_rc" -eq 2 ]; then
     return 0
   fi
+
+  # PR Reviewer 由来の usage-limit quota wait は、reset+grace 経過後に quota ラベルだけ外し、
+  # review marker を付けないまま次サイクルで同じ PR を再レビュー候補へ戻す。
+  pr_process_quota_resume
 
   # ⑤ 候補 PR 列挙（AC 7.x）
   local prs_json total

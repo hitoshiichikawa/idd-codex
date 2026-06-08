@@ -50,7 +50,7 @@
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # stdin の stream-json（1 行 1 JSON）を fold し、quota 枯渇イベントを検出して
-# `<detection_path>\t<reset_epoch>` 形式の TSV を 1 検出 1 行で stdout に出力する
+# `<detection_path>\t<reset_epoch>[ \t<message>]` 形式の TSV を 1 検出 1 行で stdout に出力する
 # （Req 1.1〜1.4, 2.1〜2.2, 3.1〜3.4, 5.1〜5.4 / Issue #66 Req 2.x との後方互換）。
 #
 # 検出経路（detection_path フィールド値）:
@@ -65,6 +65,10 @@
 #                              `type==result` かつ `is_error == true` かつ
 #                              `api_error_status == 429`
 #                              （Issue #104 Bug 2 / Req 3.1）
+#   - `usage_limit_fatal`   : Codex CLI の fatal message
+#                             `You've hit your usage limit ... try again at ...`
+#                             （Issue #12。reset 時刻の自然言語 parse は
+#                             qa_run_codex_stage 側で行う）
 #
 # Reset 時刻フィールド探索順（現行 / 旧スキーマ揺れと synthetic 429 同居を許容）:
 #   1) .rate_limit_info.resetsAt / .resets_at / .reset_at  （現行スキーマ ネスト位置 / Req 1.3）
@@ -73,7 +77,9 @@
 #   いずれも取得できなければ空（呼び出し側で reset 欠落 fallback / Req 1.4, 3.2）。
 #
 # 出力契約:
-#   - 1 検出 1 行: `<detection_path>\t<epoch_or_empty>`
+#   - 1 検出 1 行: `<detection_path>\t<epoch_or_empty>[ \t<message>]`
+#   - `usage_limit_fatal` は message を第 3 フィールドへ出力する。第 2 フィールドに
+#     数値 epoch が無い場合、qa_run_codex_stage が message から reset 時刻を抽出する
 #   - 解析失敗（非 JSON / schema 違い）の行は無視して継続（Req 2.5 / Issue #66）
 #   - allowed のみ / 通常 result（is_error:false）は無視（Req 3.4）
 #   - 同一 stream に複数検出があっても全件出力（呼び出し側で `tail -1` 等を選択）
@@ -89,23 +95,37 @@ qa_detect_rate_limit() {
     | (try ($line | fromjson) catch null)
     | select(type == "object") as $j
 
-    # detection_path を 3 経路で識別（先頭で優先度を決定し、最初に match した
+    # detection_path を 4 経路で識別（先頭で優先度を決定し、最初に match した
     # 経路を採用）。マッチしなければ empty で当該行を捨てる。
     | (
         if ($j.type? == "rate_limit_event")
            and (($j.rate_limit_info? // {}).status? == "rejected") then
-          "rate_limit_event_v2"
+          { path: "rate_limit_event_v2", message: null }
         elif ($j.type? == "rate_limit_event")
              and ($j.status? == "exceeded") then
-          "rate_limit_event_v1"
+          { path: "rate_limit_event_v1", message: null }
         elif ($j.type? == "result")
              and ($j.is_error? == true)
              and ($j.api_error_status? == 429) then
-          "synthetic_429_result"
+          { path: "synthetic_429_result", message: null }
         else
-          empty
+          (
+            [
+              ($j.message? // empty),
+              ($j.error? // {} | .message? // empty),
+              ($j.item? // {} | .message? // empty)
+            ]
+            | map(select(type == "string"))
+            | map(select(test("usage limit|purchase more credits|try again at"; "i")))
+            | .[-1] // null
+          ) as $msg
+          | if $msg != null then
+              { path: "usage_limit_fatal", message: $msg }
+            else
+              empty
+            end
         end
-      ) as $path
+      ) as $det
 
     # reset epoch 候補値: 現行スキーマ ネスト → 旧スキーマ top-level の順で探索。
     # 値が無ければ null を bind（empty を bind すると jq 仕様により当該行が消える）。
@@ -129,9 +149,48 @@ qa_detect_rate_limit() {
         else "" end
       ) as $epoch_str
 
-    # 出力: <detection_path>\t<epoch_or_empty>
-    | "\($path)\t\($epoch_str)"
+    # 出力: <detection_path>\t<epoch_or_empty>[ \t<message>]
+    | if $det.path == "usage_limit_fatal" then
+        "\($det.path)\t\($epoch_str)\t\($det.message | gsub("[\t\r\n]"; " "))"
+      else
+        "\($det.path)\t\($epoch_str)"
+      end
   ' 2>/dev/null
+}
+
+# usage-limit 風 fatal message から reset epoch を抽出する。
+# Codex CLI の観測文言は `try again at Jun 9th, 2026 1:16 AM.` のように timezone を
+# 含まないため、PR Iteration 側の既存実装と同じく watcher 実行環境の local timezone
+# で解釈する。抽出不能時は空文字を返し、呼び出し側は既存失敗経路へ透過する。
+qa_extract_usage_limit_reset_epoch() {
+  local message="${1:-}"
+  if [ -z "$message" ]; then
+    echo ""
+    return 0
+  fi
+
+  local raw
+  raw=$(printf '%s\n' "$message" \
+    | sed -nE 's/.*try again at ([A-Z][a-z]{2} [0-9]{1,2}(st|nd|rd|th)?, [0-9]{4} [0-9]{1,2}:[0-9]{2} (AM|PM)).*/\1/p' \
+    | tail -1)
+  if [ -z "$raw" ]; then
+    echo ""
+    return 0
+  fi
+
+  local normalized
+  normalized=$(printf '%s\n' "$raw" | sed -E 's/([0-9]+)(st|nd|rd|th)/\1/g')
+  local epoch=""
+  if epoch=$(date -d "$normalized" '+%s' 2>/dev/null); then
+    echo "$epoch"
+    return 0
+  fi
+  if epoch=$(date -j -f '%b %e, %Y %I:%M %p' "$normalized" '+%s' 2>/dev/null); then
+    echo "$epoch"
+    return 0
+  fi
+  echo ""
+  return 0
 }
 
 # 既存 6 stage の codex 呼び出しを横断ラップする Stage Wrapper（Req 1.1, 1.2,
@@ -195,11 +254,32 @@ qa_run_codex_stage() {
     if [ -n "$_epoch_line" ]; then
       _path="${_epoch_line%%$'\t'*}"
       _epoch="${_epoch_line#*$'\t'}"
+      _epoch="${_epoch%%$'\t'*}"
       _epoch=$(printf '%s' "$_epoch" | tr -d '[:space:]')
       printf '%s\n' "$_epoch" > "$reset_file"
       qa_log "stage detected exceeded label=$stage_label path=${_path} reset_epoch=$_epoch"
       rm -f "$detect_file"
       return 99
+    fi
+
+    # Codex CLI の usage-limit fatal は stream-json の通常 error message として出ることがある。
+    # reset 時刻を抽出できる場合だけ quota wait に分類し、抽出不能時は codex_rc を透過して
+    # 既存の codex-failed 経路へ委譲する（Issue #12 Option B）。
+    local _usage_line _usage_rest _usage_epoch _usage_message
+    _usage_line=$(awk -F '\t' '$1 == "usage_limit_fatal" { last = $0 } END { print last }' "$detect_file")
+    if [ -n "$_usage_line" ]; then
+      _usage_rest="${_usage_line#*$'\t'}"
+      _usage_epoch="${_usage_rest%%$'\t'*}"
+      _usage_message="${_usage_rest#*$'\t'}"
+      if ! [[ "$_usage_epoch" =~ ^[0-9]+$ ]]; then
+        _usage_epoch=$(qa_extract_usage_limit_reset_epoch "$_usage_message")
+      fi
+      if [[ "$_usage_epoch" =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "$_usage_epoch" > "$reset_file"
+        qa_log "stage detected exceeded label=$stage_label path=usage_limit_fatal reset_epoch=$_usage_epoch"
+        rm -f "$detect_file"
+        return 99
+      fi
     fi
 
     # epoch 付き検出ゼロだが、検出経路だけは観測できたケース

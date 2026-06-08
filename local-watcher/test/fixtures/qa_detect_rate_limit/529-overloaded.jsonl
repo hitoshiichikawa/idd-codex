@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"test-thread"}
+{"type":"turn.started"}
+{"type":"error","message":"Request failed: status: 529 Overloaded"}
+{"type":"turn.failed","error":{"message":"Request failed: status: 529 Overloaded","status":529,"type":"overloaded_error"}}

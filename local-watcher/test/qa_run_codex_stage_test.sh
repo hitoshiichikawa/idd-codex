@@ -15,6 +15,10 @@
 #           (Req 3.4)
 #         - synthetic 429 のみで reset 不在 → codex_rc 透過 + warn
 #           (Req 3.2)
+#         - usage-limit fatal + reset あり → exit 99 + reset_file = epoch
+#           (Issue #12 Req 1, 2, 3, 6)
+#         - usage-limit fatal + reset なし → codex_rc 透過
+#           (Issue #12 Option B / Req 4)
 #         - opt-out (QUOTA_AWARE_ENABLED!=true) → 素通し
 #           (NFR 1.1)
 #
@@ -76,14 +80,50 @@ eval "$(extract_function "$WATCHER_SH" "qa_error")"
 # shellcheck disable=SC1090
 eval "$(extract_function "$WATCHER_SH" "qa_detect_rate_limit")"
 # shellcheck disable=SC1090
+eval "$(extract_function "$WATCHER_SH" "qa_extract_usage_limit_reset_epoch")"
+# shellcheck disable=SC1090
 eval "$(extract_function "$WATCHER_SH" "qa_run_codex_stage")"
+# shellcheck disable=SC1090
+eval "$(extract_function "$WATCHER_SH" "qa_format_iso8601")"
+# shellcheck disable=SC1090
+eval "$(extract_function "$WATCHER_SH" "qa_persist_reset_time")"
+# shellcheck disable=SC1090
+eval "$(extract_function "$WATCHER_SH" "qa_build_escalation_comment")"
+# shellcheck disable=SC1090
+eval "$(extract_function "$WATCHER_SH" "qa_handle_quota_exceeded")"
+# shellcheck disable=SC1090
+eval "$(extract_function "$WATCHER_SH" "codex_log_detect_529")"
 
-for fn in qa_log qa_warn qa_error qa_detect_rate_limit qa_run_codex_stage; do
+for fn in qa_log qa_warn qa_error qa_detect_rate_limit qa_extract_usage_limit_reset_epoch qa_run_codex_stage qa_format_iso8601 qa_persist_reset_time qa_build_escalation_comment qa_handle_quota_exceeded codex_log_detect_529; do
   if ! declare -F "$fn" >/dev/null; then
     echo "ERROR: $fn not loaded" >&2
     exit 2
   fi
 done
+
+REPO="owner/test"
+REPO_SLUG="owner-test"
+LOG_DIR="$TMPDIR_TEST/logs"
+QUOTA_RESET_STATE_FILE="$TMPDIR_TEST/quota-reset-times.json"
+QUOTA_RESUME_GRACE_SEC="60"
+LABEL_CLAIMED="codex-claimed"
+LABEL_PICKED="codex-picked-up"
+LABEL_NEEDS_QUOTA_WAIT="codex-needs-quota-wait"
+LABEL_FAILED="codex-failed"
+GH_CALL_LOG="$TMPDIR_TEST/gh-calls.log"
+MARK_FAILED_LOG="$TMPDIR_TEST/mark-failed.log"
+export REPO REPO_SLUG LOG_DIR QUOTA_RESET_STATE_FILE QUOTA_RESUME_GRACE_SEC
+export LABEL_CLAIMED LABEL_PICKED LABEL_NEEDS_QUOTA_WAIT LABEL_FAILED
+
+gh() {
+  printf '%s\n' "$*" >> "$GH_CALL_LOG"
+  return 0
+}
+
+mark_issue_failed() {
+  printf '%s\n' "$*" >> "$MARK_FAILED_LOG"
+  return 0
+}
 
 # ─── アサーションヘルパ ───
 PASS_COUNT=0
@@ -104,6 +144,36 @@ assert_eq() {
   fi
 }
 
+assert_contains() {
+  local label="$1"
+  local haystack="$2"
+  local needle="$3"
+  if [[ "$haystack" == *"$needle"* ]]; then
+    echo "PASS: $label"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    echo "FAIL: $label"
+    echo "  missing: $(printf '%q' "$needle")"
+    echo "  in     : $(printf '%q' "$haystack")"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  fi
+}
+
+assert_not_contains() {
+  local label="$1"
+  local haystack="$2"
+  local needle="$3"
+  if [[ "$haystack" != *"$needle"* ]]; then
+    echo "PASS: $label"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    echo "FAIL: $label"
+    echo "  unexpected: $(printf '%q' "$needle")"
+    echo "  in        : $(printf '%q' "$haystack")"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  fi
+}
+
 # fake-codex: fixture を stdout にダンプし、指定された exit code を返す。
 # qa_run_codex_stage は "$@" を実行するため、引数として fixture と rc を受け取る。
 fake_codex() {
@@ -114,7 +184,7 @@ fake_codex() {
 }
 
 # テスト 1 件を実行する補助関数。
-# Args: <test_label> <expected_rc> <expected_reset_file_content> <fixture> [fake_codex_rc]
+# Args: <test_label> <expected_rc> <expected_reset_file_content> <fixture> [fake_codex_rc] [stage_label]
 # QUOTA_AWARE_ENABLED は呼び出し側で export する想定。
 run_case() {
   local label="$1"
@@ -122,11 +192,12 @@ run_case() {
   local expected_reset="$3"
   local fx="$4"
   local fake_rc="${5:-0}"
+  local stage_label="${6:-TestStage}"
 
   local reset_file
   reset_file=$(mktemp -p "$TMPDIR_TEST" "reset.XXXXXX")
   local rc=0
-  qa_run_codex_stage "TestStage" "$reset_file" -- \
+  qa_run_codex_stage "$stage_label" "$reset_file" -- \
     fake_codex "$FIXTURE_DIR/$fx" "$fake_rc" >/dev/null 2>&1 || rc=$?
 
   local actual_reset
@@ -135,6 +206,41 @@ run_case() {
 
   assert_eq "$label rc" "$expected_rc" "$rc"
   assert_eq "$label reset_file" "$expected_reset" "$actual_reset"
+}
+
+run_quota_wait_label_case() {
+  local label="$1"
+  local stage_label="$2"
+  local reset_file
+  reset_file=$(mktemp -p "$TMPDIR_TEST" "reset.XXXXXX")
+  : > "$GH_CALL_LOG"
+  : > "$MARK_FAILED_LOG"
+  rm -f "$QUOTA_RESET_STATE_FILE"
+
+  local rc=0
+  qa_run_codex_stage "$stage_label" "$reset_file" -- \
+    fake_codex "$FIXTURE_DIR/usage-limit-with-reset.jsonl" 1 >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    99)
+      qa_handle_quota_exceeded "12" "$stage_label" "$(cat "$reset_file")"
+      rc=0
+      ;;
+    *)
+      mark_issue_failed "$stage_label" "unexpected rc=${rc}"
+      ;;
+  esac
+
+  local gh_calls mark_failed persisted_epoch
+  gh_calls=$(cat "$GH_CALL_LOG" 2>/dev/null || true)
+  mark_failed=$(cat "$MARK_FAILED_LOG" 2>/dev/null || true)
+  persisted_epoch=$(jq -r '."12" // ""' "$QUOTA_RESET_STATE_FILE" 2>/dev/null || true)
+  rm -f "$reset_file" "${reset_file}.detect"
+
+  assert_eq "$label callsite rc" "0" "$rc"
+  assert_contains "$label adds quota wait label" "$gh_calls" "--add-label $LABEL_NEEDS_QUOTA_WAIT"
+  assert_not_contains "$label does not add failed label" "$gh_calls" "--add-label $LABEL_FAILED"
+  assert_eq "$label mark_issue_failed not called" "" "$mark_failed"
+  assert_eq "$label reset persisted" "$usage_reset_epoch" "$persisted_epoch"
 }
 
 # ─── テストケース ───
@@ -183,6 +289,55 @@ run_case "normal-success with codex rc=2 (NFR 1.2 既存 rc 透過)" \
 # Req 5.4: malformed line 混入でも検出を継続
 run_case "v2-rate-limit-malformed-line (Req 5.4)" \
   99 "1778821200" "v2-rate-limit-malformed-line.jsonl" 0
+
+usage_reset_epoch=$(qa_extract_usage_limit_reset_epoch "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Jun 9th, 2026 1:16 AM.")
+if [[ "$usage_reset_epoch" =~ ^[0-9]+$ ]]; then
+  assert_eq "usage-limit reset parser returns numeric epoch (Issue #12 Req 3, 6)" "true" "true"
+else
+  assert_eq "usage-limit reset parser returns numeric epoch (Issue #12 Req 3, 6)" "true" "false"
+fi
+
+run_case "StageA usage-limit-with-reset → quota wait (Issue #12 Req 1, 6)" \
+  99 "$usage_reset_epoch" "usage-limit-with-reset.jsonl" 1 "StageA"
+
+run_case "Reviewer usage-limit-with-reset → quota wait (Issue #12 Req 1, 6)" \
+  99 "$usage_reset_epoch" "usage-limit-with-reset.jsonl" 1 "Reviewer-r1-a1"
+
+run_case "Debugger後 Reviewer usage-limit-with-reset → quota wait (Issue #12 Req 1, 6)" \
+  99 "$usage_reset_epoch" "usage-limit-with-reset.jsonl" 1 "Reviewer-r3-a1"
+
+run_case "Triage usage-limit-with-reset → quota wait (Issue #12 Req 2, 6)" \
+  99 "$usage_reset_epoch" "usage-limit-with-reset.jsonl" 1 "Triage"
+
+run_case "StageC usage-limit-with-reset → quota wait (Issue #12 Req 1, 6)" \
+  99 "$usage_reset_epoch" "usage-limit-with-reset.jsonl" 1 "StageC"
+
+run_quota_wait_label_case "StageA usage-limit callsite → quota label, no failed (Issue #12 Req 6.3)" \
+  "StageA"
+
+run_quota_wait_label_case "Reviewer usage-limit callsite → quota label, no failed (Issue #12 Req 6.4)" \
+  "Reviewer-r1-a1"
+
+run_quota_wait_label_case "Debugger後 Reviewer usage-limit callsite → quota label, no failed (Issue #12 Req 6.4)" \
+  "Reviewer-r3-a1"
+
+run_quota_wait_label_case "Triage usage-limit callsite → quota label, no failed (Issue #12 Req 6.5)" \
+  "Triage"
+
+run_case "usage-limit-no-reset → codex rc透過 (Issue #12 Option B)" \
+  1 "" "usage-limit-no-reset.jsonl" 1 "StageA"
+
+run_case "normal-error with codex rc=1 remains normal failure (Issue #12 Req 5)" \
+  1 "" "normal-error.jsonl" 1 "StageA"
+
+# Issue #12 regression guard: 529 Overloaded の既存 detector は維持する。
+LOG="$TMPDIR_TEST/overloaded-529.log"
+export LOG
+run_case "529-overloaded is not reclassified by usage-limit path (Issue #12 regression)" \
+  2 "" "529-overloaded.jsonl" 2 "StageA"
+_rc_529=0
+codex_log_detect_529 "$LOG" || _rc_529=$?
+assert_eq "codex_log_detect_529 still detects 529 Overloaded (Issue #12 regression)" "0" "$_rc_529"
 
 echo ""
 echo "--- qa_run_codex_stage cases (opt-out) ---"

@@ -158,6 +158,35 @@ assert_eq "v2-rate-limit-malformed-line (Req 5.4 / NFR resilience)" \
   "$(printf 'rate_limit_event_v2\t1778821200')" \
   "$out"
 
+# Issue #12: Codex CLI の usage-limit fatal message は usage_limit_fatal として検出する。
+# 自然言語 reset 時刻の epoch 化は qa_run_codex_stage 側で行うため、detector は message を
+# 第 3 フィールドに保持する。
+out=$(detect_last_line "usage-limit-with-reset.jsonl")
+assert_eq "usage-limit-with-reset path (Issue #12 Req 6)" \
+  "usage_limit_fatal" \
+  "$(printf '%s\n' "$out" | awk -F '\t' '{print $1}')"
+assert_eq "usage-limit-with-reset detector epoch is empty before wrapper parse (Issue #12 Req 6)" \
+  "" \
+  "$(printf '%s\n' "$out" | awk -F '\t' '{print $2}')"
+message_field="$(printf '%s\n' "$out" | awk -F '\t' '{print $3}')"
+if printf '%s\n' "$message_field" | grep -q "You've hit your usage limit" \
+   && printf '%s\n' "$message_field" | grep -q "try again at "; then
+  assert_eq "usage-limit-with-reset message retained (Issue #12 Req 6)" "true" "true"
+else
+  assert_eq "usage-limit-with-reset message retained (Issue #12 Req 6)" "true" "false"
+fi
+
+out=$(detect_last_line "usage-limit-no-reset.jsonl")
+assert_eq "usage-limit-no-reset path (Issue #12 Option B)" \
+  "usage_limit_fatal" \
+  "$(printf '%s\n' "$out" | awk -F '\t' '{print $1}')"
+assert_eq "usage-limit-no-reset detector epoch empty (Issue #12 Option B)" \
+  "" \
+  "$(printf '%s\n' "$out" | awk -F '\t' '{print $2}')"
+
+out=$(detect_last_line "normal-error.jsonl")
+assert_eq "normal-error is not quota-related (Issue #12 Req 5)" "" "$out"
+
 echo ""
 echo "==========================================="
 echo "PASS: $PASS_COUNT, FAIL: $FAIL_COUNT"

@@ -1330,6 +1330,29 @@ pi_resolve_success_action() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# pi_pr_has_pr_reviewer_quota_marker: PR Reviewer 由来の quota wait marker を持つか判定
+#   戻り値: 0=marker あり / 1=marker なし or API failure
+# ─────────────────────────────────────────────────────────────────────────────
+pi_pr_has_pr_reviewer_quota_marker() {
+  local pr_number="$1"
+  local comments_json
+  if ! comments_json=$(timeout "$PR_ITERATION_GIT_TIMEOUT" \
+      gh api "/repos/${REPO}/issues/${pr_number}/comments" 2>/dev/null); then
+    return 1
+  fi
+  printf '%s\n' "$comments_json" | jq -e '
+    [
+      .[]?.body // ""
+      | if contains("idd-codex:pr-reviewer-quota-wait reset=") then
+          "wait"
+        elif contains("idd-codex:pr-reviewer-quota-resume reset=") then
+          "resume"
+        else empty end
+    ] | last == "wait"
+  ' >/dev/null 2>&1
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # pi_process_quota_resume: usage-limit 風 fatal で待機中の PR を reset 後に iteration へ戻す
 #   戻り値: 0 固定（API 失敗は WARN で後続継続）
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1356,6 +1379,10 @@ pi_process_quota_resume() {
   local pr_number pr_url reset_epoch threshold
   while IFS=$'\t' read -r pr_number pr_url; do
     [ -z "$pr_number" ] && continue
+    if pi_pr_has_pr_reviewer_quota_marker "$pr_number"; then
+      pi_log "PR #${pr_number}: PR Reviewer quota wait marker 検出 → PR Iteration resume では触らない"
+      continue
+    fi
     if ! reset_epoch=$(qa_load_reset_time "pr-${pr_number}"); then
       pi_warn "PR #${pr_number}: quota wait reset 時刻読み出し失敗 → ラベル維持"
       continue
