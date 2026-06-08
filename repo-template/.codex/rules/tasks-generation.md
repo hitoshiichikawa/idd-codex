@@ -59,6 +59,26 @@ Architect が出力する `tasks.md` は、Developer が迷わず実装を進め
 | `_Boundary:_` | 並列可タスク `(P)` でのみ必須 | 担当するコンポーネント名を列挙（design.md の Components 名と一致） |
 | `_Depends:_` | 非自明な cross-boundary 依存のみ | 先行するタスク ID を列挙。自明な順序依存は省略 |
 
+## Task Boundary Contract
+
+`_Requirements:_` は per-task review の正準 scope です。各 task の `_Requirements:_` には、その task
+完了時点で実装・テスト・レビュー可能な AC だけを列挙します。後続 task で初めて満たす AC や、
+後続 task のテスト作業がないと検証できない coverage AC を先行 task の `_Requirements:_` に含めては
+いけません。
+
+- `_Requirements:_` に regression coverage / failure path / safety fallback / runtime behavior change
+  の AC を含める場合、同 task の詳細項目に対応する test work（regression test、failure path test、
+  safety fallback test、または shell-level test）を明記する
+- 実行時挙動を変更する task は、原則として同 task に最低限の regression test または shell-level test
+  を含める
+- 対応 test work を後続 task に defer する場合、先行 task の `_Requirements:_` から未実施の
+  coverage AC を外し、後続の dedicated test task 側の `_Requirements:_` にだけその AC を列挙する
+- partial な先行 task と coverage task の関係は、先行 task の `_Boundary:_` または後続 task の
+  `_Depends:_` で明示する。特に coverage task は、どの先行 task の検証を補完するかが分かるよう
+  `_Depends:_` を付ける
+- `- [ ]*` は既存の optional / deferrable なテストタスク表記として扱い、未完了の deferred test
+  task を先行 task の per-task review の `missing test` 判定対象へ混ぜない
+
 ## 並列マーカー `(P)`
 
 - **並列実行可能**なタスクのみ末尾に ` (P)` を付ける
