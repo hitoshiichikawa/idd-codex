@@ -29,9 +29,15 @@ extract_function() {
 
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$WATCHER_SH" "pt_resolve_diff_range")"
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$WATCHER_SH" "pt_build_diff_range_resolve_diagnostic")"
 
 if ! declare -F pt_resolve_diff_range >/dev/null; then
   echo "ERROR: pt_resolve_diff_range not loaded" >&2
+  exit 2
+fi
+if ! declare -F pt_build_diff_range_resolve_diagnostic >/dev/null; then
+  echo "ERROR: pt_build_diff_range_resolve_diagnostic not loaded" >&2
   exit 2
 fi
 
@@ -106,6 +112,22 @@ assert_contains "Req 2.2 / 3.4: post-marker include 診断を stderr に残す" 
 assert_contains "Req 5.1: resolved range の diff に corrective commit の変更が含まれる" \
   "fix.txt" \
   "$(git -C "$TMPROOT" diff --name-only "${range_start}..${range_end}")"
+
+post_marker_diagnostic=$(cd "$TMPROOT" && BASE_BRANCH=main pt_build_diff_range_resolve_diagnostic "1")
+assert_contains "Req 3.4: 診断に affected range を含める" \
+  "- affected range: \`${marker_sha}..${head_sha}\`" \
+  "$post_marker_diagnostic"
+assert_contains "Req 3.4: 診断に marker 後 commit 数を含める" \
+  "- marker 後 commit: 1 commit(s)" \
+  "$post_marker_diagnostic"
+
+missing_marker_diagnostic=$(cd "$TMPROOT" && BASE_BRANCH=main pt_build_diff_range_resolve_diagnostic "2")
+assert_contains "Req 3.4: marker 不在時の unsafe reason を明示する" \
+  "- unsafe reason: \`marker-not-found\`" \
+  "$missing_marker_diagnostic"
+assert_contains "Req 3.4: marker 不在時も直近 marker 候補を出す" \
+  "docs(tasks): mark 1 as done" \
+  "$missing_marker_diagnostic"
 
 echo ""
 echo "==========================================="

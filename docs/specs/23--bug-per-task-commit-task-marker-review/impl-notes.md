@@ -7,3 +7,11 @@
 - 重要な判断: `pt_should_skip_reviewer` も補正後 range を使うため、marker 後 corrective commit がある親 task を checkbox-only と誤判定しない。
 - 重要な判断: task 1 の Req 5.1 は `pt_resolve_diff_range` 単体の #14 形状 fixture で検証し、retry / Debugger 経路の網羅は後続 task に残す。
 - 残存課題: prompt、README、retry / Debugger 経路の追加 regression coverage は後続 task の範囲。
+
+### Task 2
+
+- 採用方針: retry / Debugger 経路は既存の `run_per_task_reviewer` 集約を維持し、guard 失敗時の operator 診断を強化する。
+- 重要な判断: `pt_mark_diff_range_resolve_failed` に resolver 失敗時の HEAD、候補 marker、affected range、marker 後 commit の要約を埋め込み、post-marker 事故と marker 不在を同じ復旧入口で判別できるようにした。
+- 重要な判断: `pt_build_diff_range_resolve_diagnostic` は resolver の stdout 契約を変えず、Issue コメント専用の markdown 診断として分離した。
+- 重要な判断: `per_task_marker_review_range_test.sh` に診断出力の assertion を追加し、失敗時コメントの材料が欠けないことを検証した。
+- 残存課題: prompt と README の marker / range contract 明文化は後続 task の範囲。

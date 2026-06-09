@@ -3339,6 +3339,115 @@ run_per_task_reviewer() {
   esac
 }
 
+# ─── pt_build_diff_range_resolve_diagnostic <task_id> ───
+#
+# `pt_resolve_diff_range` 失敗時の Issue コメントに埋め込む operator 向け診断を生成する。
+# stdout 契約を持つ resolver 本体とは分離し、失敗コメントに task ID / marker 候補 / affected
+# range / 復旧操作の判断材料を残す（Issue #23 Req 3.4 / task 2）。
+pt_build_diff_range_resolve_diagnostic() {
+  local task_id="$1"
+  local base="${BASE_BRANCH:-main}"
+
+  local head_sha base_sha
+  head_sha=$(git rev-parse HEAD 2>/dev/null || true)
+  base_sha=$(git rev-parse "$base" 2>/dev/null || true)
+
+  local all_pairs
+  all_pairs=$(git log --grep="^docs(tasks): mark " --format='%H%x09%s' --reverse "${base}..HEAD" 2>/dev/null || true)
+
+  local current_mark="" via="" sha subject id_list tok found
+  if [ -n "$all_pairs" ]; then
+    while IFS=$'\t' read -r sha subject; do
+      [ -n "$sha" ] || continue
+      if [ "$subject" = "docs(tasks): mark ${task_id} as done" ]; then
+        current_mark="$sha"
+        via="single-id-marker"
+      fi
+    done <<<"$all_pairs"
+
+    if [ -z "$current_mark" ]; then
+      while IFS=$'\t' read -r sha subject; do
+        [ -n "$sha" ] || continue
+        id_list=$(printf '%s' "$subject" | sed -nE 's/^docs\(tasks\): mark (.+) as done$/\1/p')
+        [ -n "$id_list" ] || continue
+        found=false
+        for tok in $(printf '%s' "$id_list" | tr '/,' '  '); do
+          if [ "$tok" = "$task_id" ]; then
+            found=true
+            break
+          fi
+        done
+        if [ "$found" = "true" ]; then
+          current_mark="$sha"
+          via="multi-id-marker"
+        fi
+      done <<<"$all_pairs"
+    fi
+  fi
+
+  local marker_line="(not found)"
+  local affected_range="(not available)"
+  local post_marker_summary="(not available)"
+  local unsafe_reason="none"
+
+  if [ -n "$current_mark" ]; then
+    marker_line="${current_mark} (${via})"
+    if [ -n "$head_sha" ]; then
+      affected_range="${current_mark}..${head_sha}"
+      if git merge-base --is-ancestor "$current_mark" "$head_sha" 2>/dev/null; then
+        local post_marker_count
+        post_marker_count=$(git rev-list --count "${current_mark}..${head_sha}" 2>/dev/null || true)
+        if [ -n "$post_marker_count" ]; then
+          post_marker_summary="${post_marker_count} commit(s)"
+        else
+          post_marker_summary="count failed"
+          unsafe_reason="post-marker-count-failed"
+        fi
+      else
+        post_marker_summary="ancestor check failed"
+        unsafe_reason="marker-not-ancestor-of-head"
+      fi
+    else
+      unsafe_reason="head-resolve-failed"
+    fi
+  else
+    unsafe_reason="marker-not-found"
+  fi
+
+  local recent_marker_log="(none)"
+  if [ -n "$all_pairs" ]; then
+    recent_marker_log=$(printf '%s\n' "$all_pairs" | tail -10 | cut -f1,2)
+  fi
+
+  local post_marker_log="(not available)"
+  if [ -n "$current_mark" ] && [ -n "$head_sha" ] \
+     && git merge-base --is-ancestor "$current_mark" "$head_sha" 2>/dev/null; then
+    post_marker_log=$(git log --oneline --max-count=10 "${current_mark}..${head_sha}" 2>/dev/null || true)
+    [ -n "$post_marker_log" ] || post_marker_log="(no post-marker commits)"
+  fi
+
+  cat <<EOF
+## 解決診断
+- BASE range: \`${base}..HEAD\`
+- BASE SHA: \`${base_sha:-(resolve failed)}\`
+- HEAD SHA: \`${head_sha:-(resolve failed)}\`
+- 選択可能だった marker: \`${marker_line}\`
+- affected range: \`${affected_range}\`
+- marker 後 commit: ${post_marker_summary}
+- unsafe reason: \`${unsafe_reason}\`
+
+### 直近の marker commit 候補
+\`\`\`text
+${recent_marker_log}
+\`\`\`
+
+### marker 後 commit 候補
+\`\`\`text
+${post_marker_log}
+\`\`\`
+EOF
+}
+
 # ─── pt_mark_diff_range_resolve_failed <task_id> <round> ───
 #
 # diff-range-resolve-failed カテゴリで `codex-failed` を付与し、復旧手順付き Issue
@@ -3370,6 +3479,10 @@ pt_mark_diff_range_resolve_failed() {
   local hostname_val
   hostname_val=$(hostname)
   local marker="<!-- idd-codex:per-task-diff-range-resolve-failed:#${NUMBER}:${task_id} -->"
+  local diagnostic
+  diagnostic=$(pt_build_diff_range_resolve_diagnostic "$task_id" 2>/dev/null || true)
+  [ -n "$diagnostic" ] || diagnostic="## 解決診断
+- 診断情報を生成できませんでした。watcher ログ \`$LOG\` を確認してください。"
 
   # NFR 1.2: 重複コメント抑制のため既存 marker を gh API で検索
   local comments_json existing_count=0
@@ -3405,15 +3518,18 @@ ${body_header}
 - ログ: \`$LOG\`
 
 ## 原因
-per-task Reviewer が当該 task の \`docs(tasks): mark ${task_id} as done\` marker commit を
-\`${BASE_BRANCH}..HEAD\` 範囲で解決できませんでした（単記 marker / 連記 marker いずれも
-不一致）。Developer が以下のいずれかに該当した可能性があります:
+per-task Reviewer が当該 task の review range を \`${BASE_BRANCH}..HEAD\` 範囲で安全に
+解決できませんでした。marker commit が見つからない、または marker 後 commit を安全に
+review range へ含められない状態です。Developer が以下のいずれかに該当した可能性があります:
 
 - 進捗 marker commit を作成せずに実装 commit のみで完了した
 - marker commit subject が canonical 形式 \`docs(tasks): mark <id> as done\` から逸脱した
   （例: prefix 違い / suffix の追加 / typo）
 - 連記 marker commit に task ID \`${task_id}\` と完全一致するトークンが含まれていない
   （Issue #164 で許容拡大した連記マッチ機構でも検出できなかった）
+- marker 後 commit が存在するが、HEAD / ancestor / commit count の検査に失敗した
+
+${diagnostic}
 
 ## 復旧手順（重要 / データ損失リスク回避）
 
@@ -3439,6 +3555,13 @@ push 前の Developer commit が残っていれば、次サイクル前に必ず
 3. **marker commit の補完**: 不足している \`docs(tasks): mark ${task_id} as done\` commit を
    手動で作成（tasks.md の \`- [ ]\` → \`- [x]\` を 1 行編集して 1 commit）してから
    \`codex-failed\` ラベルを外す。これにより次サイクルで watcher が当該 task を resume できる
+4. **marker 後に修正 commit がある場合**: \`git log --oneline <marker>..HEAD\` で対象 commit を
+   確認し、修正 commit の後ろに最新 marker を置いてください。対象 task が既に \`- [x]\` の場合は、
+   空 commit で終端 marker を作成できます:
+   \`\`\`bash
+   git commit --allow-empty -m "docs(tasks): mark ${task_id} as done"
+   git push origin <current-branch>
+   \`\`\`
 
 ## 推奨される marker commit 分割の規約（1 commit = 1 task ID）
 
