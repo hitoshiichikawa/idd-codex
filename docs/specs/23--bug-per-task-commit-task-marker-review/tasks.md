@@ -34,7 +34,7 @@
   - prompt-only assertion を shell fixture で実現できない場合は、`docs/specs/23--bug-per-task-commit-task-marker-review/impl-notes.md` に理由と手動確認結果を書く。
   - _Requirements: 5.1, 5.2, 5.3, 5.4_
 
-- [ ] 6. 静的検証と root↔repo-template 同期を確認する
+- [x] 6. 静的検証と root↔repo-template 同期を確認する
   - `shellcheck local-watcher/bin/idd-codex-issue-watcher.sh install.sh setup.sh .github/scripts/*.sh` を実行し、警告ゼロを確認する。
   - `bash local-watcher/test/per_task_marker_review_range_test.sh` を実行する。
   - `diff -r .codex/agents repo-template/.codex/agents` と `diff -r .codex/rules repo-template/.codex/rules` が空であることを確認する。
