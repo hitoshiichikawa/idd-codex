@@ -156,17 +156,45 @@ assert_not_contains "Case 2: 健全な quota-aware.sh は欠落エラーに含�
   "quota-aware.sh" "$OUT"
 
 # ─────────────────────────────────────────────────────────────────
-# Case 3: 全モジュールが揃っている → ローダ起因の欠落エラーは出さない
-# （後続の git 失敗等で非 0 終了しうるが、欠落メッセージは出ない）
+# Case 3: core_utils.sh 欠落 + shared modules/core_utils.sh 存在
+# → shared modules/ へ fallback せず、_slot_run_issue 到達前に exit 1
 # ─────────────────────────────────────────────────────────────────
 cp "$MODULES_DIR/merge-queue.sh" "$TMPROOT/idd-codex-modules/merge-queue.sh"
+mkdir -p "$TMPROOT/modules"
+{
+  printf 'echo "SHARED_MODULE_SOURCED"\n'
+  printf '_worktree_inject_claude() { :; }\n'
+  printf '_slot_run_issue() { echo "SHARED_SLOT_RUN_ISSUE"; }\n'
+} > "$TMPROOT/modules/core_utils.sh"
+rm -f "$TMPROOT/idd-codex-modules/core_utils.sh"
 
 rc=0
 OUT=$(REPO=owner/test REPO_DIR=/tmp/idd-loader-test-nonexistent \
   PATH="$FAKE_PATH" \
   bash "$TMPROOT/idd-codex-issue-watcher.sh" 2>&1) || rc=$?
 
-assert_not_contains "Case 3: 全モジュール存在時はローダ欠落エラーを出さない (Req 4.1, 4.3)" \
+assert_eq "Case 3: core_utils.sh 欠落で exit 1 (Req 2.4 / Req 4.2)" "1" "$rc"
+assert_contains "Case 3: stderr に欠落モジュール名 core_utils.sh" \
+  "core_utils.sh" "$OUT"
+assert_contains "Case 3: stderr に専用 module directory idd-codex-modules" \
+  "idd-codex-modules" "$OUT"
+assert_not_contains "Case 3: shared modules/core_utils.sh は source されない" \
+  "SHARED_MODULE_SOURCED" "$OUT"
+assert_not_contains "Case 3: shared modules の _slot_run_issue へ到達しない" \
+  "SHARED_SLOT_RUN_ISSUE" "$OUT"
+
+# ─────────────────────────────────────────────────────────────────
+# Case 4: 全モジュールが揃っている → ローダ起因の欠落エラーは出さない
+# （後続の git 失敗等で非 0 終了しうるが、欠落メッセージは出ない）
+# ─────────────────────────────────────────────────────────────────
+cp "$MODULES_DIR/core_utils.sh" "$TMPROOT/idd-codex-modules/core_utils.sh"
+
+rc=0
+OUT=$(REPO=owner/test REPO_DIR=/tmp/idd-loader-test-nonexistent \
+  PATH="$FAKE_PATH" \
+  bash "$TMPROOT/idd-codex-issue-watcher.sh" 2>&1) || rc=$?
+
+assert_not_contains "Case 4: 全モジュール存在時はローダ欠落エラーを出さない (Req 4.1, 4.3)" \
   "必須モジュールが見つかりません" "$OUT"
 
 echo ""
