@@ -14,3 +14,12 @@
   - `shellcheck local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/test/per_task_redo_context_test.sh`
   - `bash local-watcher/test/per_task_redo_context_test.sh`
   - `bash local-watcher/test/parse_review_result_test.sh`
+
+### Task 2
+
+- 採用方針: redo context block を optional prompt 引数として実装し、通常 per-task Implementer prompt は空引数時に従来どおり維持した。
+- 重要な判断:
+  - `pt_build_redo_context_block` は Reviewer / Debugger context の抽出失敗時も diagnostic block を返し、通常の同一 task 再実行と区別できるようにした。
+  - round 1 reject 後は `review-notes.md`、round 2 reject + Debugger 後は `review-notes.md` と `debugger-notes.md` の `## Task <id>` セクションを inline 注入する。
+  - Finding Closure Matrix の詳細 contract と repeated reject guard は後続 task の境界に残した。
+- 残存課題: task 3 で Finding Closure Matrix の必須列と Developer agent 同期、task 4 で連続 reject warning guard を実装する必要がある。

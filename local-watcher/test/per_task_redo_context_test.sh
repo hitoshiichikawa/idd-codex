@@ -28,11 +28,19 @@ extract_function() {
 }
 
 # shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$WATCHER_SH" "pt_log")"
+# shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$WATCHER_SH" "pt_regex_escape")"
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$WATCHER_SH" "pt_extract_review_reject_context")"
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$WATCHER_SH" "pt_extract_debugger_task_section")"
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$WATCHER_SH" "pt_build_redo_context_block")"
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$WATCHER_SH" "pt_extract_learnings")"
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$WATCHER_SH" "build_per_task_implementer_prompt")"
 
 if ! declare -F pt_extract_review_reject_context >/dev/null; then
   echo "ERROR: pt_extract_review_reject_context not loaded" >&2
@@ -40,6 +48,14 @@ if ! declare -F pt_extract_review_reject_context >/dev/null; then
 fi
 if ! declare -F pt_extract_debugger_task_section >/dev/null; then
   echo "ERROR: pt_extract_debugger_task_section not loaded" >&2
+  exit 2
+fi
+if ! declare -F pt_build_redo_context_block >/dev/null; then
+  echo "ERROR: pt_build_redo_context_block not loaded" >&2
+  exit 2
+fi
+if ! declare -F build_per_task_implementer_prompt >/dev/null; then
+  echo "ERROR: build_per_task_implementer_prompt not loaded" >&2
   exit 2
 fi
 
@@ -96,6 +112,24 @@ assert_rc() {
 
 TMPROOT=$(mktemp -d)
 trap 'rm -rf "$TMPROOT"' EXIT
+
+REPO_DIR="$TMPROOT/repo"
+SPEC_DIR_REL="docs/specs/37-redo-context"
+LOG="$TMPROOT/watcher.log"
+REPO="owner/test"
+NUMBER="37"
+TITLE="[Enhancement] per-task retry context"
+URL="https://github.com/owner/test/issues/37"
+BODY="per-task retry context body"
+BRANCH="codex/issue-37-redo-context"
+BASE_BRANCH="main"
+export REPO_DIR SPEC_DIR_REL LOG REPO NUMBER TITLE URL BODY BRANCH BASE_BRANCH
+
+cm_build_prompt_block() {
+  return 0
+}
+
+mkdir -p "$REPO_DIR/$SPEC_DIR_REL"
 
 review_notes="$TMPROOT/review-notes.md"
 approve_notes="$TMPROOT/review-approve.md"
@@ -249,6 +283,45 @@ out=$(pt_extract_debugger_task_section "9" "$debugger_notes" 2>"$TMPROOT/missing
 assert_rc "Debugger context fails for missing task section" 1 "$rc"
 assert_contains "missing task diagnostic identifies task-section-missing" 'reason=task-section-missing' "$(cat "$TMPROOT/missing-task.err")"
 assert_eq "missing task failure has empty stdout" "" "$out"
+
+echo ""
+echo "--- redo context block and implementer prompt injection ---"
+
+rc=0
+out=$(pt_build_redo_context_block "1" "reviewer-reject" "1" "$review_notes" 2>"$TMPROOT/redo-review.err") || rc=$?
+assert_rc "Reviewer redo context block succeeds" 0 "$rc"
+assert_contains "Redo block has Retry Context heading" '## Retry Context（watcher 生成 / per-task redo）' "$out"
+assert_contains "Redo block identifies reviewer reject kind" "Redo kind: \`reviewer-reject\`" "$out"
+assert_contains "Redo block includes Reviewer source label" '### Reviewer Reject Context' "$out"
+assert_contains "Redo block includes Req 5.2 actionable target" "Target=\`5.2\`" "$out"
+assert_contains "Redo block includes Req 5.3 actionable target" "Target=\`5.3\`" "$out"
+assert_contains "Redo block includes Required Action checklist item" 'Required Action=local-watcher/test/per_task_redo_context_test.sh に Req 5.2 の assertion を追加する。' "$out"
+
+prompt=$(build_per_task_implementer_prompt "1" "$out")
+assert_contains "Implementer prompt includes injected Retry Context" '## Retry Context（watcher 生成 / per-task redo）' "$prompt"
+assert_contains "Implementer prompt keeps reviewer round" "Reviewer round: \`1\`" "$prompt"
+assert_contains "Implementer prompt includes Required Action inline" 'Required Action=local-watcher/test/per_task_redo_context_test.sh に Req 5.2 の assertion を追加する。' "$prompt"
+
+rc=0
+out=$(pt_build_redo_context_block "1.1" "debugger-fix-plan" "2" "$review_notes" "$debugger_notes" 2>"$TMPROOT/redo-debugger.err") || rc=$?
+assert_rc "Debugger redo context block succeeds" 0 "$rc"
+assert_contains "Debugger redo block identifies debugger kind" "Redo kind: \`debugger-fix-plan\`" "$out"
+assert_contains "Debugger redo block separates Reviewer context" '### Reviewer Reject Context' "$out"
+assert_contains "Debugger redo block separates Debugger context" '### Debugger Fix Plan Context' "$out"
+assert_contains "Debugger redo block includes Task 1.1 fix plan" '## Task 1.1' "$out"
+assert_contains "Debugger redo block includes fix steps" '### 修正手順' "$out"
+
+prompt=$(build_per_task_implementer_prompt "1.1" "$out")
+assert_contains "Debugger redo prompt includes Reviewer target" "Target=\`5.2\`" "$prompt"
+assert_contains "Debugger redo prompt includes Debugger Task section" '## Task 1.1' "$prompt"
+assert_contains "Debugger redo prompt identifies Debugger context source" '### Debugger Fix Plan Context' "$prompt"
+
+rc=0
+out=$(pt_build_redo_context_block "1" "reviewer-reject" "1" "$approve_notes" 2>"$TMPROOT/redo-diagnostic.err") || rc=$?
+assert_rc "Redo context block remains available with diagnostic when review extraction fails" 0 "$rc"
+assert_contains "Redo diagnostic block warns against silent rerun" 'This retry must not be treated as a normal same-task rerun.' "$out"
+assert_contains "Redo diagnostic block includes extraction reason" 'reason=result-not-reject' "$out"
+assert_contains "Redo diagnostic is logged" 'redo-context-unavailable kind=reviewer-reject round=1' "$(cat "$LOG")"
 
 echo ""
 echo "==========================================="
