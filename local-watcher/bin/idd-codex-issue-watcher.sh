@@ -2593,11 +2593,13 @@ pt_extract_learnings() {
 #         複数マッチ時は最後（最新）のマッチを採用（既存挙動を維持 / Req 3.1）
 #      b. 単記 marker が無ければ連記 marker（subject が `docs(tasks): mark <ids> as done` で
 #         <ids> を `/` / `,` / 空白で token 化したときに task_id と完全一致する token を含む）
-#         複数マッチ時は最後のマッチを採用（NFR 2.1: 連記経由解決時は stdout ログに
+#         複数マッチ時は最後のマッチを採用（NFR 2.1: 連記経由解決時は stderr ログに
 #         `via=multi-id-marker` を残す）
-#   3. 全 mark commit 列の中で range_end の直前要素を range_start とする
+#   3. 全 mark commit 列の中で選択 marker の直前要素を range_start とする
 #   4. 直前要素が存在しない（初回 task）場合は range_start = `$BASE_BRANCH` の SHA
 #   5. 当該 task の marker commit が単記でも連記でも見つからない場合は return 1
+#   6. 選択 marker 後に commit が存在する場合は、marker が HEAD の ancestor であることを
+#      検証した上で range_end = HEAD に補正する。安全に検証できない場合は return 1
 #
 # 後方互換性（Req 3.1 / NFR 1.1）:
 #   - 単記 marker のみで構成されるリポジトリ履歴では、単記 marker が常に優先採用されるため
@@ -2609,7 +2611,8 @@ pt_extract_learnings() {
 #   - <ids> 部を `/` / `,` / 空白で正規化した後 word 単位で完全一致照合するため、task_id `1`
 #     が `1.1` や `11` に誤マッチしない
 #
-# Requirements: 3.2, 4.5, 5.4, Issue #164 Req 2.1, 2.2, 2.3, 2.4, 2.5, 3.1, 3.2, NFR 2.1
+# Requirements: Issue #23 Req 1.4, 2.1, 2.2, 2.3, 2.4, 3.3, 3.4, 5.1,
+#               Issue #164 Req 2.1, 2.2, 2.3, 2.4, 2.5, 3.1, 3.2, NFR 2.1
 pt_resolve_diff_range() {
   local task_id="$1"
   local base="${BASE_BRANCH:-main}"
@@ -2680,15 +2683,41 @@ pt_resolve_diff_range() {
     fi
   fi
 
-  # NFR 2.1: 連記経由で解決した場合は stdout ログに識別可能な印を残す（運用者が
+  # NFR 2.1: 連記経由で解決した場合は stderr ログに識別可能な印を残す（運用者が
   # `grep via=multi-id-marker` で件数把握できる）。単記経由は出力しない（既存ログ量を
-  # 増やさない後方互換）。stdout に出すことで呼び出し側 `pt_log` 経由のログ書式と
-  # 揃える代わりに、関数の主出力（SHA pair）と区別するため独立行 + tag prefix で出す。
+  # 増やさない後方互換）。関数の主出力（SHA pair）と区別するため stderr に出す。
   if [ "$via" = "multi-id-marker" ]; then
     echo "[$(date '+%F %T')] per-task: diff-range resolved via=multi-id-marker task_id=${task_id} sha=${current_mark}" >&2
   fi
 
-  printf '%s\t%s\n' "$range_start" "$current_mark"
+  local range_end="$current_mark"
+  local head_sha
+  head_sha=$(git rev-parse HEAD 2>/dev/null || true)
+  if [ -z "$head_sha" ]; then
+    echo "[$(date '+%F %T')] per-task: diff-range post-marker-commits-unsafe task=${task_id} marker=${current_mark} end=HEAD count=unknown reason=head-resolve-failed" >&2
+    return 1
+  fi
+
+  if [ "$current_mark" != "$head_sha" ]; then
+    if ! git merge-base --is-ancestor "$current_mark" "$head_sha" 2>/dev/null; then
+      echo "[$(date '+%F %T')] per-task: diff-range post-marker-commits-unsafe task=${task_id} marker=${current_mark} end=${head_sha} count=unknown reason=marker-not-ancestor-of-head" >&2
+      return 1
+    fi
+
+    local post_marker_count
+    post_marker_count=$(git rev-list --count "${current_mark}..${head_sha}" 2>/dev/null || true)
+    if [ -z "$post_marker_count" ]; then
+      echo "[$(date '+%F %T')] per-task: diff-range post-marker-commits-unsafe task=${task_id} marker=${current_mark} end=${head_sha} count=unknown reason=post-marker-count-failed" >&2
+      return 1
+    fi
+
+    if [ "$post_marker_count" != "0" ]; then
+      range_end="$head_sha"
+      echo "[$(date '+%F %T')] per-task: diff-range post-marker-commits-included task=${task_id} marker=${current_mark} end=${range_end} count=${post_marker_count} via=${via}" >&2
+    fi
+  fi
+
+  printf '%s\t%s\n' "$range_start" "$range_end"
   return 0
 }
 
@@ -2873,7 +2902,11 @@ pt_should_skip_reviewer() {
 
   # (2) diff range 解決
   local range_line range_start range_end
-  if ! range_line=$(pt_resolve_diff_range "$task_id" 2>/dev/null); then
+  if [ -n "${LOG:-}" ]; then
+    if ! range_line=$(pt_resolve_diff_range "$task_id" 2>>"$LOG"); then
+      return 1
+    fi
+  elif ! range_line=$(pt_resolve_diff_range "$task_id" 2>/dev/null); then
     return 1
   fi
   range_start=$(printf '%s' "$range_line" | cut -f1)
@@ -3196,9 +3229,9 @@ run_per_task_reviewer() {
 
   # diff range 解決
   local range_line range_start range_end
-  if ! range_line=$(pt_resolve_diff_range "$task_id"); then
+  if ! range_line=$(pt_resolve_diff_range "$task_id" 2>>"$LOG"); then
     # Issue #164 NFR 2.2: 単記 / 連記いずれの候補も見つからなかった旨を明示
-    pt_log "task=$task_id reviewer start round=$round result=error reason=diff-range-resolve-failed detail=no-marker-commit-found(single-id-and-multi-id-both-missing)" >> "$LOG"
+    pt_log "task=$task_id reviewer start round=$round result=error reason=diff-range-resolve-failed detail=no-marker-commit-found-or-post-marker-range-unsafe" >> "$LOG"
     return 3
   fi
   range_start=$(printf '%s' "$range_line" | cut -f1)
