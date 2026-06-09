@@ -9,7 +9,7 @@
   - helper 単体の shell fixture を `local-watcher/test/per_task_redo_context_test.sh` に追加する。
   - _Requirements:_ 1.1, 1.2, 1.3, 1.4, 2.1, 2.2, 2.3, 2.4, 5.1, 5.2
 
-- [ ] 2. per-task Implementer prompt と loop redo 経路に context を注入する
+- [x] 2. per-task Implementer prompt と loop redo 経路に context を注入する
   - `pt_build_redo_context_block` を追加し、Reviewer 由来 block と Debugger 由来 block を別見出しで組み立てる。
   - `build_per_task_implementer_prompt <task_id> [redo_context_block]` に拡張し、第 2 引数が空の通常実行では既存 prompt と learnings 注入を維持する。
   - `run_per_task_implementer <task_id> [redo_context_block]` に拡張し、既存呼び出しはそのまま動くよう任意引数にする。
