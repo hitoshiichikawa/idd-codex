@@ -19,8 +19,8 @@ set -euo pipefail
 _DRV_DIR="$(cd "$(dirname "$0")" && pwd)"
 _REPO_ROOT="$(cd "$_DRV_DIR/../../.." && pwd)"
 # #181 Part 3 で Stage A Verify Module の関数群（stage_a_verify_extract_command ほか）は
-# modules/stage-a-verify.sh へ切り出された。抽出元を本体から stage-a-verify.sh へ repoint する。
-_STAGE_A_VERIFY_SH="$_REPO_ROOT/local-watcher/bin/modules/stage-a-verify.sh"
+# idd-codex-modules/stage-a-verify.sh へ切り出された。抽出元を本体から stage-a-verify.sh へ repoint する。
+_STAGE_A_VERIFY_SH="$_REPO_ROOT/local-watcher/bin/idd-codex-modules/stage-a-verify.sh"
 _FIXTURE_DIR="$_DRV_DIR/fixtures"
 
 if [ ! -f "$_STAGE_A_VERIFY_SH" ]; then
