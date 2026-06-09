@@ -1,6 +1,6 @@
 # Implementation Plan
 
-- [ ] 1. Developer / Reviewer agent 定義に marker classification contract を同期追加する
+- [x] 1. Developer / Reviewer agent 定義に marker classification contract を同期追加する
   - `.codex/agents/developer.md` と `repo-template/.codex/agents/developer.md` に、canonical marker commit の subject が `docs(tasks): mark <id> as done` の単一 task ID 完全一致であることを byte-identical に追記する。
   - Developer guidance で、marker commit に含めてよい `tasks.md` 変更は対象 task checkbox の `[ ]` -> `[x]` のみであり、task 本文 / `_Requirements:_` / `_Boundary:_` / `_Depends:_` / 順序 / 無関係 checkbox は書き換え禁止であることを明記する。
   - `.codex/agents/reviewer.md` と `repo-template/.codex/agents/reviewer.md` に、per-task review range には marker commit が含まれ得ることを byte-identical に追記する。
