@@ -20,7 +20,7 @@
   - _Requirements:_ 1.1, 1.2, 1.3, 1.4, 2.1, 2.2, 2.3, 2.4, 5.1, 5.2, 5.6
   - _Depends:_ 1
 
-- [ ] 3. Finding Closure Matrix contract を watcher prompt と Developer agent に同期追加する
+- [x] 3. Finding Closure Matrix contract を watcher prompt と Developer agent に同期追加する
   - `build_per_task_implementer_prompt` の redo context block に Finding Closure Matrix の必須列を追加する。
   - Matrix の列は `Target requirement`、`Category`、`Required Action`、`Fix commit`、`Test/assertion`、`Verification result`、`Notes / no-change reason` とする。
   - `.codex/agents/developer.md` の per-task 節に、Reviewer reject 後 / Debugger guidance 後は `impl-notes.md` の Finding Closure Matrix を作成または更新する責務を追記する。
