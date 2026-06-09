@@ -32,3 +32,12 @@
   - 実 LLM に `impl-notes.md` を生成させる assertion は shell fixture の責務外のため、prompt が rejected target requirement、fix commit、test/assertion、verification result を要求していることを確認する方針にした。
   - 手動確認範囲は prompt 文面、Developer agent 文面、root / repo-template agents の byte-identical 同期に限定した。
 - 残存課題: task 4 で連続 reject warning guard、task 5 で #23 shape の回帰 fixture を完成させる必要がある。
+
+### Task 4
+
+- 採用方針: 連続 reject guard は fail-fast ではなく warning-only とし、Reviewer prompt と watcher log の両方に残す形で実装した。
+- 重要な判断:
+  - fingerprint は `review-notes.md` の Findings から `category + target` TSV として抽出し、warning 対象は `missing test` / `AC 未カバー` に限定した。
+  - test 差分は `local-watcher/test/*` / `tests/*` / `*/test/*` / `*_test.sh` / `*test*.sh` の path heuristic で判定し、新規 dependency は追加しなかった。
+  - round 2 前は round 1 reject target の test 差分なし risk、round 3 前は round 1 / 2 の overlap かつ test 差分なしの場合だけ warning を注入する。
+- 残存課題: task 5 で #23 shape の Req 5.2 / 5.3 regression fixture を完成させる必要がある。
