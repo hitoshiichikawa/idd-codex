@@ -2588,6 +2588,190 @@ pt_extract_learnings() {
   return 0
 }
 
+# ─── pt_regex_escape <literal> ───
+#
+# grep / awk の ERE に埋め込む literal を escape して stdout に出力する。
+pt_regex_escape() {
+  # shellcheck disable=SC2016
+  printf '%s' "$1" | sed -E 's/[][\\.^$*+?(){}|/]/\\&/g'
+}
+
+# ─── pt_extract_review_reject_context <task_id> <round> <review_notes_path> ───
+#
+# per-task retry prompt に inline 注入するため、review-notes.md の `## Findings` から
+# Target / Category / Detail / Required Action を含む markdown fragment を抽出する。
+#
+# stdout:
+#   - success: task ID、Reviewer round、各 Finding の target/category/detail/action、
+#              および raw Findings section を含む markdown fragment
+# stderr:
+#   - failure: task ID、round、notes path、reason を含む診断
+# return:
+#   0 = 1 件以上の complete Finding を抽出
+#   1 = file missing / RESULT not reject / Findings missing / required field missing
+pt_extract_review_reject_context() {
+  local task_id="$1"
+  local round="$2"
+  local review_notes_path="$3"
+
+  if [ ! -f "$review_notes_path" ]; then
+    printf 'redo-context-unavailable task=%s round=%s path=%s reason=file-missing\n' \
+      "$task_id" "$round" "$review_notes_path" >&2
+    return 1
+  fi
+
+  if ! grep -Eq "(^|[[:space:]])RESULT:[[:space:]]*\`?reject\`?([[:space:]]|$)" "$review_notes_path"; then
+    printf 'redo-context-unavailable task=%s round=%s path=%s reason=result-not-reject\n' \
+      "$task_id" "$round" "$review_notes_path" >&2
+    return 1
+  fi
+
+  local findings_section
+  findings_section=$(awk '
+    /^## Findings[[:space:]]*$/ { in_section = 1; print; next }
+    in_section && /^## / { exit }
+    in_section { print }
+  ' "$review_notes_path")
+  if [ -z "$findings_section" ]; then
+    printf 'redo-context-unavailable task=%s round=%s path=%s reason=findings-section-missing\n' \
+      "$task_id" "$round" "$review_notes_path" >&2
+    return 1
+  fi
+
+  local finding_summary
+  if ! finding_summary=$(printf '%s\n' "$findings_section" | awk '
+    function trim(value) {
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      return value
+    }
+    function flush() {
+      if (target == "" && category == "" && detail == "" && action == "") {
+        return
+      }
+      count++
+      if (target == "" || category == "" || detail == "" || action == "") {
+        missing = 1
+      }
+      clean_target = target
+      sub(/（.*$/, "", clean_target)
+      printf "- Finding %d: Target=`%s`; Category=`%s`; Detail=%s; Required Action=%s\n", \
+        count, clean_target, category, detail, action
+      target = ""
+      category = ""
+      detail = ""
+      action = ""
+    }
+    /^### / { flush(); next }
+    /^[[:space:]]*-[[:space:]]+\*\*Target\*\*:/ {
+      line = $0
+      sub(/^[[:space:]]*-[[:space:]]+\*\*Target\*\*:[[:space:]]*/, "", line)
+      target = trim(line)
+      next
+    }
+    /^[[:space:]]*-[[:space:]]+\*\*Category\*\*:/ {
+      line = $0
+      sub(/^[[:space:]]*-[[:space:]]+\*\*Category\*\*:[[:space:]]*/, "", line)
+      category = trim(line)
+      next
+    }
+    /^[[:space:]]*-[[:space:]]+\*\*Detail\*\*:/ {
+      line = $0
+      sub(/^[[:space:]]*-[[:space:]]+\*\*Detail\*\*:[[:space:]]*/, "", line)
+      detail = trim(line)
+      next
+    }
+    /^[[:space:]]*-[[:space:]]+\*\*Required Action\*\*:/ {
+      line = $0
+      sub(/^[[:space:]]*-[[:space:]]+\*\*Required Action\*\*:[[:space:]]*/, "", line)
+      action = trim(line)
+      next
+    }
+    END {
+      flush()
+      if (count == 0 || missing == 1) {
+        exit 1
+      }
+    }
+  '); then
+    printf 'redo-context-unavailable task=%s round=%s path=%s reason=finding-field-parse-failed\n' \
+      "$task_id" "$round" "$review_notes_path" >&2
+    return 1
+  fi
+
+  cat <<EOF
+### Reviewer Reject Context
+
+- Task ID: \`${task_id}\`
+- Reviewer round: \`${round}\`
+- Source: \`${review_notes_path}\`
+
+#### Parsed Findings
+${finding_summary}
+
+#### Raw Findings / Required Action
+
+\`\`\`markdown
+${findings_section}
+\`\`\`
+EOF
+  return 0
+}
+
+# ─── pt_extract_debugger_task_section <task_id> <debugger_notes_path> ───
+#
+# debugger-notes.md から current task の `## Task <id>` セクションだけを抽出する。
+# Debugger output contract の h3 4 セクションが欠ける場合は診断を返す。
+#
+# stdout:
+#   - success: `## Task <task_id>` markdown section
+# stderr:
+#   - failure: task ID、notes path、reason を含む診断
+# return:
+#   0 = section 抽出成功 + 必須 h3 4 セクションあり
+#   1 = file missing / task section missing / required h3 missing
+pt_extract_debugger_task_section() {
+  local task_id="$1"
+  local debugger_notes_path="$2"
+
+  if [ ! -f "$debugger_notes_path" ]; then
+    printf 'debugger-context-unavailable task=%s path=%s reason=file-missing\n' \
+      "$task_id" "$debugger_notes_path" >&2
+    return 1
+  fi
+
+  local task_id_re
+  task_id_re=$(pt_regex_escape "$task_id")
+
+  local task_section
+  task_section=$(awk -v task_re="$task_id_re" '
+    $0 ~ "^## Task " task_re "[[:space:]]*$" { in_section = 1; print; next }
+    in_section && /^## Task / { exit }
+    in_section { print }
+  ' "$debugger_notes_path")
+  if [ -z "$task_section" ]; then
+    printf 'debugger-context-unavailable task=%s path=%s reason=task-section-missing\n' \
+      "$task_id" "$debugger_notes_path" >&2
+    return 1
+  fi
+
+  local missing_sections=""
+  local required
+  for required in "根本原因" "修正手順" "検証方法" "関連参考資料"; do
+    if ! grep -Eq "^###[[:space:]]+${required}[[:space:]]*$" <<<"$task_section"; then
+      missing_sections="${missing_sections:+$missing_sections,}${required}"
+    fi
+  done
+  if [ -n "$missing_sections" ]; then
+    printf 'debugger-context-unavailable task=%s path=%s reason=required-section-missing missing=%s\n' \
+      "$task_id" "$debugger_notes_path" "$missing_sections" >&2
+    return 1
+  fi
+
+  printf '%s\n' "$task_section"
+  return 0
+}
+
 # ─── pt_resolve_diff_range <task_id> ───
 #
 # per-task Reviewer に渡す diff range の開始 SHA / 終了 SHA を解決して
