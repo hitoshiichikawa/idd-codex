@@ -44,6 +44,10 @@
   - warning-only guard の診断を Reviewer prompt だけでなく、watcher 生成の Developer-visible artifact として `impl-notes.md` に marker 付きで記録するようにした。
   - marker 付き section は同じ task / round で置換されるため、watcher 再実行時に重複しない。
   - fixture では artifact 本文と、`pt_extract_learnings` 経由で次の Implementer prompt に warning が含まれることを検証した。
+- Debugger round 2 reject 対応:
+  - warning が非空の場合は Reviewer round 2 / 3 を消費する前に `repeated-reject-warning` redo context で Developer を再実行する。
+  - Developer 再実行後に前回 reject SHA から `HEAD` までの test 差分を再計算し、warning が解消していれば Reviewer prompt へ古い warning を渡さない。
+  - fixture では warning redo が Reviewer より前に呼ばれる順序と、redo context に task ID / next round / category / target / changed test none が含まれることを検証した。
 - 残存課題: task 5 で #23 shape の Req 5.2 / 5.3 regression fixture を完成させる必要がある。
 
 #### Finding Closure Matrix
@@ -51,3 +55,4 @@
 | Target requirement | Category | Required Action | Fix commit | Test/assertion | Verification result | Notes / no-change reason |
 |--------------------|----------|-----------------|------------|----------------|---------------------|--------------------------|
 | 4.4 | AC 未カバー | warning-only guard の診断を Reviewer round 消費前に Developer も確認できる経路へ渡す | d6af879 fix(watcher): repeated reject warningをDeveloperにも可視化 | `local-watcher/test/per_task_repeated_reject_guard_test.sh` で Developer-visible artifact と Implementer prompt 露出を assertion | `shellcheck local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/test/per_task_repeated_reject_guard_test.sh`; `bash local-watcher/test/per_task_repeated_reject_guard_test.sh` PASS 24 / FAIL 0 | Reviewer prompt / operator log に加え、`impl-notes.md` marker section 経由で次 Implementer prompt に warning を含める |
+| 4.4 | AC 未カバー | warning-only guard の診断を Reviewer 起動前の Developer 実行機会へ渡し、Developer redo 後に warning を再計算する | 087d673 fix(watcher): repeated reject warningでDeveloperを再実行 | `local-watcher/test/per_task_repeated_reject_guard_test.sh` で warning redo → Reviewer の呼び出し順、redo context の task ID / round / target / changed test none、空 warning skip を assertion | `shellcheck local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/test/per_task_repeated_reject_guard_test.sh`; `bash local-watcher/test/per_task_repeated_reject_guard_test.sh` PASS 34 / FAIL 0 | `pt_run_repeated_reject_warning_redo` を round 2 / 3 前に挿入し、Developer 再実行後に Reviewer prompt 用 warning を再計算する |
