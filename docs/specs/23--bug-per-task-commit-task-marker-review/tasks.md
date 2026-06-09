@@ -27,7 +27,7 @@
   - 新しい env var、label、exit code、外部サービス、runtime dependency を追加しないことを確認し、migration note が必要な場合は README に限定して追記する。
   - _Requirements: 3.3, 3.4, 4.5_
 
-- [ ] 5. #14 形状の regression coverage を追加する
+- [x] 5. #14 形状の regression coverage を追加する
   - `local-watcher/test/per_task_marker_review_range_test.sh` を追加し、temporary git repo で base commit、task implementation commit、`docs(tasks): mark 1.1 as done` marker、marker 後 corrective commit を作る。
   - Reviewer reject -> Implementer retry 相当の case で、corrective commit が resolved range に含まれる、または Reviewer 起動前に明示失敗することを検証する。
   - Debugger guidance -> Implementer retry 相当の case で、Debugger 後 corrective commit が古い marker によって除外されないことを検証する。
