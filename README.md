@@ -1004,6 +1004,22 @@ PR #184）を防ぐための「最後の砦」です。
 - これ以上自動再実行を望まない場合は `codex-failed` を残したまま `codex-auto-dev` も
   外してください
 
+#### per-task terminal failure の診断を見る
+
+per-task loop の `per-task-reviewer-reject2` / `per-task-reviewer-reject3` /
+`per-task-reviewer-error` / `per-task-reviewer-missing-file` / `diff-range-resolve-failed`
+などで停止した場合、`codex-failed` コメントの `Terminal failure diagnostics` を確認してください。
+このブロックには current branch、failure-time の local HEAD SHA、origin branch HEAD SHA または
+取得不能理由、ahead count または算出不能理由、worktree path、`review-notes.md` /
+`debugger-notes.md` の tracked / untracked / uncommitted 状態が出ます。
+
+`Diagnostic artifact preservation` の `status` が `diagnostic-commit-pushed` なら、表示された
+diagnostic commit SHA と branch を復旧起点にできます。`branch-ahead-pushed` の場合は、
+commit 済みだった artifact を含む既存 ahead commit が origin branch に push 済みです。
+`diagnostic-commit-failed-fallback` / `diagnostic-commit-push-failed-fallback` /
+`branch-ahead-push-failed-fallback` の場合は、同コメント内の `Artifact content fallback`
+を読み、remote branch 上の artifact だけを前提にしないで復旧判断してください。
+
 #### ラベルの説明・状態遷移との対応
 
 - ラベル一覧は [GitHub ラベル設定](#github-ラベル設定) と
@@ -3440,6 +3456,10 @@ Reviewer は `docs/specs/<N>-<slug>/review-notes.md` に以下のフォーマッ
 - `review-notes.md` 自体が存在しない場合 → 同一 round 内で Reviewer を 1 回だけ再起動する。
   リトライ後も未生成なら `reviewer-missing-file`（per-task では
   `per-task-reviewer-missing-file`）として `codex-failed` に遷移する（Issue #296）
+- per-task terminal failure では、Reviewer が作成した `review-notes.md` が未 commit のままでも
+  watcher が failure comment 生成前に diagnostic commit + push を試みます。保全に失敗した場合は
+  Issue コメントへ artifact content または復旧判断用 summary を fallback として埋め込みます。
+  Reviewer 自身は引き続き `git add` / `git commit` / `git push` / `gh` を実行しません。
 
 **Reviewer 出力側の規律（依然として canonical）**:
 
@@ -4584,6 +4604,16 @@ opt-in した状態で `impl` / `impl-resume` モードが Stage A に入ると�
      marker 後 commit が検出された場合は補正後 `HEAD` になり得る
 3. **reject 差し戻し**: Reviewer reject 時は同一 task で Implementer 再起動 1 回 + Reviewer 再起動 1 回
    （既存 #20 規約の round=1/2 を task 単位で適用）。再 reject で `codex-failed` 付与 + 残 task 処理停止
+   - **terminal failure diagnostics (#38)**: per-task terminal failure では、`codex-failed`
+     コメントに current branch / local HEAD SHA / origin branch HEAD SHA（または取得不能理由）/
+     ahead count（または算出不能理由）/ worktree path / `review-notes.md`・`debugger-notes.md`
+     の tracked・untracked・uncommitted 状態を追記します。Reviewer / Debugger が失敗直前に
+     `review-notes.md` または `debugger-notes.md` を untracked / uncommitted で残した場合、
+     watcher が diagnostic commit を作成して plain `git push origin <branch>` を 1 回試みます。
+     commit または push に失敗した場合は、Issue コメント内に artifact content（大きい場合は
+     復旧判断用 summary）を fallback として埋め込み、remote branch 上の artifact だけに依存しない
+     復旧情報を残します。この保全は watcher / orchestrator の責務であり、Reviewer / Debugger
+     に `git add` / `git commit` / `git push` / `gh` 権限を戻すものではありません。
 4. **resume**: 中断後 `impl-resume` で再開すると、`- [x]` 済み task は自動的に skip され、`- [ ]`
    未完了 task の先頭から再開（既存 `IMPL_RESUME_PRESERVE_COMMITS` / `IMPL_RESUME_PROGRESS_TRACKING`
    の挙動契約に従う / Req 5.3）
