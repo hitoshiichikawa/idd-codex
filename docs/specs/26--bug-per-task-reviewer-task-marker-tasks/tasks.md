@@ -19,7 +19,7 @@
   - _Boundary:_ Per-task Implementer Prompt, Per-task Reviewer Prompt, Diff Range Resolver
   - _Depends:_ 1
 
-- [ ] 3. regression-test-only commit + marker commit の shell fixture を追加する
+- [x] 3. regression-test-only commit + marker commit の shell fixture を追加する
   - `local-watcher/test/per_task_marker_checkbox_contract_test.sh` を追加し、既存 `local-watcher/test/` pattern に合わせて watcher から必要関数だけを `awk` 抽出して eval する。
   - temporary git repo で base commit、regression-test-only commit、正規 `docs(tasks): mark 1.1 as done` marker commit を作成する。
   - `pt_resolve_diff_range 1.1` が regression-test-only commit と marker commit を含む range を返し、`range_end_sha` が marker commit であることを検証する。
