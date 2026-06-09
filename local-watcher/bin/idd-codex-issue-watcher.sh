@@ -425,6 +425,14 @@ PATH_OVERLAP_BUSY_WAIT_THRESHOLD="${PATH_OVERLAP_BUSY_WAIT_THRESHOLD:-5}"
 PER_TASK_LOOP_ENABLED="${PER_TASK_LOOP_ENABLED:-false}"
 PER_TASK_MAX_TASKS="${PER_TASK_MAX_TASKS:-0}"
 
+# ─── Per-task Context Map 設定 (#34) ───
+# 新規 opt-in 機能。明示的に `=true` を指定したときだけ、per-task Implementer /
+# Reviewer 起動前に watcher が短い探索地図 `docs/specs/<N>-<slug>/context-map.md` を
+# deterministic に生成し、後段 prompt に inline 注入する。reasoning effort / model /
+# 並列度には触れず、fresh context ごとの広域探索 read を抑えるための補助 metadata として
+# 扱う。`=true` 以外では context-map 生成も prompt 注入も行わず、既存 Stage A 挙動を維持する。
+CONTEXT_MAP_ENABLED="${CONTEXT_MAP_ENABLED:-false}"
+
 # LOG_DIR と LOCK_FILE は REPO_SLUG を挟むことで repo ごとに分離。
 # 環境変数で明示上書きもできる。
 LOG_DIR="${LOG_DIR:-$HOME/.idd-codex/issue-watcher/logs/$REPO_SLUG}"
@@ -2892,6 +2900,346 @@ pt_should_skip_reviewer() {
   return 0
 }
 
+# ─── Per-task Context Map (#34) ───
+#
+# per-task Implementer / Reviewer が fresh context で毎回 repo 全体の当たりを付け直す
+# token cost を抑えるため、watcher が task block / `_Boundary:_` / diff range / git grep
+# から短い handoff metadata を生成する。LLM scout は起動しない deterministic 実装。
+#
+# Requirements: Issue #34 AC 1, 2, 3, 4, 5
+cm_context_map_enabled() {
+  [ "${CONTEXT_MAP_ENABLED:-false}" = "true" ]
+}
+
+cm_log() {
+  if [ -n "${LOG:-}" ]; then
+    echo "[$(date '+%F %T')] context-map: $*" >> "$LOG"
+  fi
+}
+
+cm_warn() {
+  if [ -n "${LOG:-}" ]; then
+    echo "[$(date '+%F %T')] context-map WARN: $*" >> "$LOG"
+  else
+    echo "context-map WARN: $*" >&2
+  fi
+}
+
+cm_context_map_path() {
+  printf '%s/%s/context-map.md\n' "$REPO_DIR" "$SPEC_DIR_REL"
+}
+
+cm_unique_nonempty() {
+  local limit="${1:-40}"
+  awk 'NF && !seen[$0]++ { print }' | head -n "$limit"
+}
+
+cm_normalize_path_candidates() {
+  sed -E \
+    -e 's/^`//' \
+    -e 's/`$//' \
+    -e 's#^\./##' \
+    -e 's/[),.;:]+$//' \
+    -e 's#//+#/#g' |
+    awk '
+      NF == 0 { next }
+      /^https?:/ { next }
+      /^\$/ { next }
+      /^[A-Za-z0-9_.\/-]+$/ { print }
+    '
+}
+
+cm_extract_task_block() {
+  local tasks_md="$1"
+  local task_id="$2"
+
+  if [ ! -f "$tasks_md" ] || [ -z "$task_id" ]; then
+    return 0
+  fi
+
+  awk -v target="$task_id" '
+    function task_id_from_line(line, rest) {
+      if (line !~ /^- \[[ x]\]\*? [0-9]+(\.[0-9]+)*\.? /) {
+        return ""
+      }
+      rest = line
+      sub(/^- \[[ x]\]\*? /, "", rest)
+      sub(/ .*/, "", rest)
+      sub(/\.$/, "", rest)
+      return rest
+    }
+    BEGIN {
+      in_block = 0
+      prefix = target "."
+    }
+    {
+      current = task_id_from_line($0)
+      if (in_block == 1) {
+        if (current != "" && current != target && index(current, prefix) != 1) {
+          exit
+        }
+        print
+        next
+      }
+      if (current == target) {
+        in_block = 1
+        print
+      }
+    }
+  ' "$tasks_md"
+}
+
+cm_extract_metadata_value() {
+  local key="$1"
+  awk -v key="$key" '
+    index($0, key) {
+      line = $0
+      sub("^.*" key "[[:space:]]*", "", line)
+      print line
+      found = 1
+      exit
+    }
+    END {
+      if (found != 1) {
+        exit 1
+      }
+    }
+  '
+}
+
+cm_extract_path_candidates_from_text() {
+  awk '
+    {
+      line = $0
+      while (match(line, /`[^`]+`/)) {
+        token = substr(line, RSTART + 1, RLENGTH - 2)
+        if (token ~ /(^|\/)[A-Za-z0-9_.-]+\.(sh|md|ya?ml|json|tmpl|txt)$/ || token ~ /\//) {
+          print token
+        }
+        line = substr(line, RSTART + RLENGTH)
+      }
+
+      line = $0
+      while (match(line, /[A-Za-z0-9_.\/-]+\.(sh|md|ya?ml|json|tmpl|txt)/)) {
+        print substr(line, RSTART, RLENGTH)
+        line = substr(line, RSTART + RLENGTH)
+      }
+    }
+  ' | cm_normalize_path_candidates | cm_unique_nonempty 80
+}
+
+cm_extract_anchor_candidates_from_text() {
+  awk '
+    {
+      line = $0
+      while (match(line, /`[A-Za-z_][A-Za-z0-9_]*`/)) {
+        token = substr(line, RSTART + 1, RLENGTH - 2)
+        print token
+        line = substr(line, RSTART + RLENGTH)
+      }
+    }
+  ' | cm_unique_nonempty 30
+}
+
+cm_collect_changed_files() {
+  local range_start="${1:-}"
+  local range_end="${2:-}"
+
+  if [ -n "$range_start" ] && [ -n "$range_end" ]; then
+    git -C "$REPO_DIR" diff --name-only "${range_start}..${range_end}" 2>/dev/null || true
+    return 0
+  fi
+
+  if git -C "$REPO_DIR" rev-parse --verify "${BASE_BRANCH:-main}" >/dev/null 2>&1; then
+    git -C "$REPO_DIR" diff --name-only "${BASE_BRANCH:-main}..HEAD" 2>/dev/null || true
+  fi
+}
+
+cm_collect_tests_for_anchors() {
+  local anchors="$1"
+  local anchor
+
+  if [ -z "$anchors" ]; then
+    return 0
+  fi
+
+  while IFS= read -r anchor; do
+    [ -n "$anchor" ] || continue
+    git -C "$REPO_DIR" grep -l -- "$anchor" -- 'local-watcher/test/*.sh' 2>/dev/null || true
+  done <<<"$anchors" | cm_unique_nonempty 30
+}
+
+cm_filter_context_paths() {
+  local kind="$1"
+  local path
+
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    case "$kind" in
+      test)
+        case "$path" in
+          local-watcher/test/*|*/test/*|*_test.sh|*test*.sh) printf '%s\n' "$path" ;;
+        esac
+        ;;
+      doc)
+        case "$path" in
+          README.md|AGENTS.md|docs/*|.codex/*|repo-template/.codex/*|*requirements.md|*design.md|*tasks.md|*impl-notes.md|*review-notes.md) printf '%s\n' "$path" ;;
+        esac
+        ;;
+      target)
+        case "$path" in
+          local-watcher/test/*|*/test/*|*_test.sh|*test*.sh|README.md|AGENTS.md|docs/*|.codex/*|repo-template/.codex/*|*requirements.md|*design.md|*tasks.md|*impl-notes.md|*review-notes.md) : ;;
+          *) printf '%s\n' "$path" ;;
+        esac
+        ;;
+    esac
+  done | cm_unique_nonempty 30
+}
+
+cm_print_md_list() {
+  local items="$1"
+  local item
+
+  if [ -z "$items" ]; then
+    printf '%s\n' "- (none)"
+    return 0
+  fi
+
+  while IFS= read -r item; do
+    [ -n "$item" ] || continue
+    printf '%s\n' "- \`$item\`"
+  done <<<"$items"
+}
+
+cm_write_context_map() {
+  local task_id="$1"
+  local stage="${2:-unknown}"
+  local range_start="${3:-}"
+  local range_end="${4:-}"
+
+  cm_context_map_enabled || return 0
+
+  local tasks_md="$REPO_DIR/$SPEC_DIR_REL/tasks.md"
+  local out_path
+  out_path="$(cm_context_map_path)"
+
+  if [ ! -f "$tasks_md" ]; then
+    cm_warn "skip: tasks.md not found path=$tasks_md"
+    return 0
+  fi
+
+  local task_block boundary requirements depends anchors path_candidates changed_files anchor_tests all_paths target_paths test_paths doc_paths
+  task_block="$(cm_extract_task_block "$tasks_md" "$task_id")"
+  boundary="$(printf '%s\n' "$task_block" | cm_extract_metadata_value "_Boundary:_" 2>/dev/null || true)"
+  requirements="$(printf '%s\n' "$task_block" | cm_extract_metadata_value "_Requirements:_" 2>/dev/null || true)"
+  depends="$(printf '%s\n' "$task_block" | cm_extract_metadata_value "_Depends:_" 2>/dev/null || true)"
+  anchors="$(printf '%s\n' "$task_block" | cm_extract_anchor_candidates_from_text)"
+  path_candidates="$(printf '%s\n' "$task_block" | cm_extract_path_candidates_from_text)"
+  changed_files="$(cm_collect_changed_files "$range_start" "$range_end")"
+  anchor_tests="$(cm_collect_tests_for_anchors "$anchors")"
+
+  all_paths="$(
+    {
+      printf '%s\n' "$path_candidates"
+      printf '%s\n' "$changed_files"
+      printf '%s\n' "$anchor_tests"
+      printf '%s\n' "$SPEC_DIR_REL/requirements.md"
+      printf '%s\n' "$SPEC_DIR_REL/design.md"
+      printf '%s\n' "$SPEC_DIR_REL/tasks.md"
+      if [ -f "$REPO_DIR/$SPEC_DIR_REL/impl-notes.md" ]; then
+        printf '%s\n' "$SPEC_DIR_REL/impl-notes.md"
+      fi
+    } | cm_normalize_path_candidates | cm_unique_nonempty 80
+  )"
+  target_paths="$(printf '%s\n' "$all_paths" | cm_filter_context_paths target)"
+  test_paths="$(printf '%s\n' "$all_paths" | cm_filter_context_paths test)"
+  doc_paths="$(printf '%s\n' "$all_paths" | cm_filter_context_paths doc)"
+
+  mkdir -p "$(dirname "$out_path")"
+  local tmp_path="${out_path}.tmp"
+  {
+    printf '%s\n' "# Context Map"
+    printf '\n'
+    printf '%s\n' "watcher が \`CONTEXT_MAP_ENABLED=true\` の per-task 実行前に生成した短い探索地図です。"
+    printf '%s\n' "agent はこの map を最初に参照し、不足時だけ targeted search を追加してください。"
+    printf '\n'
+    printf '%s\n' "## Metadata"
+    printf '%s\n' "- Issue: #${NUMBER:-unknown}"
+    printf '%s\n' "- Stage: \`${stage}\`"
+    printf '%s\n' "- Task: \`${task_id}\`"
+    printf '%s\n' "- Spec dir: \`${SPEC_DIR_REL}\`"
+    printf '%s\n' "- Generated at: \`$(date '+%Y-%m-%d %H:%M:%S %z')\`"
+    if [ -n "$range_start" ] || [ -n "$range_end" ]; then
+      printf '%s\n' "- Diff range: \`${range_start:-unknown}..${range_end:-unknown}\`"
+    fi
+    printf '\n'
+    printf '%s\n' "## Task Block"
+    printf '%s\n' '```markdown'
+    if [ -n "$task_block" ]; then
+      printf '%s\n' "$task_block"
+    else
+      printf '%s\n' "(task block not found in tasks.md)"
+    fi
+    printf '%s\n' '```'
+    printf '\n'
+    printf '%s\n' "## Requirements"
+    printf '%s\n' "${requirements:-(not found)}"
+    printf '\n'
+    printf '%s\n' "## Boundary"
+    printf '%s\n' "${boundary:-(not found)}"
+    printf '\n'
+    printf '%s\n' "## Depends"
+    printf '%s\n' "${depends:-(none)}"
+    printf '\n'
+    printf '%s\n' "## Candidate Files"
+    cm_print_md_list "$target_paths"
+    printf '\n'
+    printf '%s\n' "## Candidate Tests"
+    cm_print_md_list "$test_paths"
+    printf '\n'
+    printf '%s\n' "## Candidate Docs"
+    cm_print_md_list "$doc_paths"
+    printf '\n'
+    printf '%s\n' "## Anchors"
+    cm_print_md_list "$anchors"
+    printf '\n'
+    printf '%s\n' "## Exploration Constraints"
+    printf '%s\n' "- まず Candidate Files / Candidate Tests / Anchors を確認する。"
+    printf '%s\n' "- repo-wide \`rg --files\` や README 全体読みは、候補が不足した場合だけ実行する。"
+    printf '%s\n' "- ファイル全体を読む前に、anchor 周辺の小さい範囲を読む。"
+    printf '%s\n' "- Reviewer は対象 task の diff range と \`_Requirements:_\` / \`_Boundary:_\` に判定を限定する。"
+    printf '%s\n' "- この map は補助情報であり、最終判断は \`tasks.md\` と実際の diff で検証する。"
+  } > "$tmp_path"
+  mv "$tmp_path" "$out_path"
+
+  cm_log "updated path=${SPEC_DIR_REL}/context-map.md task=${task_id} stage=${stage}"
+}
+
+cm_build_prompt_block() {
+  cm_context_map_enabled || return 0
+
+  local context_path
+  context_path="$(cm_context_map_path)"
+  if [ ! -f "$context_path" ]; then
+    return 0
+  fi
+
+  cat <<EOF
+
+## Context Map（watcher 生成 / CONTEXT_MAP_ENABLED=true）
+
+以下は watcher が task ごとに生成した短い探索地図です。まずこの map の候補ファイル /
+anchors / tests を確認し、repo 全体の広域探索は不足時だけ行ってください。
+
+- Path: \`${SPEC_DIR_REL}/context-map.md\`
+- 扱い: 参照専用。実装 commit / \`docs(tasks): mark <id> as done\` commit には含めないこと
+
+\`\`\`markdown
+$(sed -n '1,180p' "$context_path")
+\`\`\`
+EOF
+}
+
 # ─── build_per_task_implementer_prompt <task_id> ───
 #
 # per-task Implementer 用の prompt を heredoc で組み立てて stdout に出力。
@@ -2908,6 +3256,8 @@ pt_should_skip_reviewer() {
 # Requirements: 2.2, 2.3, 2.4, 2.5, 4.1, 4.2, 4.3, 4.4
 build_per_task_implementer_prompt() {
   local task_id="$1"
+  local context_map_block
+  context_map_block="$(cm_build_prompt_block)"
   local learnings
   learnings=$(pt_extract_learnings "$REPO_DIR/$SPEC_DIR_REL/impl-notes.md")
   local learnings_block
@@ -2955,6 +3305,7 @@ ${SPEC_DIR_REL}/
 - **対象 task ID**: \`${task_id}\`
 - 本起動では \`tasks.md\` の **${task_id} 1 件のみ** を実装します。他の未完了 task には
   一切着手しないこと（次 task は別の fresh Implementer 起動で消化されます）
+${context_map_block}
 
 ## 進め方
 
@@ -3037,6 +3388,8 @@ build_per_task_reviewer_prompt() {
   local range_end="$3"
   local round="$4"
   local prev_result="$5"
+  local context_map_block
+  context_map_block="$(cm_build_prompt_block)"
 
   cat <<EOF
 あなたはこのリポジトリの Codex CLI オーケストレーターです。
@@ -3064,6 +3417,7 @@ build_per_task_reviewer_prompt() {
 
 reviewer は **本 range のみ** を判定対象としてください。HEAD 全体は対象外（全体観点は
 最終 Stage B Reviewer が別途担当します）。
+${context_map_block}
 
 ## 必読ファイル
 
@@ -3129,6 +3483,7 @@ EOF
 run_per_task_implementer() {
   local task_id="$1"
   local prompt
+  cm_write_context_map "$task_id" "implementer" "" "" || cm_warn "failed to update context-map task=$task_id stage=implementer"
   prompt=$(build_per_task_implementer_prompt "$task_id")
 
   pt_log "task=$task_id implementer start (model=$DEV_MODEL, max-turns=$DEV_MAX_TURNS)" >> "$LOG"
@@ -3221,6 +3576,7 @@ run_per_task_reviewer() {
   pt_log "task=$task_id reviewer start round=$round model=$REVIEWER_MODEL max-turns=$REVIEWER_MAX_TURNS range=${range_start:0:7}..${range_end:0:7}" >> "$LOG"
 
   local prompt
+  cm_write_context_map "$task_id" "reviewer" "$range_start" "$range_end" || cm_warn "failed to update context-map task=$task_id stage=reviewer"
   prompt=$(build_per_task_reviewer_prompt "$task_id" "$range_start" "$range_end" "$round" "$prev_result")
 
   # Issue #296 Req 2.4 / NFR 3.1 / Req 4.2: per-task 経路でもファイル不在起因の再起動は
