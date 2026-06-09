@@ -303,6 +303,24 @@ git diff <range_start_sha>..<range_end_sha> -- <path>
 指定された range 全体です。HEAD 全体の観点は最終 Stage B Reviewer（per-task ループ完了後に
 別途起動される HEAD 全体レビュー）が担当します。
 
+## marker commit の分類
+
+per-task review range には、当該 task 完了時の `docs(tasks): mark <id> as done` commit が
+含まれ得ます。この marker commit は orchestration artifact であり、以下をすべて満たす場合に
+限り、`tasks.md` の checkbox 差分を `boundary 逸脱` reject の理由にしないでください:
+
+- `range_end_sha` の commit subject が `docs(tasks): mark <id> as done` に **単一 task ID で
+  完全一致**している（`<id>` は review 対象 task ID）
+- marker commit に含まれるファイルが `tasks.md` のみ
+- marker commit の `tasks.md` 差分が、review 対象 task 行の checkbox を `[ ]` から `[x]` へ
+  変更する差分のみ
+
+上記に該当する canonical marker checkbox update は allowed orchestration artifact として扱い、
+それだけを理由に `boundary 逸脱` で reject しないでください。ただし、非 canonical subject、
+連記 subject、task 本文、`_Requirements:_`、`_Boundary:_`、`_Depends:_`、task 順序、
+無関係 task の checkbox、その他 spec artifact 更新は allowed artifact ではありません。これらは
+既存の 3 カテゴリ判定対象として維持し、必要に応じて `boundary 逸脱` で reject してください。
+
 ## 判定 depth の絞り込み
 
 per-task ループの Reviewer は判定 depth が以下に絞り込まれます:

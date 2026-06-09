@@ -412,6 +412,14 @@ fresh な Codex session** で本 Developer サブエージェントが起動さ�
   ファイルを marker commit に含めず、必要に応じて
   `git commit --allow-empty -m "docs(tasks): mark <id> as done"` で終端 marker を置く。
   history rewrite（`git reset` / `git rebase` 等）で古い marker を動かす必要はない。
+- **marker commit の canonical subject**: per-task Reviewer が orchestration artifact として
+  分類できる marker commit は、subject が `docs(tasks): mark <id> as done` に **単一 task ID で
+  完全一致**する commit のみです。`<id>` は prompt で指定された対象 task ID、または親 task
+  昇格用に別 commit 化した親 task ID のいずれか 1 件だけにしてください。
+- **marker commit で許可される `tasks.md` 差分**: canonical marker commit に含めてよい
+  `tasks.md` 変更は、当該 task 行の checkbox を `[ ]` から `[x]` へ変更する差分のみです。
+  task 本文、`_Requirements:_`、`_Boundary:_`、`_Depends:_`、task 順序、無関係 task の
+  checkbox、親 task のインデント、deferrable 印 `- [ ]*` は marker commit でも変更禁止です。
 
 ## learning 追記の責務（per-task ループの中核 / Req 4.1, 4.2, 4.4）
 
