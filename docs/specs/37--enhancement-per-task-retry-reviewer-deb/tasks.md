@@ -30,7 +30,7 @@
   - _Requirements:_ 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 5.3, 5.4, 5.6
   - _Depends:_ 2
 
-- [ ] 4. 連続 reject の warning-only guard を追加する
+- [x] 4. 連続 reject の warning-only guard を追加する
   - `pt_collect_reject_fingerprints` を追加し、`review-notes.md` から `category + target` fingerprint を抽出する。
   - `pt_collect_changed_test_paths <from_sha> <to_sha>` を追加し、前回 reject 直後から次 Reviewer 起動前までの test path 差分を収集する。
   - test path heuristic は `local-watcher/test/*`、`tests/*`、`*/test/*`、`*_test.sh`、`*test*.sh` を対象にし、新 dependency は追加しない。
