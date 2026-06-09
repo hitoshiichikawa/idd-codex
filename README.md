@@ -3585,6 +3585,14 @@ push が non-fast-forward で reject された場合（人間が origin に push
 という規約に従います。詳細は `.codex/agents/developer.md` の「impl-resume / tasks.md
 進捗追跡規約」節を参照してください。
 
+この marker commit は「当該 task の実装・検証・learning 追記が終わった終端」を表します。
+`PER_TASK_LOOP_ENABLED=true` の per-task Reviewer はこの marker commit 列を使って task ごとの
+review range を解決するため、Reviewer reject 後や Debugger guidance 後に同じ task を再実行して
+修正 commit を追加した場合は、修正・検証・learning 追記の後に最新
+`docs(tasks): mark <task-id> as done` marker を再度末尾へ置きます。対象 checkbox がすでに
+`- [x]` の retry では、必要に応じて `git commit --allow-empty -m "docs(tasks): mark <task-id> as done"`
+で終端 marker を置けます。history rewrite や既存 marker の削除は不要です。
+
 ### Migration Note（既存ユーザー向け）
 
 本機能導入による後方互換性は以下のとおり保証されます:
@@ -4562,12 +4570,17 @@ opt-in した状態で `impl` / `impl-resume` モードが Stage A に入ると�
    - Implementer は **1 task のみ**実装し、`- [ ]` → `- [x]` 化 + `docs(tasks): mark <id> as done`
      専用 commit を積み、`impl-notes.md` の `## Implementation Notes` 配下に
      `### Task <id>` learning を追記する
+   - `docs(tasks): mark <id> as done` marker は、その attempt の実装・検証・learning 追記が
+     すべて終わった後の **終端 commit** として扱う。retry / Debugger 後に修正 commit を追加した場合も、
+     修正 commit の後ろに最新 marker を置き直して task 実態と review range を揃える
    - coverage / failure / safety AC は同 task の test work と結び付ける。テスト作業を後続
      task に defer する場合は、先行 task の `_Requirements:_` から未実施 coverage AC を外し、
      coverage task 側に `_Depends:_` と partial boundary を明記する
    - fresh Codex session で Reviewer 起動（REVIEWER_MODEL / REVIEWER_MAX_TURNS を流用）
-   - Reviewer は当該 task の `docs(tasks): mark` commit 範囲のみを `git diff` 対象とし、
-     当該 task の `_Requirements:_` AC のみを verify 対象とする（`_Boundary:_` 違反は常に reject）
+   - Reviewer は watcher が prompt に明示した `range_start_sha..range_end_sha` のみを `git diff`
+     対象とし、当該 task の `_Requirements:_` AC のみを verify 対象とする
+     （`_Boundary:_` 違反は常に reject）。`range_end_sha` は通常は当該 task marker だが、
+     marker 後 commit が検出された場合は補正後 `HEAD` になり得る
 3. **reject 差し戻し**: Reviewer reject 時は同一 task で Implementer 再起動 1 回 + Reviewer 再起動 1 回
    （既存 #20 規約の round=1/2 を task 単位で適用）。再 reject で `codex-failed` 付与 + 残 task 処理停止
 4. **resume**: 中断後 `impl-resume` で再開すると、`- [x]` 済み task は自動的に skip され、`- [ ]`
@@ -4637,6 +4650,26 @@ read を減らすための短い handoff metadata です。
 - 生成物は spec ディレクトリ配下に置かれますが、Implementer は参照専用として扱い、
   実装 commit や `docs(tasks): mark <id> as done` commit には含めません
 
+### task marker / review range の契約
+
+per-task Reviewer の判定対象 range は `pt_resolve_diff_range` が解決する
+`range_start_sha..range_end_sha` です。
+
+- `range_start_sha` は直前の `docs(tasks): mark ... as done` marker、または初回 task では
+  `BASE_BRANCH` の SHA です
+- `range_end_sha` は通常、対象 task の最新 `docs(tasks): mark <id> as done` marker です
+- 選択済み marker の後ろに commit が存在する場合、watcher は marker が `HEAD` の ancestor であることを
+  検証し、安全に解けるときは `range_end_sha=HEAD` に補正して marker 後 commit も Reviewer range に
+  含めます
+- 安全に解けない場合は Reviewer を起動せず、`diff-range-resolve-failed` として `codex-failed`
+  相当の人間復旧可能な状態で停止し、task ID、marker、affected range、復旧操作を判断できる診断を
+  Issue コメントとログに残します
+
+Reviewer prompt には start / end SHA が明示されます。Reviewer はその range 外の commit を当該
+per-task review では判断せず、HEAD 全体の確認は全 task 完了後の Stage B Reviewer が担当します。
+この安全弁は古い marker の後ろに retry 修正 commit が残った場合の under-review を防ぐためのもので、
+新しい env var、label、exit code、外部サービス、runtime dependency は追加しません。
+
 ### learnings 前方伝播
 
 各 Implementer は完了時に `impl-notes.md` の `## Implementation Notes` セクション配下へ
@@ -4671,6 +4704,16 @@ read を減らすための短い handoff metadata です。
 [YYYY-MM-DD HH:MM:SS] per-task: task=1.1 reviewer start round=1 model=gpt-5.5 max-turns=30 range=abc1234..def5678
 [YYYY-MM-DD HH:MM:SS] per-task: task=1.1 reviewer end round=1 result=approve verified=1.1
 ```
+
+`range=` は Reviewer prompt の `range_start_sha..range_end_sha` と対応します。marker 後 commit を
+含める補正が発生した場合は、追加で以下のような診断が記録されます:
+
+```
+[YYYY-MM-DD HH:MM:SS] per-task: diff-range post-marker-commits-included task=1.1 marker=abc1234 end=def5678 count=1 via=single-id-marker
+```
+
+補正できない場合は `diff-range-resolve-failed` として Reviewer 起動前に停止し、Issue コメントに
+affected range と復旧判断材料を残します。
 
 reject 時のログには `categories=` / `targets=` が含まれ、対応 requirement ID と reject カテゴリを
 事後判別可能（NFR 2.3）:

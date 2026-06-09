@@ -2601,11 +2601,13 @@ pt_extract_learnings() {
 #         複数マッチ時は最後（最新）のマッチを採用（既存挙動を維持 / Req 3.1）
 #      b. 単記 marker が無ければ連記 marker（subject が `docs(tasks): mark <ids> as done` で
 #         <ids> を `/` / `,` / 空白で token 化したときに task_id と完全一致する token を含む）
-#         複数マッチ時は最後のマッチを採用（NFR 2.1: 連記経由解決時は stdout ログに
+#         複数マッチ時は最後のマッチを採用（NFR 2.1: 連記経由解決時は stderr ログに
 #         `via=multi-id-marker` を残す）
-#   3. 全 mark commit 列の中で range_end の直前要素を range_start とする
+#   3. 全 mark commit 列の中で選択 marker の直前要素を range_start とする
 #   4. 直前要素が存在しない（初回 task）場合は range_start = `$BASE_BRANCH` の SHA
 #   5. 当該 task の marker commit が単記でも連記でも見つからない場合は return 1
+#   6. 選択 marker 後に commit が存在する場合は、marker が HEAD の ancestor であることを
+#      検証した上で range_end = HEAD に補正する。安全に検証できない場合は return 1
 #
 # 後方互換性（Req 3.1 / NFR 1.1）:
 #   - 単記 marker のみで構成されるリポジトリ履歴では、単記 marker が常に優先採用されるため
@@ -2617,7 +2619,8 @@ pt_extract_learnings() {
 #   - <ids> 部を `/` / `,` / 空白で正規化した後 word 単位で完全一致照合するため、task_id `1`
 #     が `1.1` や `11` に誤マッチしない
 #
-# Requirements: 3.2, 4.5, 5.4, Issue #164 Req 2.1, 2.2, 2.3, 2.4, 2.5, 3.1, 3.2, NFR 2.1
+# Requirements: Issue #23 Req 1.4, 2.1, 2.2, 2.3, 2.4, 3.3, 3.4, 5.1,
+#               Issue #164 Req 2.1, 2.2, 2.3, 2.4, 2.5, 3.1, 3.2, NFR 2.1
 pt_resolve_diff_range() {
   local task_id="$1"
   local base="${BASE_BRANCH:-main}"
@@ -2688,15 +2691,41 @@ pt_resolve_diff_range() {
     fi
   fi
 
-  # NFR 2.1: 連記経由で解決した場合は stdout ログに識別可能な印を残す（運用者が
+  # NFR 2.1: 連記経由で解決した場合は stderr ログに識別可能な印を残す（運用者が
   # `grep via=multi-id-marker` で件数把握できる）。単記経由は出力しない（既存ログ量を
-  # 増やさない後方互換）。stdout に出すことで呼び出し側 `pt_log` 経由のログ書式と
-  # 揃える代わりに、関数の主出力（SHA pair）と区別するため独立行 + tag prefix で出す。
+  # 増やさない後方互換）。関数の主出力（SHA pair）と区別するため stderr に出す。
   if [ "$via" = "multi-id-marker" ]; then
     echo "[$(date '+%F %T')] per-task: diff-range resolved via=multi-id-marker task_id=${task_id} sha=${current_mark}" >&2
   fi
 
-  printf '%s\t%s\n' "$range_start" "$current_mark"
+  local range_end="$current_mark"
+  local head_sha
+  head_sha=$(git rev-parse HEAD 2>/dev/null || true)
+  if [ -z "$head_sha" ]; then
+    echo "[$(date '+%F %T')] per-task: diff-range post-marker-commits-unsafe task=${task_id} marker=${current_mark} end=HEAD count=unknown reason=head-resolve-failed" >&2
+    return 1
+  fi
+
+  if [ "$current_mark" != "$head_sha" ]; then
+    if ! git merge-base --is-ancestor "$current_mark" "$head_sha" 2>/dev/null; then
+      echo "[$(date '+%F %T')] per-task: diff-range post-marker-commits-unsafe task=${task_id} marker=${current_mark} end=${head_sha} count=unknown reason=marker-not-ancestor-of-head" >&2
+      return 1
+    fi
+
+    local post_marker_count
+    post_marker_count=$(git rev-list --count "${current_mark}..${head_sha}" 2>/dev/null || true)
+    if [ -z "$post_marker_count" ]; then
+      echo "[$(date '+%F %T')] per-task: diff-range post-marker-commits-unsafe task=${task_id} marker=${current_mark} end=${head_sha} count=unknown reason=post-marker-count-failed" >&2
+      return 1
+    fi
+
+    if [ "$post_marker_count" != "0" ]; then
+      range_end="$head_sha"
+      echo "[$(date '+%F %T')] per-task: diff-range post-marker-commits-included task=${task_id} marker=${current_mark} end=${range_end} count=${post_marker_count} via=${via}" >&2
+    fi
+  fi
+
+  printf '%s\t%s\n' "$range_start" "$range_end"
   return 0
 }
 
@@ -2881,7 +2910,11 @@ pt_should_skip_reviewer() {
 
   # (2) diff range 解決
   local range_line range_start range_end
-  if ! range_line=$(pt_resolve_diff_range "$task_id" 2>/dev/null); then
+  if [ -n "${LOG:-}" ]; then
+    if ! range_line=$(pt_resolve_diff_range "$task_id" 2>>"$LOG"); then
+      return 1
+    fi
+  elif ! range_line=$(pt_resolve_diff_range "$task_id" 2>/dev/null); then
     return 1
   fi
   range_start=$(printf '%s' "$range_line" | cut -f1)
@@ -3317,6 +3350,8 @@ ${context_map_block}
    - 規約は AGENTS.md に従う
 
 2. **進捗マーカー更新**（既存 #67 / #112 規約 + Issue #164「1 commit = 1 task ID」厳格化）:
+   - task-scope 実装、検証、learning 追記がすべて完了してから、attempt の終端として
+     最新の \`docs(tasks): mark ${task_id} as done\` marker を置くこと
    - 対象 task の \`- [ ] ${task_id}\` 行を \`- [x] ${task_id}\` に書き換える
    - 子タスク（例: ${task_id}.1）を完了した場合、親 task（${task_id} の親、例: ${task_id%.*}）
      配下の全子タスクが \`- [x]\` になったタイミングで親も \`- [x]\` に昇格する
@@ -3340,6 +3375,15 @@ ${context_map_block}
      - 連記 marker commit を作成すると、per-task Reviewer の diff range 解決が単記 ID で
        一致しなくなり \`diff-range-resolve-failed\` を起こす可能性がある（watcher 側で
        fallback 解決は試行するが、canonical は単記分割のみ）
+   - **retry / Debugger 後の再実行時の marker 終端契約**:
+     - 既に古い \`docs(tasks): mark ${task_id} as done\` marker が存在する場合でも、修正 commit を
+       その後ろに積んだまま終了しないこと
+     - 修正、検証、learning 追記の commit を積み終えた後、最後に最新の
+       \`docs(tasks): mark ${task_id} as done\` marker を追加し、Reviewer の range 終端と実態を
+       揃えること
+     - task checkbox が既に \`- [x]\` で \`tasks.md\` に差分がない場合は、非 \`tasks.md\` ファイルを
+       marker commit に含めず、必要に応じて \`git commit --allow-empty -m "docs(tasks): mark ${task_id} as done"\`
+       で終端 marker を置くこと
    - 書き換え禁止領域: タスク本文 / \`_Requirements:_\` / \`_Boundary:_\` / \`_Depends:_\` /
      タスク順序 / 親タスクのインデント / deferrable 印 \`- [ ]*\`
 
@@ -3422,10 +3466,13 @@ build_per_task_reviewer_prompt() {
 
 - **対象 task ID**: \`${task_id}\`
 - **range_start_sha**: \`${range_start}\` （= 直前の \`docs(tasks): mark\` commit、または初回時は \`${BASE_BRANCH}\` の SHA）
-- **range_end_sha**:   \`${range_end}\`   （= 当該 task の \`docs(tasks): mark ${task_id} as done\` commit）
+- **range_end_sha**:   \`${range_end}\`   （= 通常は当該 task の \`docs(tasks): mark ${task_id} as done\` commit。
+  marker 後 commit が検出された場合は、それらを含む補正後 SHA、通常 \`HEAD\` になり得ます）
 
-reviewer は **本 range のみ** を判定対象としてください。HEAD 全体は対象外（全体観点は
-最終 Stage B Reviewer が別途担当します）。
+reviewer は **本 range のみ** を判定対象としてください。渡された \`${range_start}..${range_end}\`
+の外側にある commit は、この per-task review では判定しません。HEAD 全体の観点は
+最終 Stage B Reviewer が別途担当します。ログ上の \`task\` / \`round\` / \`range\` とこの prompt の
+SHA が一致していることを確認してください。
 ${context_map_block}
 
 ## 必読ファイル
@@ -3589,9 +3636,9 @@ run_per_task_reviewer() {
 
   # diff range 解決
   local range_line range_start range_end
-  if ! range_line=$(pt_resolve_diff_range "$task_id"); then
+  if ! range_line=$(pt_resolve_diff_range "$task_id" 2>>"$LOG"); then
     # Issue #164 NFR 2.2: 単記 / 連記いずれの候補も見つからなかった旨を明示
-    pt_log "task=$task_id reviewer start round=$round result=error reason=diff-range-resolve-failed detail=no-marker-commit-found(single-id-and-multi-id-both-missing)" >> "$LOG"
+    pt_log "task=$task_id reviewer start round=$round result=error reason=diff-range-resolve-failed detail=no-marker-commit-found-or-post-marker-range-unsafe" >> "$LOG"
     return 3
   fi
   range_start=$(printf '%s' "$range_line" | cut -f1)
@@ -3700,6 +3747,115 @@ run_per_task_reviewer() {
   esac
 }
 
+# ─── pt_build_diff_range_resolve_diagnostic <task_id> ───
+#
+# `pt_resolve_diff_range` 失敗時の Issue コメントに埋め込む operator 向け診断を生成する。
+# stdout 契約を持つ resolver 本体とは分離し、失敗コメントに task ID / marker 候補 / affected
+# range / 復旧操作の判断材料を残す（Issue #23 Req 3.4 / task 2）。
+pt_build_diff_range_resolve_diagnostic() {
+  local task_id="$1"
+  local base="${BASE_BRANCH:-main}"
+
+  local head_sha base_sha
+  head_sha=$(git rev-parse HEAD 2>/dev/null || true)
+  base_sha=$(git rev-parse "$base" 2>/dev/null || true)
+
+  local all_pairs
+  all_pairs=$(git log --grep="^docs(tasks): mark " --format='%H%x09%s' --reverse "${base}..HEAD" 2>/dev/null || true)
+
+  local current_mark="" via="" sha subject id_list tok found
+  if [ -n "$all_pairs" ]; then
+    while IFS=$'\t' read -r sha subject; do
+      [ -n "$sha" ] || continue
+      if [ "$subject" = "docs(tasks): mark ${task_id} as done" ]; then
+        current_mark="$sha"
+        via="single-id-marker"
+      fi
+    done <<<"$all_pairs"
+
+    if [ -z "$current_mark" ]; then
+      while IFS=$'\t' read -r sha subject; do
+        [ -n "$sha" ] || continue
+        id_list=$(printf '%s' "$subject" | sed -nE 's/^docs\(tasks\): mark (.+) as done$/\1/p')
+        [ -n "$id_list" ] || continue
+        found=false
+        for tok in $(printf '%s' "$id_list" | tr '/,' '  '); do
+          if [ "$tok" = "$task_id" ]; then
+            found=true
+            break
+          fi
+        done
+        if [ "$found" = "true" ]; then
+          current_mark="$sha"
+          via="multi-id-marker"
+        fi
+      done <<<"$all_pairs"
+    fi
+  fi
+
+  local marker_line="(not found)"
+  local affected_range="(not available)"
+  local post_marker_summary="(not available)"
+  local unsafe_reason="none"
+
+  if [ -n "$current_mark" ]; then
+    marker_line="${current_mark} (${via})"
+    if [ -n "$head_sha" ]; then
+      affected_range="${current_mark}..${head_sha}"
+      if git merge-base --is-ancestor "$current_mark" "$head_sha" 2>/dev/null; then
+        local post_marker_count
+        post_marker_count=$(git rev-list --count "${current_mark}..${head_sha}" 2>/dev/null || true)
+        if [ -n "$post_marker_count" ]; then
+          post_marker_summary="${post_marker_count} commit(s)"
+        else
+          post_marker_summary="count failed"
+          unsafe_reason="post-marker-count-failed"
+        fi
+      else
+        post_marker_summary="ancestor check failed"
+        unsafe_reason="marker-not-ancestor-of-head"
+      fi
+    else
+      unsafe_reason="head-resolve-failed"
+    fi
+  else
+    unsafe_reason="marker-not-found"
+  fi
+
+  local recent_marker_log="(none)"
+  if [ -n "$all_pairs" ]; then
+    recent_marker_log=$(printf '%s\n' "$all_pairs" | tail -10 | cut -f1,2)
+  fi
+
+  local post_marker_log="(not available)"
+  if [ -n "$current_mark" ] && [ -n "$head_sha" ] \
+     && git merge-base --is-ancestor "$current_mark" "$head_sha" 2>/dev/null; then
+    post_marker_log=$(git log --oneline --max-count=10 "${current_mark}..${head_sha}" 2>/dev/null || true)
+    [ -n "$post_marker_log" ] || post_marker_log="(no post-marker commits)"
+  fi
+
+  cat <<EOF
+## 解決診断
+- BASE range: \`${base}..HEAD\`
+- BASE SHA: \`${base_sha:-(resolve failed)}\`
+- HEAD SHA: \`${head_sha:-(resolve failed)}\`
+- 選択可能だった marker: \`${marker_line}\`
+- affected range: \`${affected_range}\`
+- marker 後 commit: ${post_marker_summary}
+- unsafe reason: \`${unsafe_reason}\`
+
+### 直近の marker commit 候補
+\`\`\`text
+${recent_marker_log}
+\`\`\`
+
+### marker 後 commit 候補
+\`\`\`text
+${post_marker_log}
+\`\`\`
+EOF
+}
+
 # ─── pt_mark_diff_range_resolve_failed <task_id> <round> ───
 #
 # diff-range-resolve-failed カテゴリで `codex-failed` を付与し、復旧手順付き Issue
@@ -3731,6 +3887,10 @@ pt_mark_diff_range_resolve_failed() {
   local hostname_val
   hostname_val=$(hostname)
   local marker="<!-- idd-codex:per-task-diff-range-resolve-failed:#${NUMBER}:${task_id} -->"
+  local diagnostic
+  diagnostic=$(pt_build_diff_range_resolve_diagnostic "$task_id" 2>/dev/null || true)
+  [ -n "$diagnostic" ] || diagnostic="## 解決診断
+- 診断情報を生成できませんでした。watcher ログ \`$LOG\` を確認してください。"
 
   # NFR 1.2: 重複コメント抑制のため既存 marker を gh API で検索
   local comments_json existing_count=0
@@ -3766,15 +3926,18 @@ ${body_header}
 - ログ: \`$LOG\`
 
 ## 原因
-per-task Reviewer が当該 task の \`docs(tasks): mark ${task_id} as done\` marker commit を
-\`${BASE_BRANCH}..HEAD\` 範囲で解決できませんでした（単記 marker / 連記 marker いずれも
-不一致）。Developer が以下のいずれかに該当した可能性があります:
+per-task Reviewer が当該 task の review range を \`${BASE_BRANCH}..HEAD\` 範囲で安全に
+解決できませんでした。marker commit が見つからない、または marker 後 commit を安全に
+review range へ含められない状態です。Developer が以下のいずれかに該当した可能性があります:
 
 - 進捗 marker commit を作成せずに実装 commit のみで完了した
 - marker commit subject が canonical 形式 \`docs(tasks): mark <id> as done\` から逸脱した
   （例: prefix 違い / suffix の追加 / typo）
 - 連記 marker commit に task ID \`${task_id}\` と完全一致するトークンが含まれていない
   （Issue #164 で許容拡大した連記マッチ機構でも検出できなかった）
+- marker 後 commit が存在するが、HEAD / ancestor / commit count の検査に失敗した
+
+${diagnostic}
 
 ## 復旧手順（重要 / データ損失リスク回避）
 
@@ -3800,6 +3963,13 @@ push 前の Developer commit が残っていれば、次サイクル前に必ず
 3. **marker commit の補完**: 不足している \`docs(tasks): mark ${task_id} as done\` commit を
    手動で作成（tasks.md の \`- [ ]\` → \`- [x]\` を 1 行編集して 1 commit）してから
    \`codex-failed\` ラベルを外す。これにより次サイクルで watcher が当該 task を resume できる
+4. **marker 後に修正 commit がある場合**: \`git log --oneline <marker>..HEAD\` で対象 commit を
+   確認し、修正 commit の後ろに最新 marker を置いてください。対象 task が既に \`- [x]\` の場合は、
+   空 commit で終端 marker を作成できます:
+   \`\`\`bash
+   git commit --allow-empty -m "docs(tasks): mark ${task_id} as done"
+   git push origin <current-branch>
+   \`\`\`
 
 ## 推奨される marker commit 分割の規約（1 commit = 1 task ID）
 
