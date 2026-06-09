@@ -8,3 +8,10 @@
 - 重要な判断: watcher prompt への注入と shell fixture は task 2/3 の境界であるため、本 task では永続 agent guidance のみ更新した。
 - 重要な判断: allowed artifact は canonical subject、`tasks.md` only、対象 checkbox `[ ]` -> `[x]` の 3 条件に限定し、その他 spec artifact 更新は既存 3 カテゴリ判定対象として維持した。
 - 残存課題: task 2 で watcher の per-task Implementer / Reviewer prompt に同じ契約を注入する必要がある。
+
+### Task 2
+
+- 採用方針: watcher の per-task Implementer / Reviewer prompt に、agent 定義と同じ marker commit 分類契約を注入した。
+- 重要な判断: allowed artifact は `range_end_sha` の subject 完全一致、`tasks.md` only、対象 checkbox `[ ]` -> `[x]` の 3 条件に限定し、Reviewer prompt で `git log -1 --format=%s` による subject 確認を明示した。
+- 重要な判断: task 本文、`_Requirements:_`、`_Boundary:_`、`_Depends:_`、順序、無関係 checkbox、marker commit 以外の spec artifact 更新は引き続き `boundary 逸脱` 候補として列挙した。
+- 残存課題: task 3 で regression-test-only commit と marker commit を含む shell fixture により prompt 文言と diff range を固定する必要がある。

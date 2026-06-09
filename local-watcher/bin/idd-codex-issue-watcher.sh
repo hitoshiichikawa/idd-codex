@@ -2971,6 +2971,12 @@ ${SPEC_DIR_REL}/
      配下の全子タスクが \`- [x]\` になったタイミングで親も \`- [x]\` に昇格する
    - 進捗マーカー更新は **専用 commit**: \`docs(tasks): mark <id> as done\`
      - 当該 commit には \`tasks.md\` 以外のファイルを含めない
+     - canonical marker commit は per-task Reviewer が allowed orchestration artifact として
+       分類する唯一の形式です。subject は \`docs(tasks): mark <id> as done\` に単一 task ID で
+       完全一致させ、\`tasks.md\` 差分は当該 task 行の checkbox \`[ ]\` → \`[x]\` のみに限定する
+     - task 本文、\`_Requirements:_\`、\`_Boundary:_\`、\`_Depends:_\`、task 順序、
+       無関係 task の checkbox、親 task のインデント、deferrable 印 \`- [ ]*\` は
+       marker commit でも変更禁止
    - **【重要 / Issue #164】1 つの marker commit には 1 つの task ID のみを含めること**:
      - 1 つの \`docs(tasks): mark <id> as done\` commit には **必ず 1 つの task ID のみ**
        を含めること（per-task Reviewer の diff range 解決が task ID 単位で行われるため）
@@ -3026,11 +3032,14 @@ EOF
 #
 #   - 判定対象 diff range は `<range_start>..<range_end>` のみ（HEAD 全体ではない / Req 3.2）
 #   - 判定 AC は当該 task の `_Requirements:_` 列挙分のみ（全 AC verify は Stage B / Req 3.3）
-#   - `_Boundary:_` 違反は depth に関わらず常に reject 対象
+#   - range_end_sha は当該 task の marker commit であり得るため、canonical marker checkbox
+#     update だけを allowed orchestration artifact として扱う分類契約を明示する（Issue #26）
+#   - `_Boundary:_` 違反は depth に関わらず常に reject 対象。ただし canonical marker checkbox
+#     update だけを理由に boundary 逸脱 reject しない
 #   - 既存 reviewer.md の 3 カテゴリ（AC 未カバー / missing test / boundary 逸脱）と
 #     RESULT 行 / review-notes.md 出力契約を流用
 #
-# Requirements: 3.1, 3.2, 3.3
+# Requirements: 3.1, 3.2, 3.3, Issue #26 Req 1.1, 1.2, 1.3, 1.4, 3.2, 3.3, 3.4, 3.5
 build_per_task_reviewer_prompt() {
   local task_id="$1"
   local range_start="$2"
@@ -3083,11 +3092,40 @@ reviewer は **必ず自分で** Bash で以下を実行し、本 task の commi
    \`\`\`bash
    git diff --stat ${range_start}..${range_end}
    git log --oneline ${range_start}..${range_end}
+   git log -1 --format=%s ${range_end}
    \`\`\`
 2. ファイル単位の詳細差分（必要に応じて変更ファイルごとに実行）:
    \`\`\`bash
    git diff ${range_start}..${range_end} -- <path>
    \`\`\`
+
+## marker commit の分類契約
+
+この review range には、当該 task 完了時の marker commit が含まれ得ます。
+\`range_end_sha\` が marker commit の場合、reviewer は \`git log -1 --format=%s ${range_end}\`
+で subject を確認してください。
+
+以下を **すべて満たす場合に限り**、marker commit の \`tasks.md\` checkbox 差分を
+allowed orchestration artifact として扱い、それだけを理由に \`boundary 逸脱\` で reject
+しないでください:
+
+- \`range_end_sha\` の commit subject が \`docs(tasks): mark ${task_id} as done\` に完全一致する
+  （単一 task ID のみ。連記 subject は canonical ではない）
+- marker commit に含まれるファイルが \`tasks.md\` のみ
+- marker commit の \`tasks.md\` diff が、review 対象 task \`${task_id}\` 行の checkbox を
+  \`[ ]\` から \`[x]\` へ変更する差分のみ
+
+上記の canonical marker checkbox update は orchestration artifact です。review-notes.md では、
+必要に応じて Summary / Verified Requirements でその分類が分かるように触れてください。
+
+一方で、以下は allowed orchestration artifact ではありません。既存の 3 カテゴリ判定対象として
+維持し、必要に応じて \`boundary 逸脱\` で reject してください:
+
+- marker commit subject が \`docs(tasks): mark ${task_id} as done\` に完全一致しない変更
+- marker commit に \`tasks.md\` 以外のファイルが含まれる変更
+- task 本文、\`_Requirements:_\`、\`_Boundary:_\`、\`_Depends:_\`、task 順序の変更
+- review 対象 task \`${task_id}\` 以外の checkbox 変更
+- marker commit 以外での spec artifact 更新
 
 ## 判定基準（per-task ループの判定 depth 制約）
 
