@@ -45,3 +45,9 @@
   - marker 付き section は同じ task / round で置換されるため、watcher 再実行時に重複しない。
   - fixture では artifact 本文と、`pt_extract_learnings` 経由で次の Implementer prompt に warning が含まれることを検証した。
 - 残存課題: task 5 で #23 shape の Req 5.2 / 5.3 regression fixture を完成させる必要がある。
+
+#### Finding Closure Matrix
+
+| Target requirement | Category | Required Action | Fix commit | Test/assertion | Verification result | Notes / no-change reason |
+|--------------------|----------|-----------------|------------|----------------|---------------------|--------------------------|
+| 4.4 | AC 未カバー | warning-only guard の診断を Reviewer round 消費前に Developer も確認できる経路へ渡す | d6af879 fix(watcher): repeated reject warningをDeveloperにも可視化 | `local-watcher/test/per_task_repeated_reject_guard_test.sh` で Developer-visible artifact と Implementer prompt 露出を assertion | `shellcheck local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/test/per_task_repeated_reject_guard_test.sh`; `bash local-watcher/test/per_task_repeated_reject_guard_test.sh` PASS 24 / FAIL 0 | Reviewer prompt / operator log に加え、`impl-notes.md` marker section 経由で次 Implementer prompt に warning を含める |
