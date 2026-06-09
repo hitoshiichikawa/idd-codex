@@ -15,3 +15,10 @@
 - 重要な判断: allowed artifact は `range_end_sha` の subject 完全一致、`tasks.md` only、対象 checkbox `[ ]` -> `[x]` の 3 条件に限定し、Reviewer prompt で `git log -1 --format=%s` による subject 確認を明示した。
 - 重要な判断: task 本文、`_Requirements:_`、`_Boundary:_`、`_Depends:_`、順序、無関係 checkbox、marker commit 以外の spec artifact 更新は引き続き `boundary 逸脱` 候補として列挙した。
 - 残存課題: task 3 で regression-test-only commit と marker commit を含む shell fixture により prompt 文言と diff range を固定する必要がある。
+
+### Task 3
+
+- 採用方針: temporary git repo で regression-test-only commit と canonical marker commit を作成し、range 解決・marker 差分・prompt 文言を shell fixture で固定した。
+- 重要な判断: 実 LLM の approve / reject は shell test で決定的に検証できないため、Reviewer prompt が canonical checkbox update を allowed orchestration artifact とし、非 canonical / non-marker `tasks.md` 変更を reject 候補として列挙することを prompt-only assertion で代替した。
+- 重要な判断: marker commit の差分は `git diff-tree` と `git diff` で `tasks.md` only かつ対象 task checkbox `[ ]` -> `[x]` のみに限定されることを検証した。
+- 残存課題: task 4 で shellcheck / fixture 実行 / root・repo-template diff の統合 verify を実施する必要がある。
