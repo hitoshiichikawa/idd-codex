@@ -1,6 +1,6 @@
 # Implementation Plan
 
-- [ ] 1. Reviewer / Debugger redo context 抽出 helper を watcher に追加する
+- [x] 1. Reviewer / Debugger redo context 抽出 helper を watcher に追加する
   - `local-watcher/bin/idd-codex-issue-watcher.sh` に `pt_extract_review_reject_context` を追加し、`review-notes.md` の `## Findings` から `Target` / `Category` / `Detail` / `Required Action` を抽出する。
   - `pt_extract_review_reject_context` は task ID、Reviewer round、category、target requirement を prompt に残せる markdown fragment を返す。
   - 抽出不能時は return 1 とし、task ID、round、notes path、reason を含む diagnostic を呼び出し側がログ / prompt に残せるようにする。
