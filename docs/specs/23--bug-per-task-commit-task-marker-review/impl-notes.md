@@ -33,3 +33,11 @@
 - 重要な判断: Reviewer range は prompt の `range_start_sha..range_end_sha` を正本とし、marker 後 commit は `HEAD` に補正して含めるか Reviewer 起動前に診断停止することを README に記録した。
 - 重要な判断: 本 task は docs 同期のみで、新しい env var、label、exit code、外部サービス、runtime dependency は追加していないため migration note は追加しない。
 - 残存課題: #14 形状の regression coverage と静的検証は後続 task の範囲。
+
+### Task 5
+
+- 採用方針: `per_task_marker_review_range_test.sh` の #14 形状 fixture を階層 task ID に寄せ、`docs(tasks): mark 1.1 as done` marker と marker 後 corrective commit の順序を `git log` assertion で明示した。
+- 重要な判断: Reviewer reject 後 retry 相当の `round=2` と Debugger guidance 後 retry 相当の `round=3` は、`run_per_task_reviewer` stub harness で `task=1.1` の prompt と補正後 `range_end=HEAD` を検証する。
+- 重要な判断: prompt-only assertion は発生せず、task 5 の対象 AC は shell fixture で検証した。
+- 検証結果: `bash local-watcher/test/per_task_marker_review_range_test.sh` は 24 PASS / 0 FAIL。
+- 残存課題: 静的検証と root / repo-template 同期確認は task 6 の範囲。

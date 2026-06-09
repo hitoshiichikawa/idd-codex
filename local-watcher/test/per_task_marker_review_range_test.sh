@@ -129,6 +129,13 @@ assert_contains() {
   fi
 }
 
+assert_log_subject_at() {
+  local label="$1" repo="$2" position="$3" expected="$4"
+  local actual
+  actual=$(git -C "$repo" log --reverse --format=%s | sed -n "${position}p")
+  assert_eq "$label" "$expected" "$actual"
+}
+
 setup_marker_retry_fixture() {
   local repo="$1"
   local corrective_label="$2"
@@ -148,7 +155,7 @@ setup_marker_retry_fixture() {
   git -C "$repo" add file.txt
   git -C "$repo" commit -q -m "fix(watcher): initial task implementation"
 
-  git -C "$repo" commit -q --allow-empty -m "docs(tasks): mark 1 as done"
+  git -C "$repo" commit -q --allow-empty -m "docs(tasks): mark 1.1 as done"
 
   printf '%s\n' "$corrective_label" >"$repo/fix.txt"
   git -C "$repo" add fix.txt
@@ -181,10 +188,15 @@ run_reviewer_retry_range_case() {
       NUMBER="23" \
       PROMPT_CAPTURE_FILE="$prompt_file" \
       CODEX_PROMPT_CAPTURE_FILE="$codex_prompt_file" \
-      run_per_task_reviewer "1" "$round"
+      run_per_task_reviewer "1.1" "$round"
   ) || rc=$?
 
+  assert_log_subject_at "Req ${req_id}: ${label} fixture は階層 task marker を再現する" \
+    "$repo" "3" "docs(tasks): mark 1.1 as done"
   assert_eq "Req ${req_id}: ${label} Reviewer round=${round} は stub approve で成功する" "0" "$rc"
+  assert_contains "Req ${req_id}: ${label} Reviewer prompt は task=1.1 を対象にする" \
+    "task=1.1" \
+    "$(cat "$prompt_file")"
   assert_contains "Req ${req_id}: ${label} Reviewer prompt の range_end は marker 後 HEAD" \
     "range_end=${head_sha}" \
     "$(cat "$prompt_file")"
@@ -192,7 +204,7 @@ run_reviewer_retry_range_case() {
     "reviewer start round=${round}" \
     "$(cat "$log_file")"
   assert_contains "Req ${req_id}: ${label} marker 後 commit を silent に除外しない" \
-    "post-marker-commits-included task=1" \
+    "post-marker-commits-included task=1.1" \
     "$(cat "$log_file")"
 }
 
@@ -216,7 +228,7 @@ printf '%s\n' "implementation" >"$TMPROOT/file.txt"
 git -C "$TMPROOT" add file.txt
 git -C "$TMPROOT" commit -q -m "fix(watcher): initial task implementation"
 
-git -C "$TMPROOT" commit -q --allow-empty -m "docs(tasks): mark 1 as done"
+git -C "$TMPROOT" commit -q --allow-empty -m "docs(tasks): mark 1.1 as done"
 marker_sha=$(git -C "$TMPROOT" rev-parse HEAD)
 
 printf '%s\n' "corrective fix" >"$TMPROOT/fix.txt"
@@ -224,8 +236,13 @@ git -C "$TMPROOT" add fix.txt
 git -C "$TMPROOT" commit -q -m "fix(watcher): corrective commit after marker"
 head_sha=$(git -C "$TMPROOT" rev-parse HEAD)
 
+assert_log_subject_at "Req 5.1: fixture commit 1 は base commit" "$TMPROOT" "1" "chore: base"
+assert_log_subject_at "Req 5.1: fixture commit 2 は task implementation commit" "$TMPROOT" "2" "fix(watcher): initial task implementation"
+assert_log_subject_at "Req 5.1: fixture commit 3 は階層 task marker commit" "$TMPROOT" "3" "docs(tasks): mark 1.1 as done"
+assert_log_subject_at "Req 5.1: fixture commit 4 は marker 後 corrective commit" "$TMPROOT" "4" "fix(watcher): corrective commit after marker"
+
 stderr_file="$TMPROOT/resolve.err"
-range_line=$(cd "$TMPROOT" && BASE_BRANCH=main pt_resolve_diff_range "1" 2>"$stderr_file")
+range_line=$(cd "$TMPROOT" && BASE_BRANCH=main pt_resolve_diff_range "1.1" 2>"$stderr_file")
 range_start=$(printf '%s' "$range_line" | cut -f1)
 range_end=$(printf '%s' "$range_line" | cut -f2)
 stderr_out=$(cat "$stderr_file")
@@ -233,13 +250,13 @@ stderr_out=$(cat "$stderr_file")
 assert_eq "Req 5.1: range_start は base SHA" "$base_sha" "$range_start"
 assert_eq "Req 5.1: marker 後 corrective commit がある場合 range_end は HEAD" "$head_sha" "$range_end"
 assert_contains "Req 2.2 / 3.4: post-marker include 診断を stderr に残す" \
-  "post-marker-commits-included task=1 marker=${marker_sha} end=${head_sha} count=1" \
+  "post-marker-commits-included task=1.1 marker=${marker_sha} end=${head_sha} count=1" \
   "$stderr_out"
 assert_contains "Req 5.1: resolved range の diff に corrective commit の変更が含まれる" \
   "fix.txt" \
   "$(git -C "$TMPROOT" diff --name-only "${range_start}..${range_end}")"
 
-post_marker_diagnostic=$(cd "$TMPROOT" && BASE_BRANCH=main pt_build_diff_range_resolve_diagnostic "1")
+post_marker_diagnostic=$(cd "$TMPROOT" && BASE_BRANCH=main pt_build_diff_range_resolve_diagnostic "1.1")
 assert_contains "Req 3.4: 診断に affected range を含める" \
   "- affected range: \`${marker_sha}..${head_sha}\`" \
   "$post_marker_diagnostic"
@@ -252,7 +269,7 @@ assert_contains "Req 3.4: marker 不在時の unsafe reason を明示する" \
   "- unsafe reason: \`marker-not-found\`" \
   "$missing_marker_diagnostic"
 assert_contains "Req 3.4: marker 不在時も直近 marker 候補を出す" \
-  "docs(tasks): mark 1 as done" \
+  "docs(tasks): mark 1.1 as done" \
   "$missing_marker_diagnostic"
 
 echo ""
