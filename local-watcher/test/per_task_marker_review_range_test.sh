@@ -32,6 +32,8 @@ eval "$(extract_function "$WATCHER_SH" "pt_resolve_diff_range")"
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$WATCHER_SH" "pt_build_diff_range_resolve_diagnostic")"
 # shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$WATCHER_SH" "pt_guard_reviewer_range_fresh")"
+# shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$WATCHER_SH" "run_per_task_reviewer")"
 
 if ! declare -F pt_resolve_diff_range >/dev/null; then
@@ -40,6 +42,10 @@ if ! declare -F pt_resolve_diff_range >/dev/null; then
 fi
 if ! declare -F pt_build_diff_range_resolve_diagnostic >/dev/null; then
   echo "ERROR: pt_build_diff_range_resolve_diagnostic not loaded" >&2
+  exit 2
+fi
+if ! declare -F pt_guard_reviewer_range_fresh >/dev/null; then
+  echo "ERROR: pt_guard_reviewer_range_fresh not loaded" >&2
   exit 2
 fi
 if ! declare -F run_per_task_reviewer >/dev/null; then
@@ -96,6 +102,9 @@ codex_exec_prompt() {
   local _stage="$1"
   local _model="$2"
   local prompt="$3"
+  if [ "${FAIL_IF_CODEX_CALLED:-false}" = "true" ]; then
+    return 42
+  fi
   printf '%s\n' "$prompt" >"$CODEX_PROMPT_CAPTURE_FILE"
 }
 
@@ -147,6 +156,7 @@ assert_log_subject_at() {
 setup_marker_retry_fixture() {
   local repo="$1"
   local corrective_label="$2"
+  local task_id="${3:-1.1}"
 
   mkdir -p "$repo"
   git -C "$repo" init -q
@@ -163,7 +173,7 @@ setup_marker_retry_fixture() {
   git -C "$repo" add file.txt
   git -C "$repo" commit -q -m "fix(watcher): initial task implementation"
 
-  git -C "$repo" commit -q --allow-empty -m "docs(tasks): mark 1.1 as done"
+  git -C "$repo" commit -q --allow-empty -m "docs(tasks): mark ${task_id} as done"
 
   printf '%s\n' "$corrective_label" >"$repo/fix.txt"
   git -C "$repo" add fix.txt
@@ -174,8 +184,9 @@ run_reviewer_retry_range_case() {
   local label="$1"
   local round="$2"
   local req_id="$3"
+  local task_id="${4:-1.1}"
   local repo="$TMPROOT/$label"
-  setup_marker_retry_fixture "$repo" "$label corrective commit after marker"
+  setup_marker_retry_fixture "$repo" "$label corrective commit after marker" "$task_id"
 
   local head_sha log_file prompt_file codex_prompt_file rc=0
   head_sha=$(git -C "$repo" rev-parse HEAD)
@@ -196,14 +207,14 @@ run_reviewer_retry_range_case() {
       NUMBER="23" \
       PROMPT_CAPTURE_FILE="$prompt_file" \
       CODEX_PROMPT_CAPTURE_FILE="$codex_prompt_file" \
-      run_per_task_reviewer "1.1" "$round"
+      run_per_task_reviewer "$task_id" "$round"
   ) || rc=$?
 
-  assert_log_subject_at "Req ${req_id}: ${label} fixture は階層 task marker を再現する" \
-    "$repo" "3" "docs(tasks): mark 1.1 as done"
+  assert_log_subject_at "Req ${req_id}: ${label} fixture は task marker を再現する" \
+    "$repo" "3" "docs(tasks): mark ${task_id} as done"
   assert_eq "Req ${req_id}: ${label} Reviewer round=${round} は stub approve で成功する" "0" "$rc"
-  assert_contains "Req ${req_id}: ${label} Reviewer prompt は task=1.1 を対象にする" \
-    "task=1.1" \
+  assert_contains "Req ${req_id}: ${label} Reviewer prompt は task=${task_id} を対象にする" \
+    "task=${task_id}" \
     "$(cat "$prompt_file")"
   assert_contains "Req ${req_id}: ${label} Reviewer prompt の range_end は marker 後 HEAD" \
     "range_end=${head_sha}" \
@@ -212,7 +223,7 @@ run_reviewer_retry_range_case() {
     "reviewer start round=${round}" \
     "$(cat "$log_file")"
   assert_contains "Req ${req_id}: ${label} marker 後 commit を silent に除外しない" \
-    "post-marker-commits-included task=1.1" \
+    "post-marker-commits-included task=${task_id}" \
     "$(cat "$log_file")"
 }
 
@@ -285,6 +296,53 @@ echo "--- run_per_task_reviewer retry range guard (Issue #23 Req 5.2 / 5.3) ---"
 
 run_reviewer_retry_range_case "reviewer-reject-retry" "2" "5.2"
 run_reviewer_retry_range_case "debugger-guidance-retry" "3" "5.3"
+run_reviewer_retry_range_case "top-level-task-retry" "3" "#44" "4"
+
+echo ""
+echo "--- run_per_task_reviewer stale range guard (Issue #44) ---"
+
+stale_repo="$TMPROOT/stale-range-guard"
+setup_marker_retry_fixture "$stale_repo" "stale guard omitted corrective commit" "4"
+stale_base_sha=$(git -C "$stale_repo" rev-parse main)
+stale_marker_sha=$(git -C "$stale_repo" log --format='%H%x09%s' --grep='^docs(tasks): mark 4 as done$' -n 1 | cut -f1)
+stale_head_sha=$(git -C "$stale_repo" rev-parse HEAD)
+stale_log_file="$stale_repo/reviewer.log"
+stale_prompt_file="$stale_repo/reviewer-prompt.capture"
+stale_codex_prompt_file="$stale_repo/codex-prompt.capture"
+: >"$stale_log_file"
+
+pt_resolve_diff_range() {
+  printf '%s\t%s\n' "$stale_base_sha" "$stale_marker_sha"
+}
+
+stale_rc=0
+(
+  cd "$stale_repo"
+  BASE_BRANCH=main \
+    LOG="$stale_log_file" \
+    REPO_DIR="$stale_repo" \
+    SPEC_DIR_REL="docs/specs/44--bug-per-task-stale-range-guard" \
+    REVIEWER_MODEL="test-reviewer" \
+    REVIEWER_MAX_TURNS="1" \
+    REPO_SLUG="idd-codex-test" \
+    NUMBER="44" \
+    PROMPT_CAPTURE_FILE="$stale_prompt_file" \
+    CODEX_PROMPT_CAPTURE_FILE="$stale_codex_prompt_file" \
+    FAIL_IF_CODEX_CALLED="true" \
+    run_per_task_reviewer "4" "2"
+) || stale_rc=$?
+
+assert_eq "Issue #44: stale range guard は rc=5 で Reviewer 起動前停止する" "5" "$stale_rc"
+assert_contains "Issue #44: stale range guard は orchestration defect としてログする" \
+  "reason=stale-diff-range detail=orchestration-defect range_end=${stale_marker_sha} head=${stale_head_sha} omitted_commits=1" \
+  "$(cat "$stale_log_file")"
+if [ ! -f "$stale_codex_prompt_file" ]; then
+  echo "PASS: Issue #44: stale range 時に codex_exec_prompt は呼ばれない"
+  PASS_COUNT=$((PASS_COUNT + 1))
+else
+  echo "FAIL: Issue #44: stale range 時に codex_exec_prompt が呼ばれた"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+fi
 
 echo ""
 echo "==========================================="

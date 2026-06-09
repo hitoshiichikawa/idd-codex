@@ -303,6 +303,22 @@ git diff <range_start_sha>..<range_end_sha> -- <path>
 指定された range 全体です。HEAD 全体の観点は最終 Stage B Reviewer（per-task ループ完了後に
 別途起動される HEAD 全体レビュー）が担当します。
 
+### stale range の検出（redo round の fallback）
+
+通常 watcher は Reviewer 起動前に `ROUND > 1` の `range_end_sha` が現在の `HEAD` と一致することを
+検証し、stale range なら Reviewer を起動しません。万一、self-hosting 中の旧 watcher process や
+手動実行により stale range のまま起動された場合は、Reviewer 自身が最初に以下を確認します:
+
+```bash
+git rev-parse HEAD
+```
+
+`ROUND > 1` かつ prompt の `range_end_sha` が現在の `HEAD` と一致しない場合、通常の AC 未カバー /
+missing test / boundary 逸脱の判定を続けてはいけません。その状態は Developer の AC 不足ではなく、
+corrective commit を含まない range を Reviewer に渡した orchestration defect です。
+`review-notes.md` には `orchestration defect: stale per-task reviewer range` と明記し、AC ID を
+Target にした Finding は作らず、`RESULT: reject` で終了してください。
+
 ## marker commit の分類
 
 per-task review range には、当該 task 完了時の `docs(tasks): mark <id> as done` commit が
