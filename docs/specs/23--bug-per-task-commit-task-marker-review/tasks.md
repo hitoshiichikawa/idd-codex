@@ -7,7 +7,7 @@
   - `pt_should_skip_reviewer` が補正後 range を使い、corrective commit がある range を parent checkbox-only skip と誤判定しないことを確認する。
   - _Requirements: 1.4, 2.1, 2.2, 2.3, 2.4, 3.3, 3.4, 5.1_
 
-- [ ] 2. Reviewer reject / Debugger 後の再実行経路で range guard を必ず通す
+- [x] 2. Reviewer reject / Debugger 後の再実行経路で range guard を必ず通す
   - Reviewer round=1 reject 後の `run_per_task_implementer` -> `run_per_task_reviewer "$task_id" 2` 経路が新しい `pt_resolve_diff_range` guard を bypass しないことを確認する。
   - Debugger BLOCKED 後の Implementer 再実行 -> round=1 Reviewer 合流経路が同じ guard を通ることを確認する。
   - round=2 reject Debugger 後の Implementer 再実行 -> `run_per_task_reviewer "$task_id" 3` 経路が同じ guard を通ることを確認する。
