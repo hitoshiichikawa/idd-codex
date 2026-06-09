@@ -3039,6 +3039,81 @@ ${warning_rows%$'\n'}
 EOF
 }
 
+# ─── pt_record_repeated_reject_warning_artifact <task_id> <next_round> <warning_block> <impl_notes_path> ───
+#
+# warning-only guard の診断を Developer-visible artifact として impl-notes.md に記録する。
+# 同じ task / round の block は marker comment で置換し、再実行時に重複させない。
+pt_record_repeated_reject_warning_artifact() {
+  local task_id="$1"
+  local next_round="$2"
+  local warning_block="$3"
+  local impl_notes_path="$4"
+
+  if [ -z "$warning_block" ]; then
+    return 0
+  fi
+
+  local impl_notes_dir
+  impl_notes_dir=$(dirname -- "$impl_notes_path")
+  mkdir -p "$impl_notes_dir" || return 1
+
+  if [ ! -f "$impl_notes_path" ]; then
+    cat >"$impl_notes_path" <<'EOF'
+# Implementation Notes
+
+## Implementation Notes
+EOF
+  elif ! grep -Eq '^## Implementation Notes[[:space:]]*$' "$impl_notes_path"; then
+    printf '\n## Implementation Notes\n' >> "$impl_notes_path" || return 1
+  fi
+
+  local start_marker end_marker artifact_block tmp_file
+  start_marker="<!-- idd-codex:repeated-reject-warning task=${task_id} round=${next_round} -->"
+  end_marker="<!-- /idd-codex:repeated-reject-warning task=${task_id} round=${next_round} -->"
+  read -r -d '' artifact_block <<EOF || true
+${start_marker}
+### Repeated Reject Warning（Task ${task_id} / before Reviewer round ${next_round}）
+
+Developer-visible warning generated before Reviewer round ${next_round}. 次の Implementer redo は、
+Reviewer round を追加で消費する前にこの診断を確認してください。
+
+\`\`\`markdown
+${warning_block}
+\`\`\`
+${end_marker}
+EOF
+
+  if grep -Fxq "$start_marker" "$impl_notes_path"; then
+    tmp_file=$(mktemp)
+    awk -v start="$start_marker" -v end="$end_marker" -v block="$artifact_block" '
+      $0 == start {
+        print block
+        in_block = 1
+        next
+      }
+      in_block && $0 == end {
+        in_block = 0
+        next
+      }
+      !in_block { print }
+    ' "$impl_notes_path" > "$tmp_file" || {
+      rm -f "$tmp_file"
+      return 1
+    }
+    mv "$tmp_file" "$impl_notes_path" || {
+      rm -f "$tmp_file"
+      return 1
+    }
+  else
+    printf '\n%s\n' "$artifact_block" >> "$impl_notes_path" || return 1
+  fi
+
+  if [ -n "${LOG:-}" ]; then
+    pt_log "task=${task_id} repeated-reject-warning developer-artifact=impl-notes next_round=${next_round} path=${impl_notes_path}" >> "$LOG"
+  fi
+  return 0
+}
+
 # ─── pt_resolve_diff_range <task_id> ───
 #
 # per-task Reviewer に渡す diff range の開始 SHA / 終了 SHA を解決して
@@ -4897,6 +4972,13 @@ run_per_task_loop() {
             "2" \
             "$_pt_round1_fingerprints" \
             "$_pt_changed_tests_r2" || true)
+          if ! pt_record_repeated_reject_warning_artifact \
+            "$task_id" \
+            "2" \
+            "$_pt_warning_r2" \
+            "$REPO_DIR/$SPEC_DIR_REL/impl-notes.md"; then
+            pt_log "task=$task_id repeated-reject-warning developer-artifact-unavailable next_round=2 path=$REPO_DIR/$SPEC_DIR_REL/impl-notes.md" >> "$LOG"
+          fi
         fi
 
         local rev2_rc=0
@@ -4984,6 +5066,13 @@ run_per_task_loop() {
                   "$_pt_round2_fingerprints" \
                   "$_pt_changed_tests_r3" \
                   "$_pt_round1_fingerprints" || true)
+                if ! pt_record_repeated_reject_warning_artifact \
+                  "$task_id" \
+                  "3" \
+                  "$_pt_warning_r3" \
+                  "$REPO_DIR/$SPEC_DIR_REL/impl-notes.md"; then
+                  pt_log "task=$task_id repeated-reject-warning developer-artifact-unavailable next_round=3 path=$REPO_DIR/$SPEC_DIR_REL/impl-notes.md" >> "$LOG"
+                fi
               fi
 
               local rev3_rc=0
