@@ -41,3 +41,11 @@
 - 重要な判断: prompt-only assertion は発生せず、task 5 の対象 AC は shell fixture で検証した。
 - 検証結果: `bash local-watcher/test/per_task_marker_review_range_test.sh` は 24 PASS / 0 FAIL。
 - 残存課題: 静的検証と root / repo-template 同期確認は task 6 の範囲。
+
+### Task 6
+
+- 採用方針: task 6 は追加実装を行わず、指定 verify コマンドの成功結果と root / repo-template 同期確認を記録した。
+- 重要な判断: `shellcheck local-watcher/bin/idd-codex-issue-watcher.sh install.sh setup.sh .github/scripts/*.sh` は警告なしで成功した。
+- 重要な判断: `bash local-watcher/test/per_task_marker_review_range_test.sh` は 24 PASS / 0 FAIL で成功し、`diff -r .codex/agents repo-template/.codex/agents` と `diff -r .codex/rules repo-template/.codex/rules` は差分なしだった。
+- 重要な判断: prompt-only assertion は発生せず、task 6 の確認は shell fixture と diff 検証で完結した。
+- 残存課題: なし。
