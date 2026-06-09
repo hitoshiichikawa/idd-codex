@@ -287,7 +287,8 @@ per-task 起動時、prompt には `range_start_sha` / `range_end_sha` の **2 �
 
 - **range_start_sha**: 直前 task の `docs(tasks): mark <id> as done` commit、または
   初回 task では `<BASE_BRANCH>` の SHA
-- **range_end_sha**: 当該 task の `docs(tasks): mark <id> as done` commit（典型的に HEAD）
+- **range_end_sha**: 通常は当該 task の `docs(tasks): mark <id> as done` commit。marker 後
+  commit が検出された場合は、それらを含む補正後 SHA（通常 `HEAD`）になり得る
 
 Reviewer は **必ず本 range のみ** を対象に `git diff` / `git log` を実行してください:
 
@@ -297,8 +298,10 @@ git log --oneline <range_start_sha>..<range_end_sha>
 git diff <range_start_sha>..<range_end_sha> -- <path>
 ```
 
-HEAD 全体（`<BASE_BRANCH>..HEAD`）は対象外です。全体観点は最終 Stage B Reviewer
-（per-task ループ完了後に別途起動される HEAD 全体レビュー）が担当します。
+渡された `<range_start_sha>..<range_end_sha>` の外側にある commit は当該 per-task review では
+判断しません。`range_end_sha` が補正後 `HEAD` の場合でも、判定対象はあくまで prompt で
+指定された range 全体です。HEAD 全体の観点は最終 Stage B Reviewer（per-task ループ完了後に
+別途起動される HEAD 全体レビュー）が担当します。
 
 ## 判定 depth の絞り込み
 

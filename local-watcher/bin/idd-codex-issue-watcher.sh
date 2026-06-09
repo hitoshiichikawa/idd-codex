@@ -2999,6 +2999,8 @@ ${SPEC_DIR_REL}/
    - 規約は AGENTS.md に従う
 
 2. **進捗マーカー更新**（既存 #67 / #112 規約 + Issue #164「1 commit = 1 task ID」厳格化）:
+   - task-scope 実装、検証、learning 追記がすべて完了してから、attempt の終端として
+     最新の \`docs(tasks): mark ${task_id} as done\` marker を置くこと
    - 対象 task の \`- [ ] ${task_id}\` 行を \`- [x] ${task_id}\` に書き換える
    - 子タスク（例: ${task_id}.1）を完了した場合、親 task（${task_id} の親、例: ${task_id%.*}）
      配下の全子タスクが \`- [x]\` になったタイミングで親も \`- [x]\` に昇格する
@@ -3016,6 +3018,15 @@ ${SPEC_DIR_REL}/
      - 連記 marker commit を作成すると、per-task Reviewer の diff range 解決が単記 ID で
        一致しなくなり \`diff-range-resolve-failed\` を起こす可能性がある（watcher 側で
        fallback 解決は試行するが、canonical は単記分割のみ）
+   - **retry / Debugger 後の再実行時の marker 終端契約**:
+     - 既に古い \`docs(tasks): mark ${task_id} as done\` marker が存在する場合でも、修正 commit を
+       その後ろに積んだまま終了しないこと
+     - 修正、検証、learning 追記の commit を積み終えた後、最後に最新の
+       \`docs(tasks): mark ${task_id} as done\` marker を追加し、Reviewer の range 終端と実態を
+       揃えること
+     - task checkbox が既に \`- [x]\` で \`tasks.md\` に差分がない場合は、非 \`tasks.md\` ファイルを
+       marker commit に含めず、必要に応じて \`git commit --allow-empty -m "docs(tasks): mark ${task_id} as done"\`
+       で終端 marker を置くこと
    - 書き換え禁止領域: タスク本文 / \`_Requirements:_\` / \`_Boundary:_\` / \`_Depends:_\` /
      タスク順序 / 親タスクのインデント / deferrable 印 \`- [ ]*\`
 
@@ -3093,10 +3104,13 @@ build_per_task_reviewer_prompt() {
 
 - **対象 task ID**: \`${task_id}\`
 - **range_start_sha**: \`${range_start}\` （= 直前の \`docs(tasks): mark\` commit、または初回時は \`${BASE_BRANCH}\` の SHA）
-- **range_end_sha**:   \`${range_end}\`   （= 当該 task の \`docs(tasks): mark ${task_id} as done\` commit）
+- **range_end_sha**:   \`${range_end}\`   （= 通常は当該 task の \`docs(tasks): mark ${task_id} as done\` commit。
+  marker 後 commit が検出された場合は、それらを含む補正後 SHA、通常 \`HEAD\` になり得ます）
 
-reviewer は **本 range のみ** を判定対象としてください。HEAD 全体は対象外（全体観点は
-最終 Stage B Reviewer が別途担当します）。
+reviewer は **本 range のみ** を判定対象としてください。渡された \`${range_start}..${range_end}\`
+の外側にある commit は、この per-task review では判定しません。HEAD 全体の観点は
+最終 Stage B Reviewer が別途担当します。ログ上の \`task\` / \`round\` / \`range\` とこの prompt の
+SHA が一致していることを確認してください。
 
 ## 必読ファイル
 

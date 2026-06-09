@@ -17,3 +17,11 @@
 - 手動復旧追記: Reviewer reject 後 retry 相当の `round=2` と Debugger guidance 後 retry 相当の `round=3` を `run_per_task_reviewer` stub harness で検証し、どちらも marker 後 corrective commit の HEAD SHA が Reviewer prompt の `range_end` に渡ることを確認した。
 - 検証結果: `bash local-watcher/test/per_task_marker_review_range_test.sh` は 16 PASS / 0 FAIL。`shellcheck local-watcher/test/per_task_marker_review_range_test.sh` と `shellcheck local-watcher/bin/idd-codex-issue-watcher.sh install.sh setup.sh .github/scripts/*.sh` は警告なし。
 - 残存課題: prompt と README の marker / range contract 明文化は後続 task の範囲。
+
+### Task 3
+
+- 採用方針: watcher の per-task prompt builder と root/repo-template の Developer / Reviewer agent prompt に marker / range contract を同期して明文化した。
+- 重要な判断: retry / Debugger 後は修正、検証、learning 追記の後に最新 marker を attempt 終端として置く契約を追加し、checkbox 済み retry では空 marker commit を許容した。
+- 重要な判断: Reviewer には `range_start_sha..range_end_sha` を判定対象の正本とし、`range_end_sha` が marker 後 commit を含む補正後 SHA になり得ることと、range 外 commit を判断しないことを明示した。
+- 重要な判断: shared rule は既存の agent prompt で契約を十分に表現できるため更新しない。
+- 残存課題: README の説明更新と #14 形状の追加 regression coverage は後続 task の範囲。

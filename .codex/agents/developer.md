@@ -393,6 +393,8 @@ fresh な Codex session** で本 Developer サブエージェントが起動さ�
   `対象 task ID: <id>` として明示します）。他の未完了 task に着手しないこと
 - `tasks.md` の進捗マーカー更新（`- [ ]` → `- [x]`）は当該 task と、子全完了で昇格する
   親 task のみ
+- task-scope 実装、検証、learning 追記がすべて完了してから、attempt の終端として最新の
+  `docs(tasks): mark <id> as done` marker を置くこと
 - 進捗 commit は `docs(tasks): mark <id> as done`（既存 #67 / #112 規約と同一）。当該
   commit には `tasks.md` 以外のファイルを含めない
 - **【重要 / Issue #164】1 commit = 1 task ID**: 1 つの `docs(tasks): mark <id> as done`
@@ -402,6 +404,14 @@ fresh な Codex session** で本 Developer サブエージェントが起動さ�
   / `mark 1, 1.1 as done`）は per-task Reviewer の diff range 解決が単記 ID 一致で行われる
   ため、`diff-range-resolve-failed` を引き起こすリスクがある（watcher 側で fallback 解決は
   試行するが、canonical は単記分割のみ）。
+- Reviewer reject 後または Debugger guidance 後の再実行では、古い marker の後ろに新しい
+  task-scope 修正 commit を残したまま終了しないこと。修正、検証、learning 追記の commit を
+  積み終えた後、最後に最新の `docs(tasks): mark <id> as done` marker を追加し、Reviewer の
+  diff range 終端と実態を揃える。
+- retry 時に task checkbox が既に `- [x]` で `tasks.md` に差分がない場合は、非 `tasks.md`
+  ファイルを marker commit に含めず、必要に応じて
+  `git commit --allow-empty -m "docs(tasks): mark <id> as done"` で終端 marker を置く。
+  history rewrite（`git reset` / `git rebase` 等）で古い marker を動かす必要はない。
 
 ## learning 追記の責務（per-task ループの中核 / Req 4.1, 4.2, 4.4）
 
