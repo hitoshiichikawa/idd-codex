@@ -21,7 +21,7 @@
   - shared rule に同じ契約を置く必要がある場合のみ `.codex/rules/tasks-generation.md` と `repo-template/.codex/rules/tasks-generation.md` を byte-identical に更新する。
   - _Requirements: 1.1, 1.2, 1.3, 3.1, 3.2, 4.1, 4.2_
 
-- [ ] 4. README / docs の per-task marker / review range 説明を runtime と揃える
+- [x] 4. README / docs の per-task marker / review range 説明を runtime と揃える
   - README の per-task loop 説明で `docs(tasks): mark <id> as done` marker が task attempt の終端であることを説明する。
   - Reviewer range は start / end SHA で明示され、marker 後 commit が検出された場合は include-or-fail することを説明する。
   - 新しい env var、label、exit code、外部サービス、runtime dependency を追加しないことを確認し、migration note が必要な場合は README に限定して追記する。
