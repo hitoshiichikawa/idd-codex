@@ -31,6 +31,8 @@ extract_function() {
 eval "$(extract_function "$WATCHER_SH" "pt_resolve_diff_range")"
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$WATCHER_SH" "pt_build_diff_range_resolve_diagnostic")"
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$WATCHER_SH" "run_per_task_reviewer")"
 
 if ! declare -F pt_resolve_diff_range >/dev/null; then
   echo "ERROR: pt_resolve_diff_range not loaded" >&2
@@ -40,6 +42,63 @@ if ! declare -F pt_build_diff_range_resolve_diagnostic >/dev/null; then
   echo "ERROR: pt_build_diff_range_resolve_diagnostic not loaded" >&2
   exit 2
 fi
+if ! declare -F run_per_task_reviewer >/dev/null; then
+  echo "ERROR: run_per_task_reviewer not loaded" >&2
+  exit 2
+fi
+
+pt_log() {
+  printf '[test] %s\n' "$*"
+}
+
+extract_review_result_token() {
+  printf 'reject\n'
+}
+
+build_per_task_reviewer_prompt() {
+  local task_id="$1"
+  local range_start="$2"
+  local range_end="$3"
+  local round="$4"
+  local prev_result="$5"
+
+  {
+    printf 'task=%s\n' "$task_id"
+    printf 'round=%s\n' "$round"
+    printf 'range_start=%s\n' "$range_start"
+    printf 'range_end=%s\n' "$range_end"
+    printf 'prev_result=%s\n' "$prev_result"
+  } >"$PROMPT_CAPTURE_FILE"
+
+  printf 'test prompt task=%s round=%s range=%s..%s\n' \
+    "$task_id" "$round" "$range_start" "$range_end"
+}
+
+qa_run_codex_stage() {
+  local _stage="$1"
+  local _reset_file="$2"
+  shift 2
+  if [ "${1:-}" = "--" ]; then
+    shift
+  fi
+  "$@"
+}
+
+codex_exec_prompt() {
+  local _stage="$1"
+  local _model="$2"
+  local prompt="$3"
+  printf '%s\n' "$prompt" >"$CODEX_PROMPT_CAPTURE_FILE"
+}
+
+parse_review_result() {
+  local _notes_path="$1"
+  printf 'approve\t\t5.2,5.3\n'
+}
+
+qa_handle_quota_exceeded() {
+  return 0
+}
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -68,6 +127,73 @@ assert_contains() {
     echo "  in    : $(printf '%q' "$haystack")"
     FAIL_COUNT=$((FAIL_COUNT + 1))
   fi
+}
+
+setup_marker_retry_fixture() {
+  local repo="$1"
+  local corrective_label="$2"
+
+  mkdir -p "$repo"
+  git -C "$repo" init -q
+  git -C "$repo" config user.email "idd-codex-test@example.invalid"
+  git -C "$repo" config user.name "idd-codex test"
+  git -C "$repo" checkout -q -b main
+
+  printf '%s\n' "base" >"$repo/file.txt"
+  git -C "$repo" add file.txt
+  git -C "$repo" commit -q -m "chore: base"
+
+  git -C "$repo" checkout -q -b codex/issue-23-test
+  printf '%s\n' "implementation" >"$repo/file.txt"
+  git -C "$repo" add file.txt
+  git -C "$repo" commit -q -m "fix(watcher): initial task implementation"
+
+  git -C "$repo" commit -q --allow-empty -m "docs(tasks): mark 1 as done"
+
+  printf '%s\n' "$corrective_label" >"$repo/fix.txt"
+  git -C "$repo" add fix.txt
+  git -C "$repo" commit -q -m "fix(watcher): ${corrective_label}"
+}
+
+run_reviewer_retry_range_case() {
+  local label="$1"
+  local round="$2"
+  local req_id="$3"
+  local repo="$TMPROOT/$label"
+  setup_marker_retry_fixture "$repo" "$label corrective commit after marker"
+
+  local head_sha log_file prompt_file codex_prompt_file rc=0
+  head_sha=$(git -C "$repo" rev-parse HEAD)
+  log_file="$repo/reviewer.log"
+  prompt_file="$repo/reviewer-prompt.capture"
+  codex_prompt_file="$repo/codex-prompt.capture"
+  : >"$log_file"
+
+  (
+    cd "$repo"
+    BASE_BRANCH=main \
+      LOG="$log_file" \
+      REPO_DIR="$repo" \
+      SPEC_DIR_REL="docs/specs/23--bug-per-task-commit-task-marker-review" \
+      REVIEWER_MODEL="test-reviewer" \
+      REVIEWER_MAX_TURNS="1" \
+      REPO_SLUG="idd-codex-test" \
+      NUMBER="23" \
+      PROMPT_CAPTURE_FILE="$prompt_file" \
+      CODEX_PROMPT_CAPTURE_FILE="$codex_prompt_file" \
+      run_per_task_reviewer "1" "$round"
+  ) || rc=$?
+
+  assert_eq "Req ${req_id}: ${label} Reviewer round=${round} は stub approve で成功する" "0" "$rc"
+  assert_contains "Req ${req_id}: ${label} Reviewer prompt の range_end は marker 後 HEAD" \
+    "range_end=${head_sha}" \
+    "$(cat "$prompt_file")"
+  assert_contains "Req ${req_id}: ${label} Reviewer 起動前ログに補正後 range を残す" \
+    "reviewer start round=${round}" \
+    "$(cat "$log_file")"
+  assert_contains "Req ${req_id}: ${label} marker 後 commit を silent に除外しない" \
+    "post-marker-commits-included task=1" \
+    "$(cat "$log_file")"
 }
 
 TMPROOT=$(mktemp -d)
@@ -128,6 +254,12 @@ assert_contains "Req 3.4: marker 不在時の unsafe reason を明示する" \
 assert_contains "Req 3.4: marker 不在時も直近 marker 候補を出す" \
   "docs(tasks): mark 1 as done" \
   "$missing_marker_diagnostic"
+
+echo ""
+echo "--- run_per_task_reviewer retry range guard (Issue #23 Req 5.2 / 5.3) ---"
+
+run_reviewer_retry_range_case "reviewer-reject-retry" "2" "5.2"
+run_reviewer_retry_range_case "debugger-guidance-retry" "3" "5.3"
 
 echo ""
 echo "==========================================="

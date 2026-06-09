@@ -14,4 +14,6 @@
 - 重要な判断: `pt_mark_diff_range_resolve_failed` に resolver 失敗時の HEAD、候補 marker、affected range、marker 後 commit の要約を埋め込み、post-marker 事故と marker 不在を同じ復旧入口で判別できるようにした。
 - 重要な判断: `pt_build_diff_range_resolve_diagnostic` は resolver の stdout 契約を変えず、Issue コメント専用の markdown 診断として分離した。
 - 重要な判断: `per_task_marker_review_range_test.sh` に診断出力の assertion を追加し、失敗時コメントの材料が欠けないことを検証した。
+- 手動復旧追記: Reviewer reject 後 retry 相当の `round=2` と Debugger guidance 後 retry 相当の `round=3` を `run_per_task_reviewer` stub harness で検証し、どちらも marker 後 corrective commit の HEAD SHA が Reviewer prompt の `range_end` に渡ることを確認した。
+- 検証結果: `bash local-watcher/test/per_task_marker_review_range_test.sh` は 16 PASS / 0 FAIL。`shellcheck local-watcher/test/per_task_marker_review_range_test.sh` と `shellcheck local-watcher/bin/idd-codex-issue-watcher.sh install.sh setup.sh .github/scripts/*.sh` は警告なし。
 - 残存課題: prompt と README の marker / range contract 明文化は後続 task の範囲。
