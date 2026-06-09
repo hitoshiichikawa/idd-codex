@@ -30,7 +30,7 @@
   - _Boundary:_ Marker Classification Regression Test, Per-task Implementer Prompt, Per-task Reviewer Prompt, Diff Range Resolver
   - _Depends:_ 2
 
-- [ ] 4. 静的検証と root / repo-template 同期を確認する
+- [x] 4. 静的検証と root / repo-template 同期を確認する
   - `shellcheck local-watcher/bin/*.sh install.sh setup.sh .github/scripts/*.sh` を実行し、既存 shell scripts と watcher の警告が増えていないことを確認する。
   - `shellcheck local-watcher/test/per_task_marker_checkbox_contract_test.sh` を実行する。
   - `bash local-watcher/test/per_task_marker_checkbox_contract_test.sh` を実行する。
