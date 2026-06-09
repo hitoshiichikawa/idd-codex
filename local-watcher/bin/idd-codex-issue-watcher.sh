@@ -2860,6 +2860,21 @@ checklist として閉じることを主目的にしてください。
 - Redo kind: \`${redo_kind}\`
 - Reviewer round: \`${review_round}\`
 
+### Finding Closure Matrix（必須）
+
+Reviewer reject 後または Debugger guidance 後の再実行では、\`${SPEC_DIR_REL}/impl-notes.md\`
+に Finding Closure Matrix を作成または更新してください。rejected target requirement ごとに
+1 行を作り、fix commit / test/assertion / verification result の対応を明示してください。
+修正不要と判断した場合も理由と確認結果を残してください。
+
+| Target requirement | Category | Required Action | Fix commit | Test/assertion | Verification result | Notes / no-change reason |
+|--------------------|----------|-----------------|------------|----------------|---------------------|--------------------------|
+
+- \`Fix commit\`: 対応する修正 commit hash または commit subject
+- \`Test/assertion\`: 追加または更新した test/assertion。実装変更不要の場合も確認した assertion を記録
+- \`Verification result\`: 実行した検証コマンドと結果
+- \`Notes / no-change reason\`: 修正不要判断、scope 外判断、または補足
+
 ${review_context}
 EOF
 

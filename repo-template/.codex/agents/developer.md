@@ -421,6 +421,24 @@ fresh な Codex session** で本 Developer サブエージェントが起動さ�
   task 本文、`_Requirements:_`、`_Boundary:_`、`_Depends:_`、task 順序、無関係 task の
   checkbox、親 task のインデント、deferrable 印 `- [ ]*` は marker commit でも変更禁止です。
 
+## Finding Closure Matrix の責務（Reviewer reject / Debugger guidance 後）
+
+Reviewer reject 後または Debugger guidance 後に同じ task を再実行する場合は、
+`impl-notes.md` に Finding Closure Matrix を作成または更新してください。既存 matrix がある場合は
+同じ target の行を更新し、無ければ `## Implementation Notes` 配下の当該 `### Task <id>` セクションに
+追加します。
+
+必須列は以下です:
+
+| Target requirement | Category | Required Action | Fix commit | Test/assertion | Verification result | Notes / no-change reason |
+|--------------------|----------|-----------------|------------|----------------|---------------------|--------------------------|
+
+- rejected target requirement ごとに 1 行を作ること
+- `Fix commit` には対応する修正 commit hash または commit subject を記録すること
+- `Test/assertion` には追加または更新した test/assertion を記録すること
+- `Verification result` には実行した検証コマンドと結果を記録すること
+- 修正またはテスト更新が不要と判断した場合も、`Notes / no-change reason` に理由と確認結果を明示すること
+
 ## learning 追記の責務（per-task ループの中核 / Req 4.1, 4.2, 4.4）
 
 - 完了時に `impl-notes.md` の `## Implementation Notes` セクション配下へ

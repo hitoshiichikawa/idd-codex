@@ -23,3 +23,12 @@
   - round 1 reject 後は `review-notes.md`、round 2 reject + Debugger 後は `review-notes.md` と `debugger-notes.md` の `## Task <id>` セクションを inline 注入する。
   - Finding Closure Matrix の詳細 contract と repeated reject guard は後続 task の境界に残した。
 - 残存課題: task 3 で Finding Closure Matrix の必須列と Developer agent 同期、task 4 で連続 reject warning guard を実装する必要がある。
+
+### Task 3
+
+- 採用方針: Finding Closure Matrix の contract を redo prompt と Developer agent の per-task 指示へ同期し、shell fixture では prompt-only assertion として検証した。
+- 重要な判断:
+  - Matrix の必須列は `Target requirement` / `Category` / `Required Action` / `Fix commit` / `Test/assertion` / `Verification result` / `Notes / no-change reason` に固定した。
+  - 実 LLM に `impl-notes.md` を生成させる assertion は shell fixture の責務外のため、prompt が rejected target requirement、fix commit、test/assertion、verification result を要求していることを確認する方針にした。
+  - 手動確認範囲は prompt 文面、Developer agent 文面、root / repo-template agents の byte-identical 同期に限定した。
+- 残存課題: task 4 で連続 reject warning guard、task 5 で #23 shape の回帰 fixture を完成させる必要がある。
