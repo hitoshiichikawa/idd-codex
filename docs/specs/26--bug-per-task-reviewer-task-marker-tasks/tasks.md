@@ -1,6 +1,6 @@
 # Implementation Plan
 
-- [ ] 1. Developer / Reviewer agent 定義に marker classification contract を同期追加する
+- [x] 1. Developer / Reviewer agent 定義に marker classification contract を同期追加する
   - `.codex/agents/developer.md` と `repo-template/.codex/agents/developer.md` に、canonical marker commit の subject が `docs(tasks): mark <id> as done` の単一 task ID 完全一致であることを byte-identical に追記する。
   - Developer guidance で、marker commit に含めてよい `tasks.md` 変更は対象 task checkbox の `[ ]` -> `[x]` のみであり、task 本文 / `_Requirements:_` / `_Boundary:_` / `_Depends:_` / 順序 / 無関係 checkbox は書き換え禁止であることを明記する。
   - `.codex/agents/reviewer.md` と `repo-template/.codex/agents/reviewer.md` に、per-task review range には marker commit が含まれ得ることを byte-identical に追記する。
@@ -9,7 +9,7 @@
   - _Requirements:_ 1.1, 1.2, 1.3, 1.4, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 3.1, 3.3, 3.4, 3.5, 4.1
   - _Boundary:_ Developer Agent Guidance, Reviewer Agent Guidance, Agent Prompt Synchronization
 
-- [ ] 2. watcher の per-task Implementer / Reviewer prompt に同じ marker contract を注入する
+- [x] 2. watcher の per-task Implementer / Reviewer prompt に同じ marker contract を注入する
   - `local-watcher/bin/idd-codex-issue-watcher.sh` の `build_per_task_implementer_prompt` で、canonical marker commit が Reviewer の allowed orchestration artifact 分類と同じ subject / checkbox-only 契約に従うことを明記する。
   - `build_per_task_reviewer_prompt` で、`range_end_sha` が marker commit であり得ることと、Reviewer が `git log -1 --format=%s <range_end_sha>` で subject を確認することを明記する。
   - `build_per_task_reviewer_prompt` で、subject が `docs(tasks): mark ${task_id} as done` に完全一致し、marker commit の `tasks.md` diff が対象 checkbox `[ ]` -> `[x]` のみである場合だけ allowed orchestration artifact と扱うことを明記する。
@@ -19,7 +19,7 @@
   - _Boundary:_ Per-task Implementer Prompt, Per-task Reviewer Prompt, Diff Range Resolver
   - _Depends:_ 1
 
-- [ ] 3. regression-test-only commit + marker commit の shell fixture を追加する
+- [x] 3. regression-test-only commit + marker commit の shell fixture を追加する
   - `local-watcher/test/per_task_marker_checkbox_contract_test.sh` を追加し、既存 `local-watcher/test/` pattern に合わせて watcher から必要関数だけを `awk` 抽出して eval する。
   - temporary git repo で base commit、regression-test-only commit、正規 `docs(tasks): mark 1.1 as done` marker commit を作成する。
   - `pt_resolve_diff_range 1.1` が regression-test-only commit と marker commit を含む range を返し、`range_end_sha` が marker commit であることを検証する。
@@ -30,7 +30,7 @@
   - _Boundary:_ Marker Classification Regression Test, Per-task Implementer Prompt, Per-task Reviewer Prompt, Diff Range Resolver
   - _Depends:_ 2
 
-- [ ] 4. 静的検証と root / repo-template 同期を確認する
+- [x] 4. 静的検証と root / repo-template 同期を確認する
   - `shellcheck local-watcher/bin/*.sh install.sh setup.sh .github/scripts/*.sh` を実行し、既存 shell scripts と watcher の警告が増えていないことを確認する。
   - `shellcheck local-watcher/test/per_task_marker_checkbox_contract_test.sh` を実行する。
   - `bash local-watcher/test/per_task_marker_checkbox_contract_test.sh` を実行する。
