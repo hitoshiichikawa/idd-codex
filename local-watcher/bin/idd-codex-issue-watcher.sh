@@ -2772,6 +2772,111 @@ pt_extract_debugger_task_section() {
   return 0
 }
 
+# ─── pt_build_redo_context_block <task_id> <redo_kind> <review_round> <review_notes_path> [<debugger_notes_path>] ───
+#
+# Reviewer reject / Debugger 後の per-task Implementer 再実行 prompt に注入する
+# task 固有 context block を組み立てる。抽出に失敗しても通常 prompt と同一にはせず、
+# diagnostic block を返して運用者 / Developer が原因を確認できる形にする。
+#
+# redo_kind:
+#   reviewer-reject   = Reviewer reject 後の再実行
+#   debugger-fix-plan = round=2 reject + Debugger 後の再実行
+#   blocked-debugger  = BLOCKED 経路 Debugger 後の再実行（review context は任意）
+pt_build_redo_context_block() {
+  local task_id="$1"
+  local redo_kind="$2"
+  local review_round="$3"
+  local review_notes_path="$4"
+  local debugger_notes_path="${5:-}"
+
+  local review_context=""
+  local debugger_context=""
+  local review_diag=""
+  local debugger_diag=""
+  local diag_file
+
+  case "$redo_kind" in
+    reviewer-reject|debugger-fix-plan|blocked-debugger)
+      ;;
+    *)
+      printf 'redo-context-unavailable task=%s kind=%s round=%s reason=invalid-redo-kind\n' \
+        "$task_id" "$redo_kind" "$review_round" >&2
+      return 1
+      ;;
+  esac
+
+  if [ "$redo_kind" != "blocked-debugger" ]; then
+    diag_file=$(mktemp)
+    if review_context=$(pt_extract_review_reject_context "$task_id" "$review_round" "$review_notes_path" 2>"$diag_file"); then
+      :
+    else
+      review_diag=$(cat "$diag_file")
+      if [ -n "${LOG:-}" ]; then
+        pt_log "task=$task_id redo-context-unavailable kind=$redo_kind round=$review_round source=review diagnostic=${review_diag}" >> "$LOG"
+      fi
+      read -r -d '' review_context <<EOF || true
+### Reviewer Reject Context
+
+> WARNING: Reviewer reject context could not be extracted. This retry must not be treated as a normal same-task rerun.
+
+- Task ID: \`${task_id}\`
+- Reviewer round: \`${review_round}\`
+- Source: \`${review_notes_path}\`
+- Diagnostic: \`${review_diag:-unknown}\`
+EOF
+    fi
+    rm -f "$diag_file"
+  fi
+
+  if [ "$redo_kind" = "debugger-fix-plan" ] || [ "$redo_kind" = "blocked-debugger" ]; then
+    diag_file=$(mktemp)
+    if debugger_context=$(pt_extract_debugger_task_section "$task_id" "$debugger_notes_path" 2>"$diag_file"); then
+      :
+    else
+      debugger_diag=$(cat "$diag_file")
+      if [ -n "${LOG:-}" ]; then
+        pt_log "task=$task_id debugger-context-unavailable kind=$redo_kind round=$review_round source=debugger diagnostic=${debugger_diag}" >> "$LOG"
+      fi
+      read -r -d '' debugger_context <<EOF || true
+## Task ${task_id}
+
+> WARNING: Debugger Fix Plan context could not be extracted. This retry must not silently rely on stale or absent debugger-notes.md.
+
+- Task ID: \`${task_id}\`
+- Source: \`${debugger_notes_path}\`
+- Diagnostic: \`${debugger_diag:-unknown}\`
+EOF
+    fi
+    rm -f "$diag_file"
+  fi
+
+  cat <<EOF
+## Retry Context（watcher 生成 / per-task redo）
+
+この起動は通常の初回 Implementer 実行ではありません。以下の Reviewer / Debugger 指摘を
+checklist として閉じることを主目的にしてください。
+
+- Task ID: \`${task_id}\`
+- Redo kind: \`${redo_kind}\`
+- Reviewer round: \`${review_round}\`
+
+${review_context}
+EOF
+
+  if [ -n "$debugger_context" ]; then
+    cat <<EOF
+
+### Debugger Fix Plan Context
+
+\`\`\`markdown
+${debugger_context}
+\`\`\`
+EOF
+  fi
+
+  return 0
+}
+
 # ─── pt_resolve_diff_range <task_id> ───
 #
 # per-task Reviewer に渡す diff range の開始 SHA / 終了 SHA を解決して
@@ -3457,7 +3562,7 @@ $(sed -n '1,180p' "$context_path")
 EOF
 }
 
-# ─── build_per_task_implementer_prompt <task_id> ───
+# ─── build_per_task_implementer_prompt <task_id> [<redo_context_block>] ───
 #
 # per-task Implementer 用の prompt を heredoc で組み立てて stdout に出力。
 # 既存 `build_dev_prompt_a` の形式を踏襲しつつ、以下を明示する:
@@ -3473,8 +3578,16 @@ EOF
 # Requirements: 2.2, 2.3, 2.4, 2.5, 4.1, 4.2, 4.3, 4.4
 build_per_task_implementer_prompt() {
   local task_id="$1"
+  local redo_context_block="${2:-}"
   local context_map_block
   context_map_block="$(cm_build_prompt_block)"
+  local retry_context_block=""
+  if [ -n "$redo_context_block" ]; then
+    read -r -d '' retry_context_block <<EOF || true
+
+${redo_context_block}
+EOF
+  fi
   local learnings
   learnings=$(pt_extract_learnings "$REPO_DIR/$SPEC_DIR_REL/impl-notes.md")
   local learnings_block
@@ -3523,6 +3636,7 @@ ${SPEC_DIR_REL}/
 - 本起動では \`tasks.md\` の **${task_id} 1 件のみ** を実装します。他の未完了 task には
   一切着手しないこと（次 task は別の fresh Implementer 起動で消化されます）
 ${context_map_block}
+${retry_context_block}
 
 ## 進め方
 
@@ -3771,7 +3885,7 @@ reviewer サブエージェントを起動し、以下を判定して \`${SPEC_D
 EOF
 }
 
-# ─── run_per_task_implementer <task_id> ───
+# ─── run_per_task_implementer <task_id> [<redo_context_block>] ───
 #
 # 当該 task 1 件のみを対象に fresh Codex session で Implementer を起動。
 #
@@ -3783,11 +3897,15 @@ EOF
 # Requirements: 2.2, 2.6, NFR 1.3, NFR 2.1, NFR 2.2
 run_per_task_implementer() {
   local task_id="$1"
+  local redo_context_block="${2:-}"
   local prompt
   cm_write_context_map "$task_id" "implementer" "" "" || cm_warn "failed to update context-map task=$task_id stage=implementer"
-  prompt=$(build_per_task_implementer_prompt "$task_id")
+  prompt=$(build_per_task_implementer_prompt "$task_id" "$redo_context_block")
 
   pt_log "task=$task_id implementer start (model=$DEV_MODEL, max-turns=$DEV_MAX_TURNS)" >> "$LOG"
+  if [ -n "$redo_context_block" ]; then
+    pt_log "task=$task_id implementer redo-context injected" >> "$LOG"
+  fi
   echo "--- per-task Implementer 実行 (task=$task_id) ---" >> "$LOG"
 
   local _qa_reset_file _qa_rc=0 _qa_ts _qa_stage_label
@@ -4556,8 +4674,16 @@ run_per_task_loop() {
         # reject 1 回目 → Implementer 再起動 + Reviewer round=2
         echo "🔁 #$NUMBER: per-task Reviewer (task=$task_id, round=1) reject → Implementer 再実行" | tee -a "$LOG"
 
+        local _pt_redo_context=""
+        _pt_redo_context=$(pt_build_redo_context_block \
+          "$task_id" \
+          "reviewer-reject" \
+          "1" \
+          "$REPO_DIR/$SPEC_DIR_REL/review-notes.md")
+        pt_log "task=$task_id redo-context injected kind=reviewer-reject round=1" >> "$LOG"
+
         local impl2_rc=0
-        run_per_task_implementer "$task_id" || impl2_rc=$?
+        run_per_task_implementer "$task_id" "$_pt_redo_context" || impl2_rc=$?
         case "$impl2_rc" in
           0)
             # Issue #263: Reviewer reject 後の Implementer 再実行も rc=0 で抜けたが進捗ゼロ
@@ -4613,10 +4739,18 @@ run_per_task_loop() {
                   ;;
               esac
 
-              # Implementer 再起動（Fix Plan 注入は per-task Implementer の prompt builder には未対応のため、
-              # debugger-notes.md の存在を Implementer が `### Task <id>` セクションで読むことに依拠する）
+              # Implementer 再起動（Reviewer Findings と Debugger Fix Plan を task scope で inline 注入）
+              local _pt_debugger_redo_context=""
+              _pt_debugger_redo_context=$(pt_build_redo_context_block \
+                "$task_id" \
+                "debugger-fix-plan" \
+                "2" \
+                "$REPO_DIR/$SPEC_DIR_REL/review-notes.md" \
+                "$REPO_DIR/$SPEC_DIR_REL/debugger-notes.md")
+              pt_log "task=$task_id redo-context injected kind=debugger-fix-plan round=2" >> "$LOG"
+
               local impl3_rc=0
-              run_per_task_implementer "$task_id" || impl3_rc=$?
+              run_per_task_implementer "$task_id" "$_pt_debugger_redo_context" || impl3_rc=$?
               case "$impl3_rc" in
                 0)
                   # Issue #263: Debugger 経由 Implementer 再実行も rc=0 で抜けたが進捗ゼロ
