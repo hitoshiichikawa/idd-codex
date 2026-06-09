@@ -3114,6 +3114,88 @@ EOF
   return 0
 }
 
+# ─── pt_build_repeated_reject_redo_context <task_id> <next_round> <warning_block> ───
+#
+# warning-only guard が発火した場合に、次 Reviewer round を消費する前の Developer
+# 再実行へ渡す dedicated redo context を組み立てる。
+pt_build_repeated_reject_redo_context() {
+  local task_id="$1"
+  local next_round="$2"
+  local warning_block="$3"
+
+  if [ -z "$warning_block" ]; then
+    return 0
+  fi
+
+  cat <<EOF
+## Repeated Reject Warning Context（watcher 生成 / per-task redo）
+
+この起動は、Reviewer round ${next_round} を追加で消費する前に warning-only guard の診断を
+Developer が確認するための dedicated redo です。以下の target について、前回 reject 以降に
+関連 test path 差分が検出されていません。
+
+- Task ID: \`${task_id}\`
+- Next Reviewer round: \`${next_round}\`
+- Redo kind: \`repeated-reject-warning\`
+
+### Required Action
+
+- Risk fingerprints の category / target requirement を確認し、必要な test/assertion を追加または更新してください。
+- 修正不要と判断する場合は、\`${SPEC_DIR_REL}/impl-notes.md\` の Finding Closure Matrix または Task ${task_id} learning に理由と確認結果を残してください。
+- 実装後、watcher は前回 reject 以降の test path 差分を再計算し、warning が解消していれば Reviewer prompt へ古い warning を渡しません。
+
+### Warning Block
+
+\`\`\`markdown
+${warning_block}
+\`\`\`
+EOF
+}
+
+# ─── pt_run_repeated_reject_warning_redo <task_id> <next_round> <warning_block> <tasks_md> ───
+#
+# warning-only guard が非空の場合、Reviewer 起動前に Developer を 1 回再実行する。
+# 戻り値は run_per_task_implementer と同じく 0 / 1 / 99 を返す。
+pt_run_repeated_reject_warning_redo() {
+  local task_id="$1"
+  local next_round="$2"
+  local warning_block="$3"
+  local tasks_md="$4"
+
+  if [ -z "$warning_block" ]; then
+    return 0
+  fi
+
+  local warning_redo_context
+  warning_redo_context=$(pt_build_repeated_reject_redo_context "$task_id" "$next_round" "$warning_block")
+  pt_log "task=$task_id redo-context injected kind=repeated-reject-warning round=$next_round" >> "$LOG"
+
+  local impl_warning_rc=0
+  run_per_task_implementer "$task_id" "$warning_redo_context" || impl_warning_rc=$?
+  case "$impl_warning_rc" in
+    0)
+      local _pt_check_warning_rc=0
+      pt_check_task_completed "$tasks_md" "$task_id" || _pt_check_warning_rc=$?
+      if [ "$_pt_check_warning_rc" != "0" ]; then
+        echo "❌ #$NUMBER: per-task Implementer warning redo (task=$task_id, phase=round${next_round}-warning-redo) rc=0 だが進捗ゼロ検出 (check_rc=$_pt_check_warning_rc) → codex-failed (per-task-implementer-no-progress)" | tee -a "$LOG"
+        pt_mark_no_progress_failed "$task_id" "round${next_round}-warning-redo" "$_pt_check_warning_rc"
+        return 1
+      fi
+      ;;
+    99)
+      echo "⏸️ #$NUMBER: per-task Implementer warning redo (task=$task_id, round=$next_round) で quota 超過検出 → codex-needs-quota-wait" | tee -a "$LOG"
+      return 99
+      ;;
+    *)
+      echo "❌ #$NUMBER: per-task Implementer warning redo (task=$task_id, round=$next_round) 失敗 → codex-failed" | tee -a "$LOG"
+      mark_issue_failed "per-task-implementer-warning-redo-failed" "per-task ループの repeated reject warning redo が task=\`${task_id}\` / next_round=\`${next_round}\` で失敗しました（codex 非 0 exit）。\`$LOG\` を確認してください。"
+      return 1
+      ;;
+  esac
+
+  return 0
+}
+
 # ─── pt_resolve_diff_range <task_id> ───
 #
 # per-task Reviewer に渡す diff range の開始 SHA / 終了 SHA を解決して
@@ -4847,6 +4929,28 @@ run_per_task_loop() {
             pt_log "task=$task_id repeated-reject-warning developer-artifact-unavailable next_round=2 path=$REPO_DIR/$SPEC_DIR_REL/impl-notes.md" >> "$LOG"
           fi
         fi
+        if [ -n "$_pt_warning_r2" ]; then
+          local _pt_warning_redo2_rc=0
+          pt_run_repeated_reject_warning_redo "$task_id" "2" "$_pt_warning_r2" "$tasks_md" || _pt_warning_redo2_rc=$?
+          case "$_pt_warning_redo2_rc" in
+            0)
+              if [ -n "$_pt_round1_reject_sha" ]; then
+                _pt_changed_tests_r2=$(pt_collect_changed_test_paths "$_pt_round1_reject_sha" "HEAD" || true)
+                _pt_warning_r2=$(pt_build_repeated_reject_warning \
+                  "$task_id" \
+                  "2" \
+                  "$_pt_round1_fingerprints" \
+                  "$_pt_changed_tests_r2" || true)
+              fi
+              ;;
+            99)
+              return 0
+              ;;
+            *)
+              return 1
+              ;;
+          esac
+        fi
 
         local rev2_rc=0
         run_per_task_reviewer "$task_id" 2 "$_pt_warning_r2" || rev2_rc=$?
@@ -4940,6 +5044,29 @@ run_per_task_loop() {
                   "$REPO_DIR/$SPEC_DIR_REL/impl-notes.md"; then
                   pt_log "task=$task_id repeated-reject-warning developer-artifact-unavailable next_round=3 path=$REPO_DIR/$SPEC_DIR_REL/impl-notes.md" >> "$LOG"
                 fi
+              fi
+              if [ -n "$_pt_warning_r3" ]; then
+                local _pt_warning_redo3_rc=0
+                pt_run_repeated_reject_warning_redo "$task_id" "3" "$_pt_warning_r3" "$tasks_md" || _pt_warning_redo3_rc=$?
+                case "$_pt_warning_redo3_rc" in
+                  0)
+                    if [ -n "$_pt_round2_reject_sha" ]; then
+                      _pt_changed_tests_r3=$(pt_collect_changed_test_paths "$_pt_round2_reject_sha" "HEAD" || true)
+                      _pt_warning_r3=$(pt_build_repeated_reject_warning \
+                        "$task_id" \
+                        "3" \
+                        "$_pt_round2_fingerprints" \
+                        "$_pt_changed_tests_r3" \
+                        "$_pt_round1_fingerprints" || true)
+                    fi
+                    ;;
+                  99)
+                    return 0
+                    ;;
+                  *)
+                    return 1
+                    ;;
+                esac
               fi
 
               local rev3_rc=0

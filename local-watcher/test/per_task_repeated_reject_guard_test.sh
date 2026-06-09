@@ -42,13 +42,17 @@ eval "$(extract_function "$WATCHER_SH" "pt_build_repeated_reject_warning")"
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$WATCHER_SH" "pt_record_repeated_reject_warning_artifact")"
 # shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$WATCHER_SH" "pt_build_repeated_reject_redo_context")"
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$WATCHER_SH" "pt_run_repeated_reject_warning_redo")"
+# shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$WATCHER_SH" "pt_extract_learnings")"
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$WATCHER_SH" "build_per_task_implementer_prompt")"
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$WATCHER_SH" "build_per_task_reviewer_prompt")"
 
-for fn in pt_collect_reject_fingerprints pt_collect_changed_test_paths pt_build_repeated_reject_warning pt_record_repeated_reject_warning_artifact pt_extract_learnings build_per_task_implementer_prompt build_per_task_reviewer_prompt; do
+for fn in pt_collect_reject_fingerprints pt_collect_changed_test_paths pt_build_repeated_reject_warning pt_record_repeated_reject_warning_artifact pt_build_repeated_reject_redo_context pt_run_repeated_reject_warning_redo pt_extract_learnings build_per_task_implementer_prompt build_per_task_reviewer_prompt; do
   if ! declare -F "$fn" >/dev/null; then
     echo "ERROR: $fn not loaded" >&2
     exit 2
@@ -219,6 +223,55 @@ assert_eq "developer artifact is replaced idempotently" "2" "$artifact_count"
 
 impl_prompt=$(build_per_task_implementer_prompt "4")
 assert_contains "implementer prompt includes developer-visible warning artifact" "Repeated Reject Warning（Task 4 / before Reviewer round 2）" "$impl_prompt"
+
+echo ""
+echo "--- warning redo orchestration ---"
+
+ORCH_ORDER=""
+ORCH_CONTEXT_FILE="$TMPROOT/warning-redo-context.md"
+run_per_task_implementer() {
+  local task_id="$1"
+  local redo_context="${2:-}"
+  ORCH_ORDER="${ORCH_ORDER}implementer-warning-redo:${task_id}"$'\n'
+  printf '%s' "$redo_context" > "$ORCH_CONTEXT_FILE"
+  return 0
+}
+pt_check_task_completed() {
+  local tasks_md="$1"
+  local task_id="$2"
+  : "$tasks_md"
+  ORCH_ORDER="${ORCH_ORDER}check-completed:${task_id}"$'\n'
+  return 0
+}
+pt_mark_no_progress_failed() {
+  return 1
+}
+mark_issue_failed() {
+  return 1
+}
+run_per_task_reviewer() {
+  local task_id="$1"
+  local round="$2"
+  ORCH_ORDER="${ORCH_ORDER}reviewer:${round}:${task_id}"$'\n'
+  return 0
+}
+
+pt_run_repeated_reject_warning_redo "4" "2" "$warning" "$REPO_DIR/$SPEC_DIR_REL/tasks.md"
+run_per_task_reviewer "4" "2" "$warning"
+assert_eq "warning redo runs before reviewer" $'implementer-warning-redo:4\ncheck-completed:4\nreviewer:2:4\n' "$ORCH_ORDER"
+warning_redo_context=$(cat "$ORCH_CONTEXT_FILE")
+assert_contains "warning redo context has heading" "## Repeated Reject Warning Context" "$warning_redo_context"
+assert_contains "warning redo context includes task ID" "Task ID: \`4\`" "$warning_redo_context"
+assert_contains "warning redo context includes next round" "Next Reviewer round: \`2\`" "$warning_redo_context"
+assert_contains "warning redo context includes redo kind" "Redo kind: \`repeated-reject-warning\`" "$warning_redo_context"
+assert_contains "warning redo context includes changed test none" "Changed test paths since prior reject: \`(none)\`" "$warning_redo_context"
+assert_contains "warning redo context includes missing test target" "Category: \`missing test\`; Target requirement: \`5.2\`" "$warning_redo_context"
+assert_contains "warning redo context includes AC target" "Category: \`AC 未カバー\`; Target requirement: \`5.3\`" "$warning_redo_context"
+assert_contains "warning redo context injection is logged" "redo-context injected kind=repeated-reject-warning round=2" "$(cat "$LOG")"
+
+ORCH_ORDER=""
+pt_run_repeated_reject_warning_redo "4" "2" "" "$REPO_DIR/$SPEC_DIR_REL/tasks.md"
+assert_eq "empty warning skips warning redo" "" "$ORCH_ORDER"
 
 : >"$LOG"
 warning=$(pt_build_repeated_reject_warning "4" "2" "$fingerprints" "$changed_tests" || true)
