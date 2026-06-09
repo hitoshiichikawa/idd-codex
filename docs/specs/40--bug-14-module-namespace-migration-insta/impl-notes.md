@@ -21,6 +21,10 @@ git diff --check
 
 すべて成功。加えて、旧 `STAGE_A_VERIFY_COMMAND` が残っている状態でも本 spec の構造化 verify ブロックが `source=structured-block` として優先されることを確認した。
 
+## Reviewer round=1 reject 対応
+
+- README の migration note（#14）に、idd-codex は runtime module source として旧 `$HOME/bin/modules/` を使わず、`$HOME/bin/idd-codex-modules/` を使う旨を追記した。
+
 ## 確認事項
 
 - なし。

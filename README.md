@@ -546,8 +546,9 @@ chmod +x ~/bin/idd-codex-issue-watcher.sh
 
 > **migration note（#14）**: 既存の idd-codex local watcher 利用者は、merge 後に
 > `cd ~/.idd-codex && git pull && ./install.sh --local` を再実行すると
-> `$HOME/bin/idd-codex-modules/` へ移行できます。idd-codex は旧 `$HOME/bin/modules/`
-> の削除や idd-claude 側 module の復旧は代行しません。
+> `$HOME/bin/idd-codex-modules/` へ移行できます。idd-codex は runtime module source として
+> 旧 `$HOME/bin/modules/` を使わず、`$HOME/bin/idd-codex-modules/` を使います。旧
+> `$HOME/bin/modules/` の削除や idd-claude 側 module の復旧は代行しません。
 
 スクリプト自体は編集不要。`REPO` / `REPO_DIR` は **環境変数で上書きできる** ため、
 cron / launchd 側でリポジトリを指定する運用にします（単一 repo でも複数 repo でも同じ手順）。
