@@ -3887,6 +3887,8 @@ pt_mark_diff_range_resolve_failed() {
   local hostname_val
   hostname_val=$(hostname)
   local marker="<!-- idd-codex:per-task-diff-range-resolve-failed:#${NUMBER}:${task_id} -->"
+  local terminal_diagnostic=""
+  terminal_diagnostic=$(pt_build_terminal_failure_diagnostics "per-task-diff-range-resolve-failed" 2>/dev/null || true)
   local diagnostic
   diagnostic=$(pt_build_diff_range_resolve_diagnostic "$task_id" 2>/dev/null || true)
   [ -n "$diagnostic" ] || diagnostic="## 解決診断
@@ -3938,6 +3940,8 @@ review range へ含められない状態です。Developer が以下のいずれ
 - marker 後 commit が存在するが、HEAD / ancestor / commit count の検査に失敗した
 
 ${diagnostic}
+
+${terminal_diagnostic}
 
 ## 復旧手順（重要 / データ損失リスク回避）
 
@@ -5696,6 +5700,301 @@ ${push_stderr_tail}
   return 1
 }
 
+# ─── per-task terminal failure diagnostics / artifact preservation (Issue #38) ───
+#
+# per-task terminal failure 直前に Reviewer / Debugger が書いた diagnostic artifact
+# (`review-notes.md` / `debugger-notes.md`) を watcher 責務で保全する。
+# Reviewer / Debugger subagent には引き続き git / gh 権限を渡さず、terminal failure を
+# mark する watcher 側で以下を行う:
+#   1. failure-time の branch / HEAD / origin / ahead / artifact 状態を収集
+#   2. untracked / uncommitted artifact があれば diagnostic commit を作成して push を試行
+#   3. commit / push が失敗した場合は Issue コメント本文へ artifact content fallback を埋め込む
+#
+# 本ヘルパは comment body の markdown 断片を stdout に返す。失敗しても terminal failure
+# 自体を妨げないよう、呼び出し側は `|| true` で best-effort に扱う。
+pt_artifact_state_line() {
+  local repo_dir="$1"
+  local rel="$2"
+
+  local exists="no" tracked="no" untracked="no" staged="no" unstaged="no" uncommitted="no"
+  if [ -e "$repo_dir/$rel" ]; then
+    exists="yes"
+  fi
+  if git -C "$repo_dir" ls-files --error-unmatch "$rel" >/dev/null 2>&1; then
+    tracked="yes"
+  fi
+  if [ -n "$(git -C "$repo_dir" ls-files --others --exclude-standard -- "$rel" 2>/dev/null || true)" ]; then
+    untracked="yes"
+  fi
+  if ! git -C "$repo_dir" diff --cached --quiet -- "$rel" 2>/dev/null; then
+    staged="yes"
+  fi
+  if ! git -C "$repo_dir" diff --quiet -- "$rel" 2>/dev/null; then
+    unstaged="yes"
+  fi
+  if [ "$untracked" = "yes" ] || [ "$staged" = "yes" ] || [ "$unstaged" = "yes" ]; then
+    uncommitted="yes"
+  fi
+
+  printf -- "%s\n" "- \`${rel}\`: exists=${exists} tracked=${tracked} untracked=${untracked} staged=${staged} unstaged=${unstaged} uncommitted=${uncommitted}"
+}
+
+pt_artifact_content_block() {
+  local repo_dir="$1"
+  local rel="$2"
+  local abs="$repo_dir/$rel"
+
+  printf "%s\n\n" "#### \`${rel}\`"
+  if [ ! -f "$abs" ]; then
+    printf -- '- artifact content unavailable: file does not exist at failure diagnostic time.\n\n'
+    return 0
+  fi
+
+  local bytes
+  bytes=$(wc -c < "$abs" 2>/dev/null | tr -d '[:space:]' || echo "0")
+  [ -n "$bytes" ] || bytes=0
+
+  if [ "$bytes" -le 16000 ]; then
+    printf -- '- artifact content: exact\n\n'
+    printf '~~~markdown\n'
+    sed -n '1,$p' "$abs" 2>/dev/null || true
+    printf '\n~~~\n\n'
+    return 0
+  fi
+
+  printf -- '- artifact content: summarized because file is %s bytes (>16000 bytes comment safety cap)\n\n' "$bytes"
+  printf '~~~markdown\n'
+  printf '[head]\n'
+  head -c 12000 "$abs" 2>/dev/null || true
+  printf '\n\n[tail]\n'
+  tail -c 4000 "$abs" 2>/dev/null || true
+  printf '\n~~~\n\n'
+}
+
+pt_build_terminal_failure_diagnostics() {
+  local stage="$1"
+  local repo_dir="${REPO_DIR:-$(pwd)}"
+  local spec_rel="${SPEC_DIR_REL:-docs/specs/${NUMBER:-unknown}}"
+  local review_rel="$spec_rel/review-notes.md"
+  local debugger_rel="$spec_rel/debugger-notes.md"
+  local artifact_rels=("$review_rel" "$debugger_rel")
+
+  local branch="unknown"
+  branch=$(git -C "$repo_dir" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+  [ -n "$branch" ] || branch="${BRANCH:-unknown}"
+
+  local local_sha="unknown"
+  local_sha=$(git -C "$repo_dir" rev-parse --verify HEAD 2>/dev/null || true)
+  [ -n "$local_sha" ] || local_sha="unavailable"
+
+  local origin_sha="unavailable"
+  local origin_reason=""
+  if [ "$branch" != "unknown" ] && origin_sha=$(git -C "$repo_dir" rev-parse --verify "refs/remotes/origin/${branch}^{commit}" 2>/dev/null); then
+    :
+  else
+    origin_sha="unavailable"
+    origin_reason="refs/remotes/origin/${branch} not found"
+  fi
+
+  local ahead_count="unavailable"
+  local ahead_reason=""
+  if [ "$origin_sha" != "unavailable" ]; then
+    ahead_count=$(git -C "$repo_dir" rev-list --count "${origin_sha}..HEAD" 2>/dev/null || true)
+    if ! [[ "$ahead_count" =~ ^[0-9]+$ ]]; then
+      ahead_count="unavailable"
+      ahead_reason="git rev-list failed"
+    fi
+  else
+    ahead_reason="origin branch HEAD unavailable"
+  fi
+
+  local artifact_states_before=""
+  local rel
+  for rel in "${artifact_rels[@]}"; do
+    artifact_states_before="${artifact_states_before}$(pt_artifact_state_line "$repo_dir" "$rel")"$'\n'
+  done
+
+  local existing_paths=()
+  for rel in "${artifact_rels[@]}"; do
+    if [ -e "$repo_dir/$rel" ]; then
+      existing_paths+=("$rel")
+    fi
+  done
+
+  local preservation_status="no-artifacts"
+  local preservation_detail="review-notes.md / debugger-notes.md were not present."
+  local diagnostic_commit_sha=""
+  local fallback_required="no"
+  local failure_detail=""
+  local push_rc=0
+  local commit_rc=0
+  local add_rc=0
+  local should_push_existing_ahead="no"
+
+  if [ "$ahead_count" != "unavailable" ] && [ "$ahead_count" != "0" ]; then
+    should_push_existing_ahead="yes"
+  fi
+
+  if [ "${#existing_paths[@]}" -gt 0 ]; then
+    local artifact_status
+    artifact_status=$(git -C "$repo_dir" status --porcelain -- "${existing_paths[@]}" 2>/dev/null || true)
+    if [ -n "$artifact_status" ]; then
+      if git -C "$repo_dir" add -- "${existing_paths[@]}" >/dev/null 2>&1; then
+        if git -C "$repo_dir" diff --cached --quiet -- "${existing_paths[@]}" 2>/dev/null; then
+          preservation_status="already-staged-clean"
+          preservation_detail="artifact files existed but no staged diagnostic diff was available."
+        else
+          if git -C "$repo_dir" commit -m "chore(watcher): preserve terminal diagnostics for #${NUMBER:-unknown}" -- "${existing_paths[@]}" >/dev/null 2>&1; then
+            diagnostic_commit_sha=$(git -C "$repo_dir" rev-parse --verify HEAD 2>/dev/null || true)
+            if [ "$branch" != "unknown" ] && git -C "$repo_dir" push origin "$branch" >/dev/null 2>&1; then
+              preservation_status="diagnostic-commit-pushed"
+              preservation_detail="diagnostic artifact commit was created and pushed to origin/${branch}."
+            else
+              push_rc=$?
+              preservation_status="diagnostic-commit-push-failed-fallback"
+              preservation_detail="diagnostic commit was created locally but push to origin/${branch} failed."
+              fallback_required="yes"
+              failure_detail="git push exit code: ${push_rc}"
+            fi
+          else
+            commit_rc=$?
+            preservation_status="diagnostic-commit-failed-fallback"
+            preservation_detail="diagnostic artifact commit failed; artifact content fallback is included in this comment."
+            fallback_required="yes"
+            failure_detail="git commit exit code: ${commit_rc}"
+          fi
+        fi
+      else
+        add_rc=$?
+        preservation_status="diagnostic-add-failed-fallback"
+        preservation_detail="diagnostic artifact staging failed; artifact content fallback is included in this comment."
+        fallback_required="yes"
+        failure_detail="git add exit code: ${add_rc}"
+      fi
+    else
+      preservation_status="artifacts-already-committed-or-clean"
+      preservation_detail="artifact files existed but had no untracked or uncommitted changes at diagnostic time."
+    fi
+  fi
+
+  local should_attempt_branch_push="no"
+  case "$preservation_status" in
+    artifacts-already-committed-or-clean|no-artifacts)
+      should_attempt_branch_push="yes"
+      ;;
+  esac
+
+  if [ "$fallback_required" = "no" ] \
+     && [ "$should_push_existing_ahead" = "yes" ] \
+     && [ "$should_attempt_branch_push" = "yes" ] \
+     && [ "$branch" != "unknown" ]; then
+    if git -C "$repo_dir" push origin "$branch" >/dev/null 2>&1; then
+      case "$preservation_status" in
+        artifacts-already-committed-or-clean)
+          preservation_status="branch-ahead-pushed"
+          preservation_detail="artifact files were already committed or clean; existing ahead commits were pushed to origin/${branch}."
+          ;;
+        no-artifacts)
+          preservation_status="branch-ahead-pushed-no-artifacts"
+          preservation_detail="no diagnostic artifacts were present; existing ahead commits were pushed to origin/${branch}."
+          ;;
+      esac
+    else
+      push_rc=$?
+      case "$preservation_status" in
+        artifacts-already-committed-or-clean)
+          preservation_status="branch-ahead-push-failed-fallback"
+          preservation_detail="artifact files were already committed or clean, but existing ahead commits could not be pushed to origin/${branch}; artifact content fallback is included in this comment."
+          fallback_required="yes"
+          ;;
+        no-artifacts)
+          preservation_status="branch-ahead-push-failed-no-artifacts"
+          preservation_detail="no diagnostic artifacts were present, and existing ahead commits could not be pushed to origin/${branch}."
+          ;;
+      esac
+      failure_detail="git push exit code: ${push_rc}"
+    fi
+  fi
+
+  local final_local_sha="unknown"
+  final_local_sha=$(git -C "$repo_dir" rev-parse --verify HEAD 2>/dev/null || true)
+  [ -n "$final_local_sha" ] || final_local_sha="unavailable"
+
+  local final_origin_sha="unavailable"
+  local final_origin_reason=""
+  if [ "$branch" != "unknown" ] && final_origin_sha=$(git -C "$repo_dir" rev-parse --verify "refs/remotes/origin/${branch}^{commit}" 2>/dev/null); then
+    :
+  else
+    final_origin_sha="unavailable"
+    final_origin_reason="refs/remotes/origin/${branch} not found after preservation"
+  fi
+
+  local final_ahead_count="unavailable"
+  local final_ahead_reason=""
+  if [ "$final_origin_sha" != "unavailable" ]; then
+    final_ahead_count=$(git -C "$repo_dir" rev-list --count "${final_origin_sha}..HEAD" 2>/dev/null || true)
+    if ! [[ "$final_ahead_count" =~ ^[0-9]+$ ]]; then
+      final_ahead_count="unavailable"
+      final_ahead_reason="git rev-list failed after preservation"
+    fi
+  else
+    final_ahead_reason="origin branch HEAD unavailable after preservation"
+  fi
+
+  cat <<EOF
+## Terminal failure diagnostics
+
+- stage: \`${stage}\`
+- current branch: \`${branch}\`
+- local HEAD SHA: \`${local_sha}\`
+- origin branch HEAD SHA: \`${origin_sha}\`${origin_reason:+ (${origin_reason})}
+- ahead count: \`${ahead_count}\`${ahead_reason:+ (${ahead_reason})}
+- worktree path: \`${repo_dir}\`
+
+### Relevant artifact state at failure time
+
+${artifact_states_before}
+### Diagnostic artifact preservation
+
+- status: \`${preservation_status}\`
+- detail: ${preservation_detail}
+EOF
+
+  if [ -n "$diagnostic_commit_sha" ]; then
+    printf -- "%s\n" "- diagnostic commit SHA: \`${diagnostic_commit_sha}\`"
+  fi
+  if [ -n "$failure_detail" ]; then
+    printf -- "%s\n" "- diagnostic commit failure: \`${failure_detail}\`"
+  fi
+
+  cat <<EOF
+- fallback issue comment: \`${fallback_required}\`
+
+### Post-preservation push state
+
+- local HEAD SHA after preservation: \`${final_local_sha}\`
+- origin branch HEAD SHA after preservation: \`${final_origin_sha}\`${final_origin_reason:+ (${final_origin_reason})}
+- ahead count after preservation: \`${final_ahead_count}\`${final_ahead_reason:+ (${final_ahead_reason})}
+EOF
+
+  if [ "$fallback_required" = "yes" ] || [ "${#existing_paths[@]}" -eq 0 ]; then
+    cat <<EOF
+
+### Artifact content fallback
+
+EOF
+    if [ "${#existing_paths[@]}" -eq 0 ]; then
+      printf -- '- review-notes.md / debugger-notes.md were unavailable at failure time.\n'
+    else
+      for rel in "${artifact_rels[@]}"; do
+        pt_artifact_content_block "$repo_dir" "$rel"
+      done
+    fi
+  fi
+
+  return 0
+}
+
 # ─── Stage C 完了直後の PR 実在 verify ヘルパー (Issue #108 / #110) ───
 #
 # Stage C の Codex 実行が return code 0 で終了した直後に、対象 branch を head と
@@ -5862,6 +6161,16 @@ verify_stagec_pr_or_retry() {
 mark_issue_failed() {
   local stage="$1"
   local extra_body="$2"
+
+  if [[ "$stage" == per-task-* ]]; then
+    local _pt_terminal_diagnostic=""
+    _pt_terminal_diagnostic=$(pt_build_terminal_failure_diagnostics "$stage" 2>/dev/null || true)
+    if [ -n "$_pt_terminal_diagnostic" ]; then
+      extra_body="${extra_body}
+
+${_pt_terminal_diagnostic}"
+    fi
+  fi
 
   # run サマリ: 最終遷移を codex-failed として記録（Req 7.1, 7.2）。変数代入のみの副作用で
   # ラベル遷移 / exit code / 既存ログ行に影響しない（NFR 1.1, 1.2）。REQUIRED_MODULES で
