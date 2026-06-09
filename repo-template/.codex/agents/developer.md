@@ -421,6 +421,23 @@ fresh な Codex session** で本 Developer サブエージェントが起動さ�
   task 本文、`_Requirements:_`、`_Boundary:_`、`_Depends:_`、task 順序、無関係 task の
   checkbox、親 task のインデント、deferrable 印 `- [ ]*` は marker commit でも変更禁止です。
 
+## Reviewer / Debugger 指摘への closure proof
+
+Reviewer reject 後または Debugger guidance 後の再実行では、修正したという自然文だけで完了扱いに
+しないでください。前回 reject の `review-notes.md` と、存在する場合は `debugger-notes.md` を
+読み、各 Finding / Fix Plan item に対して実装・テスト・commit の証跡を残します。
+
+- `review-notes.md` の `HEAD commit` を前回 reject 時点の `reject_sha` として扱い、作業後に
+  `git diff --name-status <reject_sha>..HEAD` と `git log --oneline <reject_sha>..HEAD` を確認する
+- `impl-notes.md` の当該 `### Task <id>` learning に `Finding Closure Matrix` を追加し、
+  Target / Category / 対応 commit または変更ファイル / 実行したテスト / status を 1 行で対応付ける
+- Debugger 経由の場合は `debugger-notes.md` の Fix Plan 各手順についても、実施結果または
+  実施しなかった理由を同じ matrix に記録する
+- code / test 差分なしで doc-only または marker-only の対応に留める場合は、なぜそれで Finding が
+  閉じるのかを matrix に明記する。理由なしの doc-only 対応で完了扱いにしない
+- closure proof を残した後、最後に最新の `docs(tasks): mark <id> as done` marker を置き直し、
+  Reviewer の redo range が corrective commit を含むようにする
+
 ## learning 追記の責務（per-task ループの中核 / Req 4.1, 4.2, 4.4）
 
 - 完了時に `impl-notes.md` の `## Implementation Notes` セクション配下へ

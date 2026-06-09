@@ -3387,7 +3387,22 @@ ${context_map_block}
    - 書き換え禁止領域: タスク本文 / \`_Requirements:_\` / \`_Boundary:_\` / \`_Depends:_\` /
      タスク順序 / 親タスクのインデント / deferrable 印 \`- [ ]*\`
 
-3. **learning 追記**（per-task ループの中核 / Req 4.1, 4.2, 4.4）:
+3. **Reviewer / Debugger 指摘への closure proof**:
+   - \`${SPEC_DIR_REL}/review-notes.md\` に reject Findings がある場合、前回 reject の
+     \`HEAD commit\` を \`reject_sha\` として扱い、作業後に以下を確認する:
+     \`\`\`bash
+     git diff --name-status <reject_sha>..HEAD
+     git log --oneline <reject_sha>..HEAD
+     \`\`\`
+   - \`${SPEC_DIR_REL}/debugger-notes.md\` がある場合は、Fix Plan の各手順に対する実施結果も
+     同じ task learning に記録する
+   - \`### Task ${task_id}\` の learning には、\`Finding Closure Matrix\` を追加し、
+     Reviewer の各 Finding ごとに Target / Category / 変更ファイルまたは commit / 実行したテスト /
+     status を 1 行で対応付ける
+   - code / test 差分なしで doc-only または marker-only の対応に留める場合は、その理由を
+     \`Finding Closure Matrix\` に明記する。理由なしの doc-only 対応で完了扱いにしない
+
+4. **learning 追記**（per-task ループの中核 / Req 4.1, 4.2, 4.4）:
    - \`${SPEC_DIR_REL}/impl-notes.md\` の \`## Implementation Notes\` セクション配下に
      \`### Task ${task_id}\` 見出しを **追加**（既存セクションが無ければ作成）し、本 task の
      learning を簡潔に記録する:
@@ -3473,6 +3488,23 @@ reviewer は **本 range のみ** を判定対象としてください。渡さ�
 の外側にある commit は、この per-task review では判定しません。HEAD 全体の観点は
 最終 Stage B Reviewer が別途担当します。ログ上の \`task\` / \`round\` / \`range\` とこの prompt の
 SHA が一致していることを確認してください。
+
+### stale range fallback guard
+
+watcher は Reviewer 起動前に \`ROUND > 1\` の \`range_end_sha\` が現在の \`HEAD\` と一致することを
+検証します。通常この guard により stale range のまま Reviewer が起動されることはありません。
+ただし、self-hosting 中の旧 watcher process や手動実行で guard をすり抜けた場合に備え、
+reviewer 自身も以下を最初に確認してください:
+
+\`\`\`bash
+git rev-parse HEAD
+\`\`\`
+
+\`ROUND > 1\` かつ \`range_end_sha\` が現在の \`HEAD\` と一致しない場合、AC 未カバー /
+missing test / boundary 逸脱の通常判定を続けず、\`${SPEC_DIR_REL}/review-notes.md\` に
+\`orchestration defect: stale per-task reviewer range\` と明記して \`RESULT: reject\` で終了してください。
+この reject は Developer の AC 不足ではなく、watcher が corrective commit を含まない range を
+渡した orchestration defect として扱います。
 ${context_map_block}
 
 ## 必読ファイル
@@ -3604,6 +3636,55 @@ run_per_task_implementer() {
   esac
 }
 
+# ─── pt_guard_reviewer_range_fresh <task_id> <round> <range_end_sha> ───
+#
+# per-task Reviewer redo round の起動前に、判定対象 range の終端が現在の HEAD に届いている
+# ことを検証する。Reviewer が古い marker までの差分だけを見て corrective commit を見落とす
+# stale range 事故を AC reject として消費しないための fail-fast guard（Issue #44）。
+#
+# round=1 は既存挙動維持のため対象外。round が数値でない場合も fail-open して既存の
+# Reviewer / parser 側に委ねる。
+#
+# 戻り値:
+#   0 = fresh / guard 対象外
+#   1 = stale（呼び出し側は Reviewer を起動せず rc=5）
+pt_guard_reviewer_range_fresh() {
+  local task_id="$1"
+  local round="$2"
+  local range_end="$3"
+
+  case "$round" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  if [ "$round" -le 1 ]; then
+    return 0
+  fi
+
+  local head_sha
+  head_sha=$(git rev-parse HEAD 2>/dev/null || true)
+  if [ -z "$head_sha" ]; then
+    pt_log "task=$task_id reviewer start round=$round result=error reason=stale-diff-range detail=head-resolve-failed range_end=${range_end}" >> "$LOG"
+    PT_STALE_RANGE_END="$range_end"
+    PT_STALE_HEAD_SHA="(resolve failed)"
+    PT_STALE_OMITTED_COUNT="unknown"
+    return 1
+  fi
+
+  if [ "$range_end" = "$head_sha" ]; then
+    return 0
+  fi
+
+  local omitted_count
+  omitted_count=$(git rev-list --count "${range_end}..${head_sha}" 2>/dev/null || true)
+  [ -n "$omitted_count" ] || omitted_count="unknown"
+
+  PT_STALE_RANGE_END="$range_end"
+  PT_STALE_HEAD_SHA="$head_sha"
+  PT_STALE_OMITTED_COUNT="$omitted_count"
+  pt_log "task=$task_id reviewer start round=$round result=error reason=stale-diff-range detail=orchestration-defect range_end=${range_end} head=${head_sha} omitted_commits=${omitted_count}" >> "$LOG"
+  return 1
+}
+
 # ─── run_per_task_reviewer <task_id> <round> ───
 #
 # 当該 task の diff range のみを対象に fresh Codex session で Reviewer を起動。
@@ -3616,6 +3697,7 @@ run_per_task_implementer() {
 #   2  = 異常終了（codex crash / parse 失敗 = 装飾起因 parse 失敗）
 #   3  = diff range 解決失敗（marker commit が単記でも連記でも見つからない / Issue #164）
 #   4  = ファイル不在で 1 回限定リトライ後も生成されず（Issue #296 Req 2 / Req 4.2 で導入）
+#   5  = stale diff range guard（round>1 で range_end が HEAD ではないため Reviewer 起動前停止）
 #   99 = quota 超過
 #
 # 戻り値 2 / 3 / 4 の使い分け:
@@ -3628,8 +3710,12 @@ run_per_task_implementer() {
 #   - rc=4: review-notes.md がファイル不在で 1 回限定リトライ後も生成されず（Issue #296 Req 2.3 /
 #     Req 4.2）。呼び出し側は `per-task-reviewer-missing-file` カテゴリで `codex-failed` 付与し、
 #     NFR 2.2 に従い装飾起因 parse 失敗（rc=2）と grep で区別可能な reason を出力する。
+#   - rc=5: codex プロセス起動前に redo round の range_end が HEAD に届いていないことを検出した。
+#     呼び出し側は `per-task-reviewer-stale-range` カテゴリで `codex-failed` 付与し、AC reject
+#     ではなく watcher orchestration defect として人間に委ねる。
 #
-# Requirements: 3.1, 3.2, 3.3, NFR 2.1, NFR 2.2, NFR 2.3, Issue #164 Req 4.1, 4.2, 4.3, NFR 2.2
+# Requirements: 3.1, 3.2, 3.3, NFR 2.1, NFR 2.2, NFR 2.3, Issue #164 Req 4.1, 4.2, 4.3, NFR 2.2,
+#               Issue #44
 run_per_task_reviewer() {
   local task_id="$1"
   local round="$2"
@@ -3646,6 +3732,10 @@ run_per_task_reviewer() {
   if [ -z "$range_start" ] || [ -z "$range_end" ]; then
     pt_log "task=$task_id reviewer start round=$round result=error reason=diff-range-empty detail=resolved-but-empty-pair" >> "$LOG"
     return 3
+  fi
+
+  if ! pt_guard_reviewer_range_fresh "$task_id" "$round" "$range_end"; then
+    return 5
   fi
 
   # prev_result（round=2 のみ意味あり）
@@ -3995,6 +4085,49 @@ EOF
   body="${body}
 
 問題を解決してから \`codex-failed\` ラベルを外してください。"
+
+  gh issue comment "$NUMBER" --repo "$REPO" --body "$body" || true
+}
+
+# ─── pt_mark_stale_diff_range_failed <task_id> <round> ───
+#
+# per-task Reviewer redo round の stale range guard が発火したとき、通常の Reviewer reject
+# ではなく watcher orchestration defect として `codex-failed` へ遷移させる（Issue #44）。
+pt_mark_stale_diff_range_failed() {
+  local task_id="$1"
+  local round="$2"
+  local hostname_val
+  hostname_val=$(hostname)
+
+  local range_end="${PT_STALE_RANGE_END:-unknown}"
+  local head_sha="${PT_STALE_HEAD_SHA:-unknown}"
+  local omitted_count="${PT_STALE_OMITTED_COUNT:-unknown}"
+
+  gh issue edit "$NUMBER" --repo "$REPO" \
+    --remove-label "$LABEL_CLAIMED" --remove-label "$LABEL_PICKED" --add-label "$LABEL_FAILED" || true
+
+  local body
+  read -r -d '' body <<EOF || true
+⚠️ 自動開発が失敗しました（${hostname_val} / モード: $MODE / 失敗 stage: per-task-reviewer-stale-range / round=${round}）
+
+## 失敗カテゴリ
+- カテゴリ: \`per-task-reviewer-stale-range\`
+- 対象 task ID: \`${task_id}\`
+- range_end_sha: \`${range_end}\`
+- current HEAD: \`${head_sha}\`
+- omitted commits: \`${omitted_count}\`
+
+## 意味
+per-task Reviewer の redo round で、Reviewer に渡す diff range の終端が現在の HEAD に届いていません。
+この状態で Reviewer を起動すると、Reviewer / Debugger 後の corrective commit を見落としたまま
+AC 未カバーとして reject する可能性があるため、Reviewer を起動せず watcher orchestration defect
+として停止しました。
+
+## 次の手順
+1. watcher ログ \`$LOG\` の \`reason=stale-diff-range\` 行を確認
+2. \`git log --oneline ${range_end}..${head_sha}\` で omitted commit が corrective commit か確認
+3. watcher を最新 install 済みか確認し、必要なら \`install.sh\` 再実行後に \`codex-failed\` を外して再 pickup
+EOF
 
   gh issue comment "$NUMBER" --repo "$REPO" --body "$body" || true
 }
@@ -4367,6 +4500,12 @@ run_per_task_loop() {
                   pt_mark_diff_range_resolve_failed "$task_id" 3
                   return 1
                   ;;
+                5)
+                  dbg_log "trigger=round2-reject issue=#${NUMBER} task=${task_id} round3 result=stale-diff-range" >> "$LOG"
+                  echo "❌ #$NUMBER: per-task Reviewer (task=$task_id, round=3) stale diff range 検出 → codex-failed (per-task-reviewer-stale-range)" | tee -a "$LOG"
+                  pt_mark_stale_diff_range_failed "$task_id" 3
+                  return 1
+                  ;;
                 4)
                   # Issue #296 Req 2.3 / Req 4.2, 4.3 / NFR 2.2: ファイル不在 + 1 回限定リトライ後も生成されず
                   # → `per-task-reviewer-missing-file` カテゴリで `codex-failed`（round=3 / Debugger 経由）。
@@ -4412,6 +4551,11 @@ run_per_task_loop() {
             pt_mark_diff_range_resolve_failed "$task_id" 2
             return 1
             ;;
+          5)
+            echo "❌ #$NUMBER: per-task Reviewer (task=$task_id, round=2) stale diff range 検出 → codex-failed (per-task-reviewer-stale-range)" | tee -a "$LOG"
+            pt_mark_stale_diff_range_failed "$task_id" 2
+            return 1
+            ;;
           4)
             # Issue #296 Req 2.3 / Req 4.2 / NFR 2.2: ファイル不在 + 1 回限定リトライ後も生成されず
             # → `per-task-reviewer-missing-file` カテゴリで `codex-failed`（round=2）。
@@ -4430,6 +4574,11 @@ run_per_task_loop() {
         # diff-range-resolve-failed (Issue #164) → 専用の復旧手順付き失敗ハンドラ
         echo "❌ #$NUMBER: per-task Reviewer (task=$task_id, round=1) diff range 解決失敗 → codex-failed (diff-range-resolve-failed)" | tee -a "$LOG"
         pt_mark_diff_range_resolve_failed "$task_id" 1
+        return 1
+        ;;
+      5)
+        echo "❌ #$NUMBER: per-task Reviewer (task=$task_id, round=1) stale diff range 検出 → codex-failed (per-task-reviewer-stale-range)" | tee -a "$LOG"
+        pt_mark_stale_diff_range_failed "$task_id" 1
         return 1
         ;;
       4)

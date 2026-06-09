@@ -4692,6 +4692,10 @@ per-task Reviewer の判定対象 range は `pt_resolve_diff_range` が解決す
 - 選択済み marker の後ろに commit が存在する場合、watcher は marker が `HEAD` の ancestor であることを
   検証し、安全に解けるときは `range_end_sha=HEAD` に補正して marker 後 commit も Reviewer range に
   含めます
+- redo round（round 2 以降）では、Reviewer 起動直前に `range_end_sha` が現在の `HEAD` と一致することを
+  検証します。一致しない場合は Reviewer を起動せず、`per-task-reviewer-stale-range` として
+  `codex-failed` に停止します。これは Reviewer / Debugger 後の corrective commit を見落としたまま
+  AC 未カバーとして reject する事故を防ぐための orchestration guard です
 - 安全に解けない場合は Reviewer を起動せず、`diff-range-resolve-failed` として `codex-failed`
   相当の人間復旧可能な状態で停止し、task ID、marker、affected range、復旧操作を判断できる診断を
   Issue コメントとログに残します
@@ -4700,6 +4704,22 @@ Reviewer prompt には start / end SHA が明示されます。Reviewer はそ�
 per-task review では判断せず、HEAD 全体の確認は全 task 完了後の Stage B Reviewer が担当します。
 この安全弁は古い marker の後ろに retry 修正 commit が残った場合の under-review を防ぐためのもので、
 新しい env var、label、exit code、外部サービス、runtime dependency は追加しません。
+
+> **self-hosting watcher の hot reload 限界**: idd-codex 自身を修正している最中、現在実行中の
+> watcher bash process は起動時に読み込んだ関数定義を使い続けます。watcher script や module を
+> 同じ run の途中で修正しても、その run の後段 Reviewer / PjM には反映されません。merge 後は
+> `install.sh` を再実行し、次の cron / launchd tick で新しい process として起動されたときに
+> 新ロジックが有効になります。stale range guard は新 process 以降の防御であり、旧 process が
+> すでに開始済みの同一 cycle を hot reload するものではありません。
+
+### Reviewer / Debugger redo の closure proof
+
+per-task Implementer が Reviewer reject または Debugger guidance 後に再起動された場合、Developer は
+`review-notes.md` の `HEAD commit` を前回 reject 時点の `reject_sha` として扱い、作業後に
+`git diff --name-status <reject_sha>..HEAD` と `git log --oneline <reject_sha>..HEAD` を確認します。
+`impl-notes.md` の当該 `### Task <id>` には `Finding Closure Matrix` を残し、各 Finding / Fix Plan
+item に対して変更ファイルまたは commit、実行したテスト、status を対応付けます。code / test 差分なしで
+doc-only または marker-only 対応に留める場合は、その理由を明記します。
 
 ### learnings 前方伝播
 
