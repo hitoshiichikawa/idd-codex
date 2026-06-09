@@ -49,3 +49,9 @@
 - 重要な判断: `bash local-watcher/test/per_task_marker_review_range_test.sh` は 24 PASS / 0 FAIL で成功し、`diff -r .codex/agents repo-template/.codex/agents` と `diff -r .codex/rules repo-template/.codex/rules` は差分なしだった。
 - 重要な判断: prompt-only assertion は発生せず、task 6 の確認は shell fixture と diff 検証で完結した。
 - 残存課題: なし。
+
+### Reviewer round 1 reject 対応
+
+- 採用方針: Issue #23 の File Structure Plan 外に含まれていた差分を除外し、#23 の watcher、agent prompt、README、regression fixture、spec 成果物だけが `main..HEAD` に残る状態へ戻した。
+- 重要な判断: `quota-aware.sh`、既存 test / fixture、`docs/specs/26--bug-per-task-reviewer-task-marker-tasks/` は Issue #23 の境界外だったため、削除や coverage 変更をこのブランチでは扱わない。
+- 検証方針: 是正後に `git diff --name-status main..HEAD` で境界外パスが消えていることと、既存の shellcheck / per-task range regression / root-repo-template 同期 diff が通ることを確認する。

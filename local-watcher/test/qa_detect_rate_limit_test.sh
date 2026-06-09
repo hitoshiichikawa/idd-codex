@@ -176,6 +176,20 @@ else
   assert_eq "usage-limit-with-reset message retained (Issue #12 Req 6)" "true" "false"
 fi
 
+out=$(detect_last_line "usage-limit-time-only-reset.jsonl")
+assert_eq "usage-limit-time-only-reset path (Issue #31)" \
+  "usage_limit_fatal" \
+  "$(printf '%s\n' "$out" | awk -F '\t' '{print $1}')"
+assert_eq "usage-limit-time-only-reset detector epoch is empty before wrapper parse (Issue #31)" \
+  "" \
+  "$(printf '%s\n' "$out" | awk -F '\t' '{print $2}')"
+message_field="$(printf '%s\n' "$out" | awk -F '\t' '{print $3}')"
+if printf '%s\n' "$message_field" | grep -q "try again at 11:26 AM"; then
+  assert_eq "usage-limit-time-only-reset message retained (Issue #31)" "true" "true"
+else
+  assert_eq "usage-limit-time-only-reset message retained (Issue #31)" "true" "false"
+fi
+
 out=$(detect_last_line "usage-limit-no-reset.jsonl")
 assert_eq "usage-limit-no-reset path (Issue #12 Option B)" \
   "usage_limit_fatal" \
