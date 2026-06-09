@@ -32,4 +32,4 @@
 
 - `run_debugger_stage` が `task_id` 付きで `debugger-failed` / `debugger-notes-invalid` に遷移する場合も、failure comment 生成前に `pt_build_terminal_failure_diagnostics` を実行するよう修正した。
 - Issue comment の失敗 stage は既存契約どおり `debugger-failed` / `debugger-notes-invalid` のまま維持し、診断ブロック内の stage は `per-task-debugger-failed` / `per-task-debugger-notes-invalid` として per-task terminal failure であることを識別できるようにした。
-- `local-watcher/test/per_task_terminal_failure_diagnostics_test.sh` に `run_debugger_stage "round2-reject" "1.2"` の codex 非 0 経路と `run_debugger_stage "blocked" "1.2"` の invalid `debugger-notes.md` 経路を追加し、diagnostic block、artifact state、diagnostic commit push を Issue comment と fake origin で検証した。
+- `local-watcher/test/per_task_terminal_failure_diagnostics_test.sh` に `run_debugger_stage "round2-reject" "1.2"` の codex 非 0 経路と、`run_per_task_loop` から `run_debugger_stage "blocked" "1.2"` に入る invalid `debugger-notes.md` 経路を追加し、diagnostic block、artifact state、diagnostic commit push を Issue comment と fake origin で検証した。
