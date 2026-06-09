@@ -40,9 +40,15 @@ eval "$(extract_function "$WATCHER_SH" "pt_reject_category_needs_test_diff")"
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$WATCHER_SH" "pt_build_repeated_reject_warning")"
 # shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$WATCHER_SH" "pt_record_repeated_reject_warning_artifact")"
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$WATCHER_SH" "pt_extract_learnings")"
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$WATCHER_SH" "build_per_task_implementer_prompt")"
+# shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$WATCHER_SH" "build_per_task_reviewer_prompt")"
 
-for fn in pt_collect_reject_fingerprints pt_collect_changed_test_paths pt_build_repeated_reject_warning build_per_task_reviewer_prompt; do
+for fn in pt_collect_reject_fingerprints pt_collect_changed_test_paths pt_build_repeated_reject_warning pt_record_repeated_reject_warning_artifact pt_extract_learnings build_per_task_implementer_prompt build_per_task_reviewer_prompt; do
   if ! declare -F "$fn" >/dev/null; then
     echo "ERROR: $fn not loaded" >&2
     exit 2
@@ -99,9 +105,10 @@ REPO="owner/test"
 NUMBER="37"
 TITLE="[Enhancement] per-task repeated reject guard"
 URL="https://github.com/owner/test/issues/37"
+BODY="Issue body"
 BRANCH="codex/issue-37-repeated-reject"
 BASE_BRANCH="main"
-export LOG REPO_DIR SPEC_DIR_REL REPO NUMBER TITLE URL BRANCH BASE_BRANCH
+export LOG REPO_DIR SPEC_DIR_REL REPO NUMBER TITLE URL BODY BRANCH BASE_BRANCH
 
 cm_build_prompt_block() {
   return 0
@@ -187,6 +194,31 @@ assert_contains "warning is logged for operator" "repeated-reject-warning next_r
 
 prompt=$(build_per_task_reviewer_prompt "4" "$base_sha" "$test_sha" "2" "RESULT: reject" "$warning")
 assert_contains "reviewer prompt includes warning block" "## Repeated Reject Warning" "$prompt"
+
+impl_notes="$REPO_DIR/$SPEC_DIR_REL/impl-notes.md"
+cat >"$impl_notes" <<'EOF'
+# Implementation Notes
+
+## Implementation Notes
+
+### Task 4
+
+- 採用方針: fixture baseline。
+EOF
+pt_record_repeated_reject_warning_artifact "4" "2" "$warning" "$impl_notes"
+impl_notes_body=$(cat "$impl_notes")
+assert_contains "developer artifact has warning heading" "Repeated Reject Warning（Task 4 / before Reviewer round 2）" "$impl_notes_body"
+assert_contains "developer artifact includes missing test fingerprint" "Category: \`missing test\`; Target requirement: \`5.2\`" "$impl_notes_body"
+assert_contains "developer artifact includes AC fingerprint" "Category: \`AC 未カバー\`; Target requirement: \`5.3\`" "$impl_notes_body"
+assert_contains "developer artifact includes changed test none" "Changed test paths since prior reject: \`(none)\`" "$impl_notes_body"
+assert_contains "developer artifact is logged for operator" "repeated-reject-warning developer-artifact=impl-notes next_round=2" "$(cat "$LOG")"
+
+pt_record_repeated_reject_warning_artifact "4" "2" "$warning" "$impl_notes"
+artifact_count=$(grep -Fc "idd-codex:repeated-reject-warning task=4 round=2" "$impl_notes")
+assert_eq "developer artifact is replaced idempotently" "2" "$artifact_count"
+
+impl_prompt=$(build_per_task_implementer_prompt "4")
+assert_contains "implementer prompt includes developer-visible warning artifact" "Repeated Reject Warning（Task 4 / before Reviewer round 2）" "$impl_prompt"
 
 : >"$LOG"
 warning=$(pt_build_repeated_reject_warning "4" "2" "$fingerprints" "$changed_tests" || true)

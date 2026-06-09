@@ -40,4 +40,8 @@
   - fingerprint は `review-notes.md` の Findings から `category + target` TSV として抽出し、warning 対象は `missing test` / `AC 未カバー` に限定した。
   - test 差分は `local-watcher/test/*` / `tests/*` / `*/test/*` / `*_test.sh` / `*test*.sh` の path heuristic で判定し、新規 dependency は追加しなかった。
   - round 2 前は round 1 reject target の test 差分なし risk、round 3 前は round 1 / 2 の overlap かつ test 差分なしの場合だけ warning を注入する。
+- Reviewer round 1 reject 対応:
+  - warning-only guard の診断を Reviewer prompt だけでなく、watcher 生成の Developer-visible artifact として `impl-notes.md` に marker 付きで記録するようにした。
+  - marker 付き section は同じ task / round で置換されるため、watcher 再実行時に重複しない。
+  - fixture では artifact 本文と、`pt_extract_learnings` 経由で次の Implementer prompt に warning が含まれることを検証した。
 - 残存課題: task 5 で #23 shape の Req 5.2 / 5.3 regression fixture を完成させる必要がある。
