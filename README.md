@@ -4534,6 +4534,7 @@ cron / launchd の `REPO=... REPO_DIR=...` に `PER_TASK_LOOP_ENABLED=true` を 
 |---|---|---|---|
 | `PER_TASK_LOOP_ENABLED` | `false` | 試運転時のみ `true` | per-task ループの opt-in gate。`=true` 厳密一致のみ有効（`True` / `1` / typo 等は `false` 等価） |
 | `PER_TASK_MAX_TASKS` | `0`（無制限） | 異常検知時のみ正の整数 | 1 ループで処理する task 件数の上限（暴走防止用安全装置）。`0` / 空 / 未設定で無制限 |
+| `CONTEXT_MAP_ENABLED` | `false` | token 消費調査時のみ `true` | per-task Implementer / Reviewer 起動前に `docs/specs/<N>-<slug>/context-map.md` を生成し、prompt に短い探索地図として注入する opt-in gate。`=true` 厳密一致のみ有効 |
 
 既存 env var（`DEV_MODEL` / `REVIEWER_MODEL` / `DEV_MAX_TURNS` / `REVIEWER_MAX_TURNS` /
 `IMPL_RESUME_*` / `STAGE_CHECKPOINT_*` / `QUOTA_AWARE_*` 等）の名前・既定値・意味は
@@ -4554,6 +4555,9 @@ opt-in した状態で `impl` / `impl-resume` モードが Stage A に入ると�
    `sort -V` で numeric 階層昇順に並べる（`1.10` > `1.2` を保証 / deferrable `- [ ]*` は除外）
 2. **task ごとのループ**: 各 task について以下を順次実行:
    - `### Task <id>` learnings を `impl-notes.md` から抽出して prompt に inline 注入
+   - `CONTEXT_MAP_ENABLED=true` の場合のみ、watcher が `tasks.md` の対象 task block、
+     `_Boundary:_`、diff range、`git grep` で見つかる anchor 関連テストから
+     `context-map.md` を生成し、Implementer / Reviewer prompt に inline 注入する
    - fresh Codex session で Implementer 起動（DEV_MODEL / DEV_MAX_TURNS を流用）
    - Implementer は **1 task のみ**実装し、`- [ ]` → `- [x]` 化 + `docs(tasks): mark <id> as done`
      専用 commit を積み、`impl-notes.md` の `## Implementation Notes` 配下に
@@ -4607,6 +4611,31 @@ opt-in した状態で `impl` / `impl-resume` モードが Stage A に入ると�
 per-task loop では必須未完了 task の抽出・全 task 完了ゲートから除外されます。
 deferred test task を使う場合でも、先行 task の `_Requirements:_` には未実施の coverage /
 failure / safety AC を残さず、coverage task 側で実装・テスト・レビュー可能な AC として扱います。
+
+### context-map による探索 read 削減（試験機能 / #34）
+
+`CONTEXT_MAP_ENABLED=true` を `PER_TASK_LOOP_ENABLED=true` と組み合わせると、watcher は各
+per-task Implementer / Reviewer 起動前に `docs/specs/<N>-<slug>/context-map.md` を生成または
+更新します。これは reasoning effort や model default を下げずに、fresh context ごとの広域探索
+read を減らすための短い handoff metadata です。
+
+生成される内容:
+
+- 対象 task ID、対象 task block、`_Requirements:_`、`_Boundary:_`、`_Depends:_`
+- `_Boundary:_` や task block から抽出した candidate files
+- task block の backtick anchor を `git grep` して見つけた candidate tests
+- spec docs（`requirements.md` / `design.md` / `tasks.md` / `impl-notes.md`）
+- Reviewer 起動時は対象 task の diff range
+- 「まず候補ファイル / anchors を確認し、repo-wide `rg --files` や README 全体読みは不足時のみ」
+  という探索制約
+
+注意点:
+
+- 本機能は deterministic な watcher 生成のみで、LLM scout agent は起動しません
+- `CONTEXT_MAP_ENABLED=true` 以外では `context-map.md` の生成も prompt 注入も行いません
+- `context-map.md` は補助情報であり、最終判断は `tasks.md` と実際の diff を正とします
+- 生成物は spec ディレクトリ配下に置かれますが、Implementer は参照専用として扱い、
+  実装 commit や `docs(tasks): mark <id> as done` commit には含めません
 
 ### learnings 前方伝播
 
