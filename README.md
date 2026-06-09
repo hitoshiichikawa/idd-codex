@@ -3141,7 +3141,8 @@ cd ~/.idd-codex && git pull && ./install.sh --local
 
 Codex Max サブスクリプションは 5 時間ローリングウィンドウの quota を持っており、
 quota 超過時に codex CLI は `rate_limit_event (status=exceeded)` を含む JSON、または
-`You've hit your usage limit ... try again at ...` のような usage-limit fatal message を
+`You've hit your usage limit ... try again at Jun 9th, 2026 1:16 AM` /
+`... try again at 11:26 AM` のような usage-limit fatal message を
 出力して非ゼロ exit します。本機能を有効化すると、watcher は当該 Stage の出力を
 解析して quota 起因の停止を検知し、`codex-needs-quota-wait` ラベルを付与します。reset
 予定時刻が経過したら、cron tick 冒頭の **Quota Resume Processor** が自動的に
@@ -3162,7 +3163,8 @@ quota 超過時に codex CLI は `rate_limit_event (status=exceeded)` を含む 
 - codex CLI の stream-json 出力から `type=="rate_limit_event"` かつ
   `status=="exceeded"` を per-line jq fold で抽出。複数 event 検出時は最新値を採用
 - codex CLI の usage-limit fatal message から `try again at ...` の reset 時刻を抽出し、
-  reset 時刻を epoch 化できた場合のみ quota wait として扱う
+  reset 時刻を epoch 化できた場合のみ quota wait として扱う。日付なしの `11:26 AM`
+  形式は watcher 実行環境のローカル日付で解釈し、現在時刻以前なら翌日の reset とみなす
 - 検知時:
   - `codex-claimed` / `codex-picked-up` を除去 → `codex-needs-quota-wait` 付与（atomic
     1 PATCH）。`codex-failed` は **付与しない**
