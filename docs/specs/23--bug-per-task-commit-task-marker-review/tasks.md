@@ -14,7 +14,7 @@
   - guard 失敗時の `mark_issue_failed` コメントに task ID、affected range、復旧操作を判断できる診断情報を含める。
   - _Requirements: 1.2, 1.3, 1.4, 2.3, 2.4, 3.4, 5.2, 5.3_
 
-- [ ] 3. per-task Implementer / Reviewer prompt の marker / range contract を同期更新する
+- [x] 3. per-task Implementer / Reviewer prompt の marker / range contract を同期更新する
   - `build_per_task_implementer_prompt` と `.codex/agents/developer.md` に、retry では修正 commit 後の末尾に最新 `docs(tasks): mark <id> as done` marker を残す契約を明記する。
   - `build_per_task_reviewer_prompt` と `.codex/agents/reviewer.md` に、`range_start_sha` / `range_end_sha` が判定対象の正本であり、`range_end_sha` は marker 後 commit を含む補正後 SHA になり得ることを明記する。
   - `repo-template/.codex/agents/developer.md` と `repo-template/.codex/agents/reviewer.md` に同じ変更を byte-identical で反映する。
