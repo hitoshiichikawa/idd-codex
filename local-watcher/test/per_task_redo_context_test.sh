@@ -301,6 +301,12 @@ prompt=$(build_per_task_implementer_prompt "1" "$out")
 assert_contains "Implementer prompt includes injected Retry Context" '## Retry Context（watcher 生成 / per-task redo）' "$prompt"
 assert_contains "Implementer prompt keeps reviewer round" "Reviewer round: \`1\`" "$prompt"
 assert_contains "Implementer prompt includes Required Action inline" 'Required Action=local-watcher/test/per_task_redo_context_test.sh に Req 5.2 の assertion を追加する。' "$prompt"
+assert_contains "Implementer prompt includes Finding Closure Matrix heading" '### Finding Closure Matrix（必須）' "$prompt"
+assert_contains "Implementer prompt includes Finding Closure Matrix schema" '| Target requirement | Category | Required Action | Fix commit | Test/assertion | Verification result | Notes / no-change reason |' "$prompt"
+assert_contains "Implementer prompt requires rejected target requirement rows" 'rejected target requirement' "$prompt"
+assert_contains "Implementer prompt requires fix commit evidence" 'fix commit' "$prompt"
+assert_contains "Implementer prompt requires test/assertion evidence" 'test/assertion' "$prompt"
+assert_contains "Implementer prompt requires verification result evidence" 'verification result' "$prompt"
 
 rc=0
 out=$(pt_build_redo_context_block "1.1" "debugger-fix-plan" "2" "$review_notes" "$debugger_notes" 2>"$TMPROOT/redo-debugger.err") || rc=$?
@@ -315,6 +321,7 @@ prompt=$(build_per_task_implementer_prompt "1.1" "$out")
 assert_contains "Debugger redo prompt includes Reviewer target" "Target=\`5.2\`" "$prompt"
 assert_contains "Debugger redo prompt includes Debugger Task section" '## Task 1.1' "$prompt"
 assert_contains "Debugger redo prompt identifies Debugger context source" '### Debugger Fix Plan Context' "$prompt"
+assert_contains "Debugger redo prompt keeps Finding Closure Matrix schema" '| Target requirement | Category | Required Action | Fix commit | Test/assertion | Verification result | Notes / no-change reason |' "$prompt"
 
 rc=0
 out=$(pt_build_redo_context_block "1" "reviewer-reject" "1" "$approve_notes" 2>"$TMPROOT/redo-diagnostic.err") || rc=$?
