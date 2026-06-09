@@ -74,6 +74,14 @@ build_per_task_reviewer_prompt() {
     "$task_id" "$round" "$range_start" "$range_end"
 }
 
+cm_write_context_map() {
+  return 0
+}
+
+cm_warn() {
+  printf 'context-map WARN: %s\n' "$*" >&2
+}
+
 qa_run_codex_stage() {
   local _stage="$1"
   local _reset_file="$2"

@@ -55,3 +55,10 @@
 - 採用方針: Issue #23 の File Structure Plan 外に含まれていた差分を除外し、#23 の watcher、agent prompt、README、regression fixture、spec 成果物だけが `main..HEAD` に残る状態へ戻した。
 - 重要な判断: `quota-aware.sh`、既存 test / fixture、`docs/specs/26--bug-per-task-reviewer-task-marker-tasks/` は Issue #23 の境界外だったため、削除や coverage 変更をこのブランチでは扱わない。
 - 検証方針: 是正後に `git diff --name-status main..HEAD` で境界外パスが消えていることと、既存の shellcheck / per-task range regression / root-repo-template 同期 diff が通ることを確認する。
+
+### Debugger 経由再実行
+
+- 採用方針: main に後から入った Issue #34 の `CONTEXT_MAP_ENABLED` opt-in 実装と README 説明を hunk 単位で復元し、Issue #23 の marker / review range 補正は維持した。
+- 重要な判断: watcher では `cm_*` helper、Implementer / Reviewer prompt への context-map 注入、各 stage 起動前の `cm_write_context_map` 呼び出しを戻しつつ、`pt_resolve_diff_range` の `range_end=HEAD` 補正と Reviewer prompt の補正後 HEAD 説明を残した。
+- 重要な判断: README では `context-map` 節を `task marker / review range の契約` 節とは別節として復元し、両機能の説明が上書き関係にならないようにした。
+- 残存課題: なし。
