@@ -2892,6 +2892,153 @@ EOF
   return 0
 }
 
+# ─── pt_collect_reject_fingerprints <review_notes_path> ───
+#
+# review-notes.md の Findings から category + target の fingerprint を TSV で抽出する。
+# stdout: `<category>\t<target>`。抽出不能時は空 stdout + return 1。
+pt_collect_reject_fingerprints() {
+  local review_notes_path="$1"
+
+  if [ ! -f "$review_notes_path" ]; then
+    return 1
+  fi
+  if ! grep -Eq "(^|[[:space:]])RESULT:[[:space:]]*\`?reject\`?([[:space:]]|$)" "$review_notes_path"; then
+    return 1
+  fi
+
+  local findings_section
+  findings_section=$(awk '
+    /^## Findings[[:space:]]*$/ { in_section = 1; next }
+    in_section && /^## / { exit }
+    in_section { print }
+  ' "$review_notes_path")
+  if [ -z "$findings_section" ]; then
+    return 1
+  fi
+
+  printf '%s\n' "$findings_section" | awk '
+    function trim(value) {
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      return value
+    }
+    function flush() {
+      if (target != "" && category != "") {
+        clean_target = target
+        sub(/（.*$/, "", clean_target)
+        printf "%s\t%s\n", category, clean_target
+      }
+      target = ""
+      category = ""
+    }
+    /^### / { flush(); next }
+    /^[[:space:]]*-[[:space:]]+\*\*Target\*\*:/ {
+      line = $0
+      sub(/^[[:space:]]*-[[:space:]]+\*\*Target\*\*:[[:space:]]*/, "", line)
+      target = trim(line)
+      next
+    }
+    /^[[:space:]]*-[[:space:]]+\*\*Category\*\*:/ {
+      line = $0
+      sub(/^[[:space:]]*-[[:space:]]+\*\*Category\*\*:[[:space:]]*/, "", line)
+      category = trim(line)
+      next
+    }
+    END { flush() }
+  ' | awk 'NF && !seen[$0]++ { print }'
+}
+
+# ─── pt_collect_changed_test_paths <from_sha> <to_sha> ───
+#
+# 前回 reject 直後から次 Reviewer 起動前までに変更された test path を収集する。
+# heuristic: local-watcher/test/*, tests/*, */test/*, *_test.sh, *test*.sh
+pt_collect_changed_test_paths() {
+  local from_sha="$1"
+  local to_sha="$2"
+  local changed_paths path
+
+  if [ -z "$from_sha" ] || [ -z "$to_sha" ]; then
+    return 1
+  fi
+  if ! changed_paths=$(git diff --name-only "${from_sha}..${to_sha}" 2>/dev/null); then
+    return 1
+  fi
+
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    case "$path" in
+      local-watcher/test/*|tests/*|*/test/*|*_test.sh|*test*.sh)
+        printf '%s\n' "$path"
+        ;;
+    esac
+  done <<<"$changed_paths" | awk 'NF && !seen[$0]++ { print }'
+}
+
+pt_fingerprint_in_set() {
+  local needle="$1"
+  local haystack="$2"
+  grep -Fxq -- "$needle" <<<"$haystack"
+}
+
+pt_reject_category_needs_test_diff() {
+  local category="$1"
+  case "$category" in
+    "missing test"|"AC 未カバー") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# ─── pt_build_repeated_reject_warning <task_id> <next_round> <current_fingerprints> <changed_test_paths> [<prior_fingerprints>] ───
+#
+# 同一 missing test / AC target に対し test path 差分が無い場合の warning-only block を生成する。
+# prior_fingerprints が空なら round 2 前の risk warning、非空なら round 1 / 2 overlap のみ対象。
+pt_build_repeated_reject_warning() {
+  local task_id="$1"
+  local next_round="$2"
+  local current_fingerprints="$3"
+  local changed_test_paths="$4"
+  local prior_fingerprints="${5:-}"
+
+  if [ -z "$current_fingerprints" ] || [ -n "$changed_test_paths" ]; then
+    return 0
+  fi
+
+  local warning_rows=""
+  local category target fingerprint
+  while IFS=$'\t' read -r category target; do
+    if [ -z "$category" ] || [ -z "$target" ]; then
+      continue
+    fi
+    pt_reject_category_needs_test_diff "$category" || continue
+    fingerprint="${category}"$'\t'"${target}"
+    if [ -n "$prior_fingerprints" ] && ! pt_fingerprint_in_set "$fingerprint" "$prior_fingerprints"; then
+      continue
+    fi
+    warning_rows="${warning_rows}- Category: \`${category}\`; Target requirement: \`${target}\`; Diagnostic: no relevant test file changed after the prior reject."$'\n'
+    if [ -n "${LOG:-}" ]; then
+      pt_log "task=${task_id} repeated-reject-warning next_round=${next_round} category=${category} target=${target} changed_test_paths=none" >> "$LOG"
+    fi
+  done <<<"$current_fingerprints"
+
+  if [ -z "$warning_rows" ]; then
+    return 0
+  fi
+
+  cat <<EOF
+## Repeated Reject Warning（watcher 生成 / warning-only）
+
+Reviewer round ${next_round} を起動する前に、前回 reject 以降の関連 test path 差分が検出されませんでした。
+この warning は fail-fast ではありませんが、同一 target の未対応再発リスクとして扱ってください。
+
+- Task ID: \`${task_id}\`
+- Next Reviewer round: \`${next_round}\`
+- Changed test paths since prior reject: \`(none)\`
+
+### Risk fingerprints
+${warning_rows%$'\n'}
+EOF
+}
+
 # ─── pt_resolve_diff_range <task_id> ───
 #
 # per-task Reviewer に渡す diff range の開始 SHA / 終了 SHA を解決して
@@ -3733,7 +3880,7 @@ ${learnings_block}
 EOF
 }
 
-# ─── build_per_task_reviewer_prompt <task_id> <range_start_sha> <range_end_sha> <round> <prev_result> ───
+# ─── build_per_task_reviewer_prompt <task_id> <range_start_sha> <range_end_sha> <round> <prev_result> [<warning_block>] ───
 #
 # per-task Reviewer 用の prompt を heredoc で組み立てて stdout に出力。
 # 既存 `build_reviewer_prompt` の形式を踏襲しつつ、以下を明示する:
@@ -3754,8 +3901,16 @@ build_per_task_reviewer_prompt() {
   local range_end="$3"
   local round="$4"
   local prev_result="$5"
+  local warning_block="${6:-}"
   local context_map_block
   context_map_block="$(cm_build_prompt_block)"
+  local repeated_reject_warning_block=""
+  if [ -n "$warning_block" ]; then
+    read -r -d '' repeated_reject_warning_block <<EOF || true
+
+${warning_block}
+EOF
+  fi
 
   cat <<EOF
 あなたはこのリポジトリの Codex CLI オーケストレーターです。
@@ -3787,6 +3942,7 @@ reviewer は **本 range のみ** を判定対象としてください。渡さ�
 最終 Stage B Reviewer が別途担当します。ログ上の \`task\` / \`round\` / \`range\` とこの prompt の
 SHA が一致していることを確認してください。
 ${context_map_block}
+${repeated_reject_warning_block}
 
 ## 必読ファイル
 
@@ -3921,7 +4077,7 @@ run_per_task_implementer() {
   esac
 }
 
-# ─── run_per_task_reviewer <task_id> <round> ───
+# ─── run_per_task_reviewer <task_id> <round> [<warning_block>] ───
 #
 # 当該 task の diff range のみを対象に fresh Codex session で Reviewer を起動。
 # `pt_resolve_diff_range` で range を解決し、`build_per_task_reviewer_prompt` で prompt を
@@ -3950,6 +4106,7 @@ run_per_task_implementer() {
 run_per_task_reviewer() {
   local task_id="$1"
   local round="$2"
+  local warning_block="${3:-}"
 
   # diff range 解決
   local range_line range_start range_end
@@ -3979,7 +4136,10 @@ run_per_task_reviewer() {
 
   local prompt
   cm_write_context_map "$task_id" "reviewer" "$range_start" "$range_end" || cm_warn "failed to update context-map task=$task_id stage=reviewer"
-  prompt=$(build_per_task_reviewer_prompt "$task_id" "$range_start" "$range_end" "$round" "$prev_result")
+  prompt=$(build_per_task_reviewer_prompt "$task_id" "$range_start" "$range_end" "$round" "$prev_result" "$warning_block")
+  if [ -n "$warning_block" ]; then
+    pt_log "task=$task_id reviewer warning-context injected round=$round kind=repeated-reject" >> "$LOG"
+  fi
 
   # Issue #296 Req 2.4 / NFR 3.1 / Req 4.2: per-task 経路でもファイル不在起因の再起動は
   # 同一 round 内で最大 1 回まで（単発経路 run_reviewer_stage と対称）。
@@ -4556,6 +4716,11 @@ run_per_task_loop() {
         # reject 1 回目 → Implementer 再起動 + Reviewer round=2
         echo "🔁 #$NUMBER: per-task Reviewer (task=$task_id, round=1) reject → Implementer 再実行" | tee -a "$LOG"
 
+        local _pt_round1_reject_sha=""
+        local _pt_round1_fingerprints=""
+        _pt_round1_reject_sha=$(git rev-parse HEAD 2>/dev/null || true)
+        _pt_round1_fingerprints=$(pt_collect_reject_fingerprints "$REPO_DIR/$SPEC_DIR_REL/review-notes.md" || true)
+
         local _pt_redo_context=""
         _pt_redo_context=$(pt_build_redo_context_block \
           "$task_id" \
@@ -4590,8 +4755,19 @@ run_per_task_loop() {
             ;;
         esac
 
+        local _pt_warning_r2=""
+        if [ -n "$_pt_round1_reject_sha" ]; then
+          local _pt_changed_tests_r2=""
+          _pt_changed_tests_r2=$(pt_collect_changed_test_paths "$_pt_round1_reject_sha" "HEAD" || true)
+          _pt_warning_r2=$(pt_build_repeated_reject_warning \
+            "$task_id" \
+            "2" \
+            "$_pt_round1_fingerprints" \
+            "$_pt_changed_tests_r2" || true)
+        fi
+
         local rev2_rc=0
-        run_per_task_reviewer "$task_id" 2 || rev2_rc=$?
+        run_per_task_reviewer "$task_id" 2 "$_pt_warning_r2" || rev2_rc=$?
         case "$rev2_rc" in
           0)
             # round=2 approve → 次 task へ
@@ -4603,6 +4779,11 @@ run_per_task_loop() {
           1)
             # 再 reject → Phase 3 (#22) Debugger Gate に分岐 (Req 6.1, 6.3)、
             # 未対応なら codex-failed + Issue コメント
+            local _pt_round2_reject_sha=""
+            local _pt_round2_fingerprints=""
+            _pt_round2_reject_sha=$(git rev-parse HEAD 2>/dev/null || true)
+            _pt_round2_fingerprints=$(pt_collect_reject_fingerprints "$REPO_DIR/$SPEC_DIR_REL/review-notes.md" || true)
+
             if [ "${DEBUGGER_ENABLED:-false}" = "true" ] && ! detect_debugger_already_invoked "$task_id"; then
               echo "🐛 #$NUMBER: per-task Reviewer (task=$task_id, round=2) reject → Debugger Gate 起動（task scope）" | tee -a "$LOG"
               local _pt_dbg_rc=0
@@ -4660,8 +4841,20 @@ run_per_task_loop() {
               esac
 
               # Reviewer Round 3（task 単位）
+              local _pt_warning_r3=""
+              if [ -n "$_pt_round2_reject_sha" ]; then
+                local _pt_changed_tests_r3=""
+                _pt_changed_tests_r3=$(pt_collect_changed_test_paths "$_pt_round2_reject_sha" "HEAD" || true)
+                _pt_warning_r3=$(pt_build_repeated_reject_warning \
+                  "$task_id" \
+                  "3" \
+                  "$_pt_round2_fingerprints" \
+                  "$_pt_changed_tests_r3" \
+                  "$_pt_round1_fingerprints" || true)
+              fi
+
               local rev3_rc=0
-              run_per_task_reviewer "$task_id" 3 || rev3_rc=$?
+              run_per_task_reviewer "$task_id" 3 "$_pt_warning_r3" || rev3_rc=$?
               case "$rev3_rc" in
                 0)
                   dbg_log "trigger=round2-reject issue=#${NUMBER} task=${task_id} round3 result=approve" >> "$LOG"
