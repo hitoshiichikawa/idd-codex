@@ -495,11 +495,24 @@ else
   assert_eq "usage-limit reset parser returns numeric epoch (Issue #12 Req 3, 6)" "true" "false"
 fi
 
+usage_time_only_reset_epoch=$(qa_extract_usage_limit_reset_epoch "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 11:26 AM.")
+if [[ "$usage_time_only_reset_epoch" =~ ^[0-9]+$ ]]; then
+  assert_eq "usage-limit time-only reset parser returns numeric epoch (Issue #31)" "true" "true"
+else
+  assert_eq "usage-limit time-only reset parser returns numeric epoch (Issue #31)" "true" "false"
+fi
+
 run_case "StageA usage-limit-with-reset → quota wait (Issue #12 Req 1, 6)" \
   99 "$usage_reset_epoch" "usage-limit-with-reset.jsonl" 1 "StageA"
 
+run_case "StageA usage-limit-time-only-reset → quota wait (Issue #31)" \
+  99 "$usage_time_only_reset_epoch" "usage-limit-time-only-reset.jsonl" 1 "StageA"
+
 run_case "Reviewer usage-limit-with-reset → quota wait (Issue #12 Req 1, 6)" \
   99 "$usage_reset_epoch" "usage-limit-with-reset.jsonl" 1 "Reviewer-r1-a1"
+
+run_case "Reviewer usage-limit-time-only-reset → quota wait (Issue #31)" \
+  99 "$usage_time_only_reset_epoch" "usage-limit-time-only-reset.jsonl" 1 "Reviewer-r1-a1"
 
 run_case "Debugger後 Reviewer usage-limit-with-reset → quota wait (Issue #12 Req 1, 6)" \
   99 "$usage_reset_epoch" "usage-limit-with-reset.jsonl" 1 "Reviewer-r3-a1"

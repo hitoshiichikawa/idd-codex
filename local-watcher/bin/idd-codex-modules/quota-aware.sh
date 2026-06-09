@@ -160,9 +160,11 @@ qa_detect_rate_limit() {
 }
 
 # usage-limit 風 fatal message から reset epoch を抽出する。
-# Codex CLI の観測文言は `try again at Jun 9th, 2026 1:16 AM.` のように timezone を
-# 含まないため、PR Iteration 側の既存実装と同じく watcher 実行環境の local timezone
-# で解釈する。抽出不能時は空文字を返し、呼び出し側は既存失敗経路へ透過する。
+# Codex CLI の観測文言は timezone を含まないため、PR Iteration 側の既存実装と同じく
+# watcher 実行環境の local timezone で解釈する。絶対日付付き
+# `try again at Jun 9th, 2026 1:16 AM.` と、同日内の時刻だけを返す
+# `try again at 11:26 AM.` の両方を受理する。時刻だけの値が現在時刻以前なら翌日の
+# reset とみなす。抽出不能時は空文字を返し、呼び出し側は既存失敗経路へ透過する。
 qa_extract_usage_limit_reset_epoch() {
   local message="${1:-}"
   if [ -z "$message" ]; then
@@ -170,23 +172,56 @@ qa_extract_usage_limit_reset_epoch() {
     return 0
   fi
 
-  local raw
+  local raw raw_kind
   raw=$(printf '%s\n' "$message" \
-    | sed -nE 's/.*try again at ([A-Z][a-z]{2} [0-9]{1,2}(st|nd|rd|th)?, [0-9]{4} [0-9]{1,2}:[0-9]{2} (AM|PM)).*/\1/p' \
+    | sed -nE 's/.*try again at ([A-Z][a-z]{2,8} [0-9]{1,2}(st|nd|rd|th)?, [0-9]{4} [0-9]{1,2}:[0-9]{2} (AM|PM)).*/\1/p' \
     | tail -1)
+  raw_kind="absolute"
+  if [ -z "$raw" ]; then
+    raw=$(printf '%s\n' "$message" \
+      | sed -nE 's/.*try again at ([0-9]{1,2}:[0-9]{2} (AM|PM)).*/\1/p' \
+      | tail -1)
+    raw_kind="time-only"
+  fi
   if [ -z "$raw" ]; then
     echo ""
     return 0
   fi
 
-  local normalized
+  local normalized epoch=""
+  if [ "$raw_kind" = "time-only" ]; then
+    normalized="$raw"
+    local today now_epoch
+    today=$(date '+%Y-%m-%d')
+    now_epoch=$(date '+%s')
+    if epoch=$(date -d "${today} ${normalized}" '+%s' 2>/dev/null); then
+      if [ "$epoch" -le "$now_epoch" ]; then
+        epoch=$((epoch + 86400))
+      fi
+      echo "$epoch"
+      return 0
+    fi
+    if epoch=$(date -j -f '%Y-%m-%d %I:%M %p' "${today} ${normalized}" '+%s' 2>/dev/null); then
+      if [ "$epoch" -le "$now_epoch" ]; then
+        epoch=$((epoch + 86400))
+      fi
+      echo "$epoch"
+      return 0
+    fi
+    echo ""
+    return 0
+  fi
+
   normalized=$(printf '%s\n' "$raw" | sed -E 's/([0-9]+)(st|nd|rd|th)/\1/g')
-  local epoch=""
   if epoch=$(date -d "$normalized" '+%s' 2>/dev/null); then
     echo "$epoch"
     return 0
   fi
   if epoch=$(date -j -f '%b %e, %Y %I:%M %p' "$normalized" '+%s' 2>/dev/null); then
+    echo "$epoch"
+    return 0
+  fi
+  if epoch=$(date -j -f '%B %e, %Y %I:%M %p' "$normalized" '+%s' 2>/dev/null); then
     echo "$epoch"
     return 0
   fi
