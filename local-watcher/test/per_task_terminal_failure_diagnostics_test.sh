@@ -34,8 +34,16 @@ eval "$(extract_function "$WATCHER_SH" "pt_artifact_content_block")"
 eval "$(extract_function "$WATCHER_SH" "pt_build_terminal_failure_diagnostics")"
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$WATCHER_SH" "mark_issue_failed")"
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$WATCHER_SH" "dbg_log")"
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$WATCHER_SH" "validate_debugger_notes")"
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$WATCHER_SH" "run_debugger_stage")"
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$WATCHER_SH" "run_per_task_loop")"
 
-for fn in pt_artifact_state_line pt_artifact_content_block pt_build_terminal_failure_diagnostics mark_issue_failed; do
+for fn in pt_artifact_state_line pt_artifact_content_block pt_build_terminal_failure_diagnostics mark_issue_failed dbg_log validate_debugger_notes run_debugger_stage run_per_task_loop; do
   if ! declare -F "$fn" >/dev/null; then
     echo "ERROR: $fn not loaded from idd-codex-issue-watcher.sh" >&2
     exit 2
@@ -99,6 +107,22 @@ gh() {
 rs_set_result() { :; }
 codex_log_detect_529() { return 1; }
 build_recovery_hint() { printf 'RECOVERY_HINT'; }
+build_debugger_prompt() { printf 'debugger prompt'; }
+codex_exec_prompt() { :; }
+qa_handle_quota_exceeded() { :; }
+qa_run_codex_stage() {
+  return "${FAKE_QA_RC:-0}"
+}
+pt_warn() { :; }
+pt_log() { printf '[pt] %s\n' "$*"; }
+pt_extract_pending_tasks() { printf '1.2\n'; }
+run_per_task_implementer() { return 0; }
+pt_check_task_completed() { return 0; }
+detect_blocked_marker() {
+  printf 'fixture blocked reason\n'
+  return 0
+}
+detect_debugger_already_invoked() { return 1; }
 
 setup_work_with_upstream() {
   local case_id="$1"
@@ -136,7 +160,11 @@ LABEL_FAILED="codex-failed"
 SPEC_DIR_REL="docs/specs/38--bug-per-task-terminal-failure-reviewer"
 LOG="$TMPROOT/test-watcher.log"
 BRANCH="work-branch"
+REPO_SLUG="owner-test"
+DEBUGGER_MODEL="debugger-test-model"
+DEBUGGER_MAX_TURNS="5"
 export NUMBER REPO MODE LABEL_CLAIMED LABEL_PICKED LABEL_FAILED SPEC_DIR_REL LOG BRANCH
+export REPO_SLUG DEBUGGER_MODEL DEBUGGER_MAX_TURNS
 
 echo "--- per-task terminal failure diagnostics cases ---"
 
@@ -209,7 +237,7 @@ REMOTE_COMMITTED_REVIEW=$(git -C "$TMPROOT/bare-case2.git" show "work-branch:$SP
 assert_contains "Case 2: remote branch に commit 済み review-notes.md が保存された" \
   "Committed but not pushed reviewer content." "$REMOTE_COMMITTED_REVIEW"
 
-# Case 3: untracked debugger-notes.md も同じ diagnostic commit 経路で保全する。
+# Case 3: per-task run_debugger_stage の debugger-failed 経路で untracked debugger-notes.md を保全する。
 WORK=$(setup_work_with_upstream "case3")
 REPO_DIR="$WORK"
 export REPO_DIR
@@ -221,10 +249,19 @@ Root cause: missing guard.
 EOF
 reset_state
 : > "$LOG"
+FAKE_QA_RC=7
+export FAKE_QA_RC
 pushd "$WORK" >/dev/null
-mark_issue_failed "per-task-reviewer-error" "terminal error body"
+if run_debugger_stage "round2-reject" "1.2" "$WORK/$SPEC_DIR_REL/review-notes.md"; then
+  echo "FAIL: Case 3: run_debugger_stage should fail on codex non-zero"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+fi
 popd >/dev/null
 
+assert_contains "Case 3: failure comment に debugger-failed stage" \
+  "失敗 stage: debugger-failed" "$LAST_GH_COMMENT_BODY"
+assert_contains "Case 3: diagnostic block に per-task debugger-failed stage" \
+  "stage: \`per-task-debugger-failed\`" "$LAST_GH_COMMENT_BODY"
 assert_contains "Case 3: debugger artifact state は untracked" \
   'debugger-notes.md`: exists=yes tracked=no untracked=yes' "$LAST_GH_COMMENT_BODY"
 assert_contains "Case 3: debugger diagnostic commit pushed を明示" \
@@ -232,9 +269,53 @@ assert_contains "Case 3: debugger diagnostic commit pushed を明示" \
 REMOTE_DEBUGGER=$(git -C "$TMPROOT/bare-case3.git" show "work-branch:$SPEC_DIR_REL/debugger-notes.md")
 assert_contains "Case 3: remote branch に debugger-notes.md が保存された" \
   "Root cause: missing guard." "$REMOTE_DEBUGGER"
+unset FAKE_QA_RC
 
-# Case 4: diagnostic commit が失敗した場合、Issue コメントに artifact content fallback を残す。
+# Case 4: per-task loop から入る debugger-notes-invalid 経路でも diagnostic commit を実行する。
 WORK=$(setup_work_with_upstream "case4")
+REPO_DIR="$WORK"
+export REPO_DIR
+cat > "$WORK/$SPEC_DIR_REL/tasks.md" <<'EOF'
+# Tasks
+
+- [ ] 1.2 Fixture task
+  - _Requirements: 1.1_
+EOF
+cat > "$WORK/$SPEC_DIR_REL/debugger-notes.md" <<'EOF'
+# Debugger Notes
+
+## Task 1.2
+### 根本原因
+invalid fixture missing required sections.
+EOF
+reset_state
+: > "$LOG"
+FAKE_QA_RC=0
+DEBUGGER_ENABLED=true
+export FAKE_QA_RC DEBUGGER_ENABLED
+pushd "$WORK" >/dev/null
+if run_per_task_loop; then
+  echo "FAIL: Case 4: run_per_task_loop should fail on invalid debugger-notes.md"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+fi
+popd >/dev/null
+
+assert_contains "Case 4: failure comment に debugger-notes-invalid stage" \
+  "失敗 stage: debugger-notes-invalid" "$LAST_GH_COMMENT_BODY"
+assert_contains "Case 4: diagnostic block に per-task debugger-notes-invalid stage" \
+  "stage: \`per-task-debugger-notes-invalid\`" "$LAST_GH_COMMENT_BODY"
+assert_contains "Case 4: invalid debugger artifact state は untracked" \
+  'debugger-notes.md`: exists=yes tracked=no untracked=yes' "$LAST_GH_COMMENT_BODY"
+assert_contains "Case 4: invalid debugger diagnostic commit pushed を明示" \
+  "status: \`diagnostic-commit-pushed\`" "$LAST_GH_COMMENT_BODY"
+REMOTE_INVALID_DEBUGGER=$(git -C "$TMPROOT/bare-case4.git" show "work-branch:$SPEC_DIR_REL/debugger-notes.md")
+assert_contains "Case 4: remote branch に invalid debugger-notes.md が保存された" \
+  "invalid fixture missing required sections." "$REMOTE_INVALID_DEBUGGER"
+unset FAKE_QA_RC
+unset DEBUGGER_ENABLED
+
+# Case 5: diagnostic commit が失敗した場合、Issue コメントに artifact content fallback を残す。
+WORK=$(setup_work_with_upstream "case5")
 REPO_DIR="$WORK"
 export REPO_DIR
 (
@@ -258,13 +339,13 @@ pushd "$WORK" >/dev/null
 mark_issue_failed "per-task-reviewer-reject3" "terminal reject body"
 popd >/dev/null
 
-assert_contains "Case 4: diagnostic commit failure を明示" \
+assert_contains "Case 5: diagnostic commit failure を明示" \
   "status: \`diagnostic-commit-failed-fallback\`" "$LAST_GH_COMMENT_BODY"
-assert_contains "Case 4: fallback issue comment を明示" \
+assert_contains "Case 5: fallback issue comment を明示" \
   "fallback issue comment: \`yes\`" "$LAST_GH_COMMENT_BODY"
-assert_contains "Case 4: commit failure detail を明示" \
+assert_contains "Case 5: commit failure detail を明示" \
   'diagnostic commit failure:' "$LAST_GH_COMMENT_BODY"
-assert_contains "Case 4: fallback に review-notes.md content を含める" \
+assert_contains "Case 5: fallback に review-notes.md content を含める" \
   "Fallback-visible reviewer content." "$LAST_GH_COMMENT_BODY"
 
 echo ""

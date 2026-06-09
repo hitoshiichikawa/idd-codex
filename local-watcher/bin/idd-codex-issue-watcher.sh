@@ -4873,7 +4873,17 @@ run_debugger_stage() {
     *)
       rm -f "$_qa_reset_file"
       dbg_log "trigger=$trigger issue=#${NUMBER} task=${task_label} end rc=$_qa_rc result=error" >> "$LOG"
-      mark_issue_failed "debugger-failed" "Debugger サブエージェント（trigger=\`${trigger}\`, task=\`${task_label}\`）が非 0 exit で異常終了しました（codex rc=${_qa_rc}）。Stage A'' / Stage A' / Stage B'' / Round 3 は実行されません。\`$LOG\` の Debugger 実行ログを確認してください。"
+      local _dbg_failed_body="Debugger サブエージェント（trigger=\`${trigger}\`, task=\`${task_label}\`）が非 0 exit で異常終了しました（codex rc=${_qa_rc}）。Stage A'' / Stage A' / Stage B'' / Round 3 は実行されません。\`$LOG\` の Debugger 実行ログを確認してください。"
+      if [ -n "$task_id" ]; then
+        local _pt_terminal_diagnostic=""
+        _pt_terminal_diagnostic=$(pt_build_terminal_failure_diagnostics "per-task-debugger-failed" 2>/dev/null || true)
+        if [ -n "$_pt_terminal_diagnostic" ]; then
+          _dbg_failed_body="${_dbg_failed_body}
+
+${_pt_terminal_diagnostic}"
+        fi
+      fi
+      mark_issue_failed "debugger-failed" "$_dbg_failed_body"
       return 1
       ;;
   esac
@@ -4881,7 +4891,17 @@ run_debugger_stage() {
   # debugger-notes.md の必須セクション verify
   if ! validate_debugger_notes "$notes_path" "$task_id"; then
     dbg_log "trigger=$trigger issue=#${NUMBER} task=${task_label} debugger-notes.md validation failed" >> "$LOG"
-    mark_issue_failed "debugger-notes-invalid" "Debugger が \`${SPEC_DIR_REL}/debugger-notes.md\` を期待形式で出力しませんでした（必須 4 セクション \`根本原因\` / \`修正手順\` / \`検証方法\` / \`関連参考資料\` のいずれかが欠落、もしくはファイル自体が不在）。\`$LOG\` の Debugger 実行ログを確認してください。"
+    local _dbg_invalid_body="Debugger が \`${SPEC_DIR_REL}/debugger-notes.md\` を期待形式で出力しませんでした（必須 4 セクション \`根本原因\` / \`修正手順\` / \`検証方法\` / \`関連参考資料\` のいずれかが欠落、もしくはファイル自体が不在）。\`$LOG\` の Debugger 実行ログを確認してください。"
+    if [ -n "$task_id" ]; then
+      local _pt_terminal_diagnostic=""
+      _pt_terminal_diagnostic=$(pt_build_terminal_failure_diagnostics "per-task-debugger-notes-invalid" 2>/dev/null || true)
+      if [ -n "$_pt_terminal_diagnostic" ]; then
+        _dbg_invalid_body="${_dbg_invalid_body}
+
+${_pt_terminal_diagnostic}"
+      fi
+    fi
+    mark_issue_failed "debugger-notes-invalid" "$_dbg_invalid_body"
     return 1
   fi
   dbg_log "trigger=$trigger issue=#${NUMBER} task=${task_label} debugger-notes.md verified (sections=4)" >> "$LOG"
