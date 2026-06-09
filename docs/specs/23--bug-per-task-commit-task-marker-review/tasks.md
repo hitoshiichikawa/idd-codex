@@ -1,6 +1,6 @@
 # Implementation Plan
 
-- [ ] 1. per-task review range の include-or-fail guard を watcher に実装する
+- [x] 1. per-task review range の include-or-fail guard を watcher に実装する
   - `pt_resolve_diff_range` の既存 marker 選択ロジックを維持しつつ、選択済み marker から `HEAD` までの post-marker commit を検査する。
   - marker 後 commit が存在する場合は corrective commit を含む `range_end`（通常 `HEAD`）を返すか、安全に解けなければ Reviewer 起動前に `rc=3` 相当で失敗させる。
   - marker 後 commit 検出時は task ID、marker SHA、end SHA、commit count を grep 可能なログに残す。
