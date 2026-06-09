@@ -25,3 +25,11 @@
 - 重要な判断: Reviewer には `range_start_sha..range_end_sha` を判定対象の正本とし、`range_end_sha` が marker 後 commit を含む補正後 SHA になり得ることと、range 外 commit を判断しないことを明示した。
 - 重要な判断: shared rule は既存の agent prompt で契約を十分に表現できるため更新しない。
 - 残存課題: README の説明更新と #14 形状の追加 regression coverage は後続 task の範囲。
+
+### Task 4
+
+- 採用方針: README の per-task loop / progress tracking 説明を、task marker 終端契約と include-or-fail range guard に合わせて更新した。
+- 重要な判断: marker は実装・検証・learning 追記後の attempt 終端として説明し、retry / Debugger 後は最新 marker を末尾へ置く契約を明示した。
+- 重要な判断: Reviewer range は prompt の `range_start_sha..range_end_sha` を正本とし、marker 後 commit は `HEAD` に補正して含めるか Reviewer 起動前に診断停止することを README に記録した。
+- 重要な判断: 本 task は docs 同期のみで、新しい env var、label、exit code、外部サービス、runtime dependency は追加していないため migration note は追加しない。
+- 残存課題: #14 形状の regression coverage と静的検証は後続 task の範囲。
