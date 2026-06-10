@@ -78,3 +78,14 @@
 | 5.2 | missing test | round 2 reject 後の Debugger fixture と Debugger context 注入を検証する | feat(test): #23 shape redo prompt回帰fixtureを追加 | `issue23_debugger_notes` の `## Task 5` と h3 4 セクション、Debugger source / fix plan assertions | `bash local-watcher/test/per_task_redo_context_test.sh` PASS 77 / FAIL 0 | Reviewer context と Debugger Fix Plan が同一 prompt に入ることを検証 |
 | 5.3 | missing test | Finding Closure Matrix contract が rejected target requirement、fix commit、test/assertion、verification result の対応を要求することを検証する | feat(test): #23 shape redo prompt回帰fixtureを追加 | canonical matrix schema、`rejected target requirement ごとに`、`fix commit / test/assertion / verification result` assertions | `bash local-watcher/test/per_task_redo_context_test.sh` PASS 77 / FAIL 0 | 実 LLM 生成物ではなく prompt contract の shell-level assertion で代替 |
 | 5.6 | missing test | prompt-only assertion に留めた理由と検証範囲を実装メモに記録する | feat(test): #23 shape redo prompt回帰fixtureを追加 | 本 `### Task 5` learning と Finding Closure Matrix | `shellcheck local-watcher/test/per_task_redo_context_test.sh`; `bash local-watcher/test/per_task_redo_context_test.sh` PASS 77 / FAIL 0 | shell fixture は prompt 生成までを責務とし、LLM の実執筆までは検証しない |
+
+- Reviewer round 1 reject 対応:
+  - 指摘は task 5 実装内容ではなく、review range に task 4 corrective commit が混入した boundary 逸脱だった。
+  - task 5 の fixture / prompt contract は Reviewer の Verified Requirements で確認済みのため、code / test 差分は追加せず、retry range の終端を最新 `docs(tasks): mark 5 as done` marker に揃える。
+  - `debugger-notes.md` は存在しないため、Debugger Fix Plan への追加対応はなし。
+
+#### Reviewer Round 1 Finding Closure Matrix
+
+| Target requirement | Category | Required Action | Fix commit | Test/assertion | Verification result | Notes / no-change reason |
+|--------------------|----------|-----------------|------------|----------------|---------------------|--------------------------|
+| Task 5 boundary | boundary 逸脱 | task 5 range から task 4 corrective commit を分離し、task 5 差分を `per_task_redo_context_test.sh`、task 5 の impl-notes、canonical marker commit に限定する | docs(spec): record task 5 boundary closure / docs(tasks): mark 5 as done | `git diff --name-status d1bf389..HEAD` と `git log --oneline d1bf389..HEAD` で reject 後差分を確認し、最後に最新 marker commit を置く | `shellcheck local-watcher/test/per_task_redo_context_test.sh`; `bash local-watcher/test/per_task_redo_context_test.sh` PASS 77 / FAIL 0 | task 5 の Verified Requirements は承認済みのため、code / test 変更は不要。boundary 解消は retry range を reject marker 以降の task 5 closure note と最新 marker に限定することで対応 |
