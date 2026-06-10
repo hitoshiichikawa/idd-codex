@@ -50,7 +50,7 @@
   - _Requirements:_ 5.1, 5.2, 5.3, 5.6
   - _Depends:_ 1, 2, 3
 
-- [ ] 6. 静的検証と root / repo-template 同期を確認する
+- [x] 6. 静的検証と root / repo-template 同期を確認する
   - `shellcheck local-watcher/bin/*.sh install.sh setup.sh .github/scripts/*.sh` を実行し、watcher 変更で警告が増えていないことを確認する。
   - `shellcheck local-watcher/test/per_task_redo_context_test.sh local-watcher/test/per_task_repeated_reject_guard_test.sh` を実行する。
   - `bash local-watcher/test/per_task_redo_context_test.sh` を実行する。
