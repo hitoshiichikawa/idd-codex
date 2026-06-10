@@ -89,3 +89,20 @@
 | Target requirement | Category | Required Action | Fix commit | Test/assertion | Verification result | Notes / no-change reason |
 |--------------------|----------|-----------------|------------|----------------|---------------------|--------------------------|
 | Task 5 boundary | boundary 逸脱 | task 5 range から task 4 corrective commit を分離し、task 5 差分を `per_task_redo_context_test.sh`、task 5 の impl-notes、canonical marker commit に限定する | docs(spec): record task 5 boundary closure / docs(tasks): mark 5 as done | `git diff --name-status d1bf389..HEAD` と `git log --oneline d1bf389..HEAD` で reject 後差分を確認し、最後に最新 marker commit を置く | `shellcheck local-watcher/test/per_task_redo_context_test.sh`; `bash local-watcher/test/per_task_redo_context_test.sh` PASS 77 / FAIL 0 | task 5 の Verified Requirements は承認済みのため、code / test 変更は不要。boundary 解消は retry range を reject marker 以降の task 5 closure note と最新 marker に限定することで対応 |
+
+### Task 6
+
+- 採用方針: task 6 は実装追加を行わず、指定された静的検証、#23 range fixture、root / repo-template 同期確認を実行して結果を記録した。
+- 重要な判断:
+  - `shellcheck local-watcher/bin/*.sh install.sh setup.sh .github/scripts/*.sh` と task 対象 shell fixture の shellcheck は警告なしで通過した。
+  - #23 shape の redo prompt coverage は `per_task_redo_context_test.sh` の prompt-only assertion で確認し、Req 5.2 / 5.3、Debugger context、Finding Closure Matrix contract が prompt に含まれることを PASS 77 / FAIL 0 で確認した。
+  - root / repo-template の agents と rules は `diff -r` が空で、byte-identical 同期を確認した。
+- 残存課題: なし。
+- 検証:
+  - `shellcheck local-watcher/bin/*.sh install.sh setup.sh .github/scripts/*.sh`
+  - `shellcheck local-watcher/test/per_task_redo_context_test.sh local-watcher/test/per_task_repeated_reject_guard_test.sh`
+  - `bash local-watcher/test/per_task_redo_context_test.sh` PASS 77 / FAIL 0
+  - `bash local-watcher/test/per_task_repeated_reject_guard_test.sh` PASS 34 / FAIL 0
+  - `bash local-watcher/test/per_task_marker_review_range_test.sh` PASS 33 / FAIL 0
+  - `diff -r .codex/agents repo-template/.codex/agents`
+  - `diff -r .codex/rules repo-template/.codex/rules`
