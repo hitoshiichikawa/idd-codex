@@ -41,7 +41,7 @@
   - _Requirements:_ 4.1, 4.2, 4.4
   - _Depends:_ 1, 2
 
-- [ ] 5. per-task retry context の #23 shape 回帰 fixture を完成させる
+- [x] 5. per-task retry context の #23 shape 回帰 fixture を完成させる
   - `per_task_redo_context_test.sh` で Req 5.2 / 5.3 の `missing test` が round 1 / round 2 に残る review-notes fixture を作る。
   - round 1 reject 後の redo prompt に actionable Reviewer context が含まれることを検証する。
   - round 2 reject 後の Debugger fixture に `## Task <id>` と h3 4 セクションを作り、Debugger context が redo prompt に含まれることを検証する。
