@@ -136,6 +136,9 @@ approve_notes="$TMPROOT/review-approve.md"
 invalid_review_notes="$TMPROOT/review-invalid.md"
 debugger_notes="$TMPROOT/debugger-notes.md"
 invalid_debugger_notes="$TMPROOT/debugger-invalid.md"
+issue23_round1_review_notes="$TMPROOT/issue23-round1-review-notes.md"
+issue23_round2_review_notes="$TMPROOT/issue23-round2-review-notes.md"
+issue23_debugger_notes="$TMPROOT/issue23-debugger-notes.md"
 
 cat >"$review_notes" <<'EOF'
 # Review Notes
@@ -227,6 +230,82 @@ cat >"$invalid_debugger_notes" <<'EOF'
 ### 修正手順
 
 修正手順のみ。
+
+### 関連参考資料
+
+- Related: #23
+EOF
+
+cat >"$issue23_round1_review_notes" <<'EOF'
+# Review Notes
+
+<!-- idd-codex:review task=5 round=1 -->
+
+## Findings
+
+### Finding 1
+- **Target**: 5.2
+- **Category**: missing test
+- **Detail**: #23 shape の round 1 で Req 5.2 の Debugger context assertion が未追加です。
+- **Required Action**: round 1 redo prompt に Req 5.2 の actionable Reviewer context が含まれることを検証する。
+
+### Finding 2
+- **Target**: 5.3
+- **Category**: missing test
+- **Detail**: #23 shape の round 1 で Finding Closure Matrix contract assertion が未追加です。
+- **Required Action**: rejected target requirement / fix commit / test/assertion / verification result の対応を prompt で検証する。
+
+## Summary
+
+Req 5.2 / 5.3 の missing test が round 1 に残っています。
+
+RESULT: reject
+EOF
+
+cat >"$issue23_round2_review_notes" <<'EOF'
+# Review Notes
+
+<!-- idd-codex:review task=5 round=2 -->
+
+## Findings
+
+### Finding 1
+- **Target**: 5.2
+- **Category**: missing test
+- **Detail**: #23 shape の round 2 でも Debugger Fix Plan context assertion が未追加のままです。
+- **Required Action**: Debugger 後 redo prompt に Task 5 の Fix Plan と Req 5.2 の Reviewer context が同時に含まれることを検証する。
+
+### Finding 2
+- **Target**: 5.3
+- **Category**: missing test
+- **Detail**: #23 shape の round 2 でも Finding Closure Matrix prompt contract が未検証です。
+- **Required Action**: Matrix が rejected target requirement、fix commit、test/assertion、verification result の対応を要求することを検証する。
+
+## Summary
+
+Req 5.2 / 5.3 の missing test が round 2 にも残っています。
+
+RESULT: reject
+EOF
+
+cat >"$issue23_debugger_notes" <<'EOF'
+# Debugger Notes (Issue #37)
+
+## Task 5
+
+### 根本原因
+
+Req 5.2 / 5.3 の missing test が round 1 / round 2 の両方に残る #23 shape を fixture として固定できていません。
+
+### 修正手順
+
+1. round 1 reject 後の redo prompt に Reviewer Findings / Required Action が入ることを検証する。
+2. round 2 reject 後の Debugger redo prompt に Reviewer context と Debugger Fix Plan が同時に入ることを検証する。
+3. Finding Closure Matrix の rejected target requirement / fix commit / test/assertion / verification result contract を検証する。
+
+### 検証方法
+
+per_task_redo_context_test.sh で Req 5.2 / 5.3 の missing test が round 1 / round 2 に残る fixture を実行する。
 
 ### 関連参考資料
 
@@ -329,6 +408,36 @@ assert_rc "Redo context block remains available with diagnostic when review extr
 assert_contains "Redo diagnostic block warns against silent rerun" 'This retry must not be treated as a normal same-task rerun.' "$out"
 assert_contains "Redo diagnostic block includes extraction reason" 'reason=result-not-reject' "$out"
 assert_contains "Redo diagnostic is logged" 'redo-context-unavailable kind=reviewer-reject round=1' "$(cat "$LOG")"
+
+echo ""
+echo "--- #23 regression shape redo prompt coverage ---"
+
+rc=0
+issue23_round1_block=$(pt_build_redo_context_block "5" "reviewer-reject" "1" "$issue23_round1_review_notes" 2>"$TMPROOT/issue23-round1.err") || rc=$?
+assert_rc "#23 round 1 redo context block succeeds" 0 "$rc"
+issue23_round1_prompt=$(build_per_task_implementer_prompt "5" "$issue23_round1_block")
+assert_contains "#23 round 1 prompt identifies task 5" "Task ID: \`5\`" "$issue23_round1_prompt"
+assert_contains "#23 round 1 prompt keeps Reviewer round 1" "Reviewer round: \`1\`" "$issue23_round1_prompt"
+assert_contains "#23 round 1 prompt includes Req 5.2 target" "Target=\`5.2\`" "$issue23_round1_prompt"
+assert_contains "#23 round 1 prompt includes Req 5.3 target" "Target=\`5.3\`" "$issue23_round1_prompt"
+assert_contains "#23 round 1 prompt includes Req 5.2 Required Action" 'round 1 redo prompt に Req 5.2 の actionable Reviewer context が含まれることを検証する。' "$issue23_round1_prompt"
+assert_contains "#23 round 1 prompt includes Req 5.3 Matrix Required Action" 'rejected target requirement / fix commit / test/assertion / verification result の対応を prompt で検証する。' "$issue23_round1_prompt"
+
+rc=0
+issue23_round2_block=$(pt_build_redo_context_block "5" "debugger-fix-plan" "2" "$issue23_round2_review_notes" "$issue23_debugger_notes" 2>"$TMPROOT/issue23-round2.err") || rc=$?
+assert_rc "#23 round 2 Debugger redo context block succeeds" 0 "$rc"
+issue23_round2_prompt=$(build_per_task_implementer_prompt "5" "$issue23_round2_block")
+assert_contains "#23 round 2 prompt keeps Reviewer context source" '### Reviewer Reject Context' "$issue23_round2_prompt"
+assert_contains "#23 round 2 prompt keeps Debugger context source" '### Debugger Fix Plan Context' "$issue23_round2_prompt"
+assert_contains "#23 round 2 prompt includes Req 5.2 repeated target" "Target=\`5.2\`" "$issue23_round2_prompt"
+assert_contains "#23 round 2 prompt includes Req 5.3 repeated target" "Target=\`5.3\`" "$issue23_round2_prompt"
+assert_contains "#23 round 2 prompt includes Debugger Task 5 section" '## Task 5' "$issue23_round2_prompt"
+assert_contains "#23 round 2 prompt includes Debugger root cause" 'Req 5.2 / 5.3 の missing test が round 1 / round 2 の両方に残る #23 shape' "$issue23_round2_prompt"
+assert_contains "#23 round 2 prompt includes Debugger fix plan" 'round 2 reject 後の Debugger redo prompt に Reviewer context と Debugger Fix Plan が同時に入ることを検証する。' "$issue23_round2_prompt"
+assert_contains "#23 Matrix contract maps rejected targets" 'rejected target requirement ごとに' "$issue23_round2_prompt"
+assert_contains "#23 Matrix contract requires fix commit" 'fix commit / test/assertion / verification result の対応を明示してください。' "$issue23_round2_prompt"
+assert_contains "#23 Matrix contract has canonical schema" '| Target requirement | Category | Required Action | Fix commit | Test/assertion | Verification result | Notes / no-change reason |' "$issue23_round2_prompt"
+assert_contains "#23 prompt-only fixture states verification command" 'per_task_redo_context_test.sh で Req 5.2 / 5.3 の missing test が round 1 / round 2 に残る fixture を実行する。' "$issue23_round2_prompt"
 
 echo ""
 echo "==========================================="
