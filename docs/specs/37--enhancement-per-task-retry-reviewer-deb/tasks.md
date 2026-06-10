@@ -1,6 +1,6 @@
 # Implementation Plan
 
-- [ ] 1. Reviewer / Debugger redo context 抽出 helper を watcher に追加する
+- [x] 1. Reviewer / Debugger redo context 抽出 helper を watcher に追加する
   - `local-watcher/bin/idd-codex-issue-watcher.sh` に `pt_extract_review_reject_context` を追加し、`review-notes.md` の `## Findings` から `Target` / `Category` / `Detail` / `Required Action` を抽出する。
   - `pt_extract_review_reject_context` は task ID、Reviewer round、category、target requirement を prompt に残せる markdown fragment を返す。
   - 抽出不能時は return 1 とし、task ID、round、notes path、reason を含む diagnostic を呼び出し側がログ / prompt に残せるようにする。
@@ -9,7 +9,7 @@
   - helper 単体の shell fixture を `local-watcher/test/per_task_redo_context_test.sh` に追加する。
   - _Requirements:_ 1.1, 1.2, 1.3, 1.4, 2.1, 2.2, 2.3, 2.4, 5.1, 5.2
 
-- [ ] 2. per-task Implementer prompt と loop redo 経路に context を注入する
+- [x] 2. per-task Implementer prompt と loop redo 経路に context を注入する
   - `pt_build_redo_context_block` を追加し、Reviewer 由来 block と Debugger 由来 block を別見出しで組み立てる。
   - `build_per_task_implementer_prompt <task_id> [redo_context_block]` に拡張し、第 2 引数が空の通常実行では既存 prompt と learnings 注入を維持する。
   - `run_per_task_implementer <task_id> [redo_context_block]` に拡張し、既存呼び出しはそのまま動くよう任意引数にする。
@@ -20,7 +20,7 @@
   - _Requirements:_ 1.1, 1.2, 1.3, 1.4, 2.1, 2.2, 2.3, 2.4, 5.1, 5.2, 5.6
   - _Depends:_ 1
 
-- [ ] 3. Finding Closure Matrix contract を watcher prompt と Developer agent に同期追加する
+- [x] 3. Finding Closure Matrix contract を watcher prompt と Developer agent に同期追加する
   - `build_per_task_implementer_prompt` の redo context block に Finding Closure Matrix の必須列を追加する。
   - Matrix の列は `Target requirement`、`Category`、`Required Action`、`Fix commit`、`Test/assertion`、`Verification result`、`Notes / no-change reason` とする。
   - `.codex/agents/developer.md` の per-task 節に、Reviewer reject 後 / Debugger guidance 後は `impl-notes.md` の Finding Closure Matrix を作成または更新する責務を追記する。
@@ -30,7 +30,7 @@
   - _Requirements:_ 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 5.3, 5.4, 5.6
   - _Depends:_ 2
 
-- [ ] 4. 連続 reject の warning-only guard を追加する
+- [x] 4. 連続 reject の warning-only guard を追加する
   - `pt_collect_reject_fingerprints` を追加し、`review-notes.md` から `category + target` fingerprint を抽出する。
   - `pt_collect_changed_test_paths <from_sha> <to_sha>` を追加し、前回 reject 直後から次 Reviewer 起動前までの test path 差分を収集する。
   - test path heuristic は `local-watcher/test/*`、`tests/*`、`*/test/*`、`*_test.sh`、`*test*.sh` を対象にし、新 dependency は追加しない。
@@ -41,7 +41,7 @@
   - _Requirements:_ 4.1, 4.2, 4.4
   - _Depends:_ 1, 2
 
-- [ ] 5. per-task retry context の #23 shape 回帰 fixture を完成させる
+- [x] 5. per-task retry context の #23 shape 回帰 fixture を完成させる
   - `per_task_redo_context_test.sh` で Req 5.2 / 5.3 の `missing test` が round 1 / round 2 に残る review-notes fixture を作る。
   - round 1 reject 後の redo prompt に actionable Reviewer context が含まれることを検証する。
   - round 2 reject 後の Debugger fixture に `## Task <id>` と h3 4 セクションを作り、Debugger context が redo prompt に含まれることを検証する。
@@ -50,7 +50,7 @@
   - _Requirements:_ 5.1, 5.2, 5.3, 5.6
   - _Depends:_ 1, 2, 3
 
-- [ ] 6. 静的検証と root / repo-template 同期を確認する
+- [x] 6. 静的検証と root / repo-template 同期を確認する
   - `shellcheck local-watcher/bin/*.sh install.sh setup.sh .github/scripts/*.sh` を実行し、watcher 変更で警告が増えていないことを確認する。
   - `shellcheck local-watcher/test/per_task_redo_context_test.sh local-watcher/test/per_task_repeated_reject_guard_test.sh` を実行する。
   - `bash local-watcher/test/per_task_redo_context_test.sh` を実行する。

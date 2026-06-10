@@ -429,10 +429,22 @@ Reviewer reject 後または Debugger guidance 後の再実行では、修正し
 
 - `review-notes.md` の `HEAD commit` を前回 reject 時点の `reject_sha` として扱い、作業後に
   `git diff --name-status <reject_sha>..HEAD` と `git log --oneline <reject_sha>..HEAD` を確認する
-- `impl-notes.md` の当該 `### Task <id>` learning に `Finding Closure Matrix` を追加し、
-  Target / Category / 対応 commit または変更ファイル / 実行したテスト / status を 1 行で対応付ける
+- `impl-notes.md` に Finding Closure Matrix を作成または更新する。既存 matrix がある場合は
+  同じ target の行を更新し、無ければ `## Implementation Notes` 配下の当該 `### Task <id>` セクションに
+  追加する
 - Debugger 経由の場合は `debugger-notes.md` の Fix Plan 各手順についても、実施結果または
   実施しなかった理由を同じ matrix に記録する
+
+必須列は以下です:
+
+| Target requirement | Category | Required Action | Fix commit | Test/assertion | Verification result | Notes / no-change reason |
+|--------------------|----------|-----------------|------------|----------------|---------------------|--------------------------|
+
+- rejected target requirement ごとに 1 行を作ること
+- `Fix commit` には対応する修正 commit hash または commit subject を記録すること
+- `Test/assertion` には追加または更新した test/assertion を記録すること
+- `Verification result` には実行した検証コマンドと結果を記録すること
+- 修正またはテスト更新が不要と判断した場合も、`Notes / no-change reason` に理由と確認結果を明示すること
 - code / test 差分なしで doc-only または marker-only の対応に留める場合は、なぜそれで Finding が
   閉じるのかを matrix に明記する。理由なしの doc-only 対応で完了扱いにしない
 - closure proof を残した後、最後に最新の `docs(tasks): mark <id> as done` marker を置き直し、

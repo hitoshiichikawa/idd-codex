@@ -2588,6 +2588,614 @@ pt_extract_learnings() {
   return 0
 }
 
+# ─── pt_regex_escape <literal> ───
+#
+# grep / awk の ERE に埋め込む literal を escape して stdout に出力する。
+pt_regex_escape() {
+  # shellcheck disable=SC2016
+  printf '%s' "$1" | sed -E 's/[][\\.^$*+?(){}|/]/\\&/g'
+}
+
+# ─── pt_extract_review_reject_context <task_id> <round> <review_notes_path> ───
+#
+# per-task retry prompt に inline 注入するため、review-notes.md の `## Findings` から
+# Target / Category / Detail / Required Action を含む markdown fragment を抽出する。
+#
+# stdout:
+#   - success: task ID、Reviewer round、各 Finding の target/category/detail/action、
+#              および raw Findings section を含む markdown fragment
+# stderr:
+#   - failure: task ID、round、notes path、reason を含む診断
+# return:
+#   0 = 1 件以上の complete Finding を抽出
+#   1 = file missing / RESULT not reject / Findings missing / required field missing
+pt_extract_review_reject_context() {
+  local task_id="$1"
+  local round="$2"
+  local review_notes_path="$3"
+
+  if [ ! -f "$review_notes_path" ]; then
+    printf 'redo-context-unavailable task=%s round=%s path=%s reason=file-missing\n' \
+      "$task_id" "$round" "$review_notes_path" >&2
+    return 1
+  fi
+
+  if ! grep -Eq "(^|[[:space:]])RESULT:[[:space:]]*\`?reject\`?([[:space:]]|$)" "$review_notes_path"; then
+    printf 'redo-context-unavailable task=%s round=%s path=%s reason=result-not-reject\n' \
+      "$task_id" "$round" "$review_notes_path" >&2
+    return 1
+  fi
+
+  local findings_section
+  findings_section=$(awk '
+    /^## Findings[[:space:]]*$/ { in_section = 1; print; next }
+    in_section && /^## / { exit }
+    in_section { print }
+  ' "$review_notes_path")
+  if [ -z "$findings_section" ]; then
+    printf 'redo-context-unavailable task=%s round=%s path=%s reason=findings-section-missing\n' \
+      "$task_id" "$round" "$review_notes_path" >&2
+    return 1
+  fi
+
+  local finding_summary
+  if ! finding_summary=$(printf '%s\n' "$findings_section" | awk '
+    function trim(value) {
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      return value
+    }
+    function flush() {
+      if (target == "" && category == "" && detail == "" && action == "") {
+        return
+      }
+      count++
+      if (target == "" || category == "" || detail == "" || action == "") {
+        missing = 1
+      }
+      clean_target = target
+      sub(/（.*$/, "", clean_target)
+      printf "- Finding %d: Target=`%s`; Category=`%s`; Detail=%s; Required Action=%s\n", \
+        count, clean_target, category, detail, action
+      target = ""
+      category = ""
+      detail = ""
+      action = ""
+    }
+    /^### / { flush(); next }
+    /^[[:space:]]*-[[:space:]]+\*\*Target\*\*:/ {
+      line = $0
+      sub(/^[[:space:]]*-[[:space:]]+\*\*Target\*\*:[[:space:]]*/, "", line)
+      target = trim(line)
+      next
+    }
+    /^[[:space:]]*-[[:space:]]+\*\*Category\*\*:/ {
+      line = $0
+      sub(/^[[:space:]]*-[[:space:]]+\*\*Category\*\*:[[:space:]]*/, "", line)
+      category = trim(line)
+      next
+    }
+    /^[[:space:]]*-[[:space:]]+\*\*Detail\*\*:/ {
+      line = $0
+      sub(/^[[:space:]]*-[[:space:]]+\*\*Detail\*\*:[[:space:]]*/, "", line)
+      detail = trim(line)
+      next
+    }
+    /^[[:space:]]*-[[:space:]]+\*\*Required Action\*\*:/ {
+      line = $0
+      sub(/^[[:space:]]*-[[:space:]]+\*\*Required Action\*\*:[[:space:]]*/, "", line)
+      action = trim(line)
+      next
+    }
+    END {
+      flush()
+      if (count == 0 || missing == 1) {
+        exit 1
+      }
+    }
+  '); then
+    printf 'redo-context-unavailable task=%s round=%s path=%s reason=finding-field-parse-failed\n' \
+      "$task_id" "$round" "$review_notes_path" >&2
+    return 1
+  fi
+
+  cat <<EOF
+### Reviewer Reject Context
+
+- Task ID: \`${task_id}\`
+- Reviewer round: \`${round}\`
+- Source: \`${review_notes_path}\`
+
+#### Parsed Findings
+${finding_summary}
+
+#### Raw Findings / Required Action
+
+\`\`\`markdown
+${findings_section}
+\`\`\`
+EOF
+  return 0
+}
+
+# ─── pt_extract_debugger_task_section <task_id> <debugger_notes_path> ───
+#
+# debugger-notes.md から current task の `## Task <id>` セクションだけを抽出する。
+# Debugger output contract の h3 4 セクションが欠ける場合は診断を返す。
+#
+# stdout:
+#   - success: `## Task <task_id>` markdown section
+# stderr:
+#   - failure: task ID、notes path、reason を含む診断
+# return:
+#   0 = section 抽出成功 + 必須 h3 4 セクションあり
+#   1 = file missing / task section missing / required h3 missing
+pt_extract_debugger_task_section() {
+  local task_id="$1"
+  local debugger_notes_path="$2"
+
+  if [ ! -f "$debugger_notes_path" ]; then
+    printf 'debugger-context-unavailable task=%s path=%s reason=file-missing\n' \
+      "$task_id" "$debugger_notes_path" >&2
+    return 1
+  fi
+
+  local task_id_re
+  task_id_re=$(pt_regex_escape "$task_id")
+
+  local task_section
+  task_section=$(awk -v task_re="$task_id_re" '
+    $0 ~ "^## Task " task_re "[[:space:]]*$" { in_section = 1; print; next }
+    in_section && /^## Task / { exit }
+    in_section { print }
+  ' "$debugger_notes_path")
+  if [ -z "$task_section" ]; then
+    printf 'debugger-context-unavailable task=%s path=%s reason=task-section-missing\n' \
+      "$task_id" "$debugger_notes_path" >&2
+    return 1
+  fi
+
+  local missing_sections=""
+  local required
+  for required in "根本原因" "修正手順" "検証方法" "関連参考資料"; do
+    if ! grep -Eq "^###[[:space:]]+${required}[[:space:]]*$" <<<"$task_section"; then
+      missing_sections="${missing_sections:+$missing_sections,}${required}"
+    fi
+  done
+  if [ -n "$missing_sections" ]; then
+    printf 'debugger-context-unavailable task=%s path=%s reason=required-section-missing missing=%s\n' \
+      "$task_id" "$debugger_notes_path" "$missing_sections" >&2
+    return 1
+  fi
+
+  printf '%s\n' "$task_section"
+  return 0
+}
+
+# ─── pt_build_redo_context_block <task_id> <redo_kind> <review_round> <review_notes_path> [<debugger_notes_path>] ───
+#
+# Reviewer reject / Debugger 後の per-task Implementer 再実行 prompt に注入する
+# task 固有 context block を組み立てる。抽出に失敗しても通常 prompt と同一にはせず、
+# diagnostic block を返して運用者 / Developer が原因を確認できる形にする。
+#
+# redo_kind:
+#   reviewer-reject   = Reviewer reject 後の再実行
+#   debugger-fix-plan = round=2 reject + Debugger 後の再実行
+#   blocked-debugger  = BLOCKED 経路 Debugger 後の再実行（review context は任意）
+pt_build_redo_context_block() {
+  local task_id="$1"
+  local redo_kind="$2"
+  local review_round="$3"
+  local review_notes_path="$4"
+  local debugger_notes_path="${5:-}"
+
+  local review_context=""
+  local debugger_context=""
+  local review_diag=""
+  local debugger_diag=""
+  local diag_file
+
+  case "$redo_kind" in
+    reviewer-reject|debugger-fix-plan|blocked-debugger)
+      ;;
+    *)
+      printf 'redo-context-unavailable task=%s kind=%s round=%s reason=invalid-redo-kind\n' \
+        "$task_id" "$redo_kind" "$review_round" >&2
+      return 1
+      ;;
+  esac
+
+  if [ "$redo_kind" != "blocked-debugger" ]; then
+    diag_file=$(mktemp)
+    if review_context=$(pt_extract_review_reject_context "$task_id" "$review_round" "$review_notes_path" 2>"$diag_file"); then
+      :
+    else
+      review_diag=$(cat "$diag_file")
+      if [ -n "${LOG:-}" ]; then
+        pt_log "task=$task_id redo-context-unavailable kind=$redo_kind round=$review_round source=review diagnostic=${review_diag}" >> "$LOG"
+      fi
+      read -r -d '' review_context <<EOF || true
+### Reviewer Reject Context
+
+> WARNING: Reviewer reject context could not be extracted. This retry must not be treated as a normal same-task rerun.
+
+- Task ID: \`${task_id}\`
+- Reviewer round: \`${review_round}\`
+- Source: \`${review_notes_path}\`
+- Diagnostic: \`${review_diag:-unknown}\`
+EOF
+    fi
+    rm -f "$diag_file"
+  fi
+
+  if [ "$redo_kind" = "debugger-fix-plan" ] || [ "$redo_kind" = "blocked-debugger" ]; then
+    diag_file=$(mktemp)
+    if debugger_context=$(pt_extract_debugger_task_section "$task_id" "$debugger_notes_path" 2>"$diag_file"); then
+      :
+    else
+      debugger_diag=$(cat "$diag_file")
+      if [ -n "${LOG:-}" ]; then
+        pt_log "task=$task_id debugger-context-unavailable kind=$redo_kind round=$review_round source=debugger diagnostic=${debugger_diag}" >> "$LOG"
+      fi
+      read -r -d '' debugger_context <<EOF || true
+## Task ${task_id}
+
+> WARNING: Debugger Fix Plan context could not be extracted. This retry must not silently rely on stale or absent debugger-notes.md.
+
+- Task ID: \`${task_id}\`
+- Source: \`${debugger_notes_path}\`
+- Diagnostic: \`${debugger_diag:-unknown}\`
+EOF
+    fi
+    rm -f "$diag_file"
+  fi
+
+  cat <<EOF
+## Retry Context（watcher 生成 / per-task redo）
+
+この起動は通常の初回 Implementer 実行ではありません。以下の Reviewer / Debugger 指摘を
+checklist として閉じることを主目的にしてください。
+
+- Task ID: \`${task_id}\`
+- Redo kind: \`${redo_kind}\`
+- Reviewer round: \`${review_round}\`
+
+### Finding Closure Matrix（必須）
+
+Reviewer reject 後または Debugger guidance 後の再実行では、\`${SPEC_DIR_REL}/impl-notes.md\`
+に Finding Closure Matrix を作成または更新してください。rejected target requirement ごとに
+1 行を作り、fix commit / test/assertion / verification result の対応を明示してください。
+修正不要と判断した場合も理由と確認結果を残してください。
+
+| Target requirement | Category | Required Action | Fix commit | Test/assertion | Verification result | Notes / no-change reason |
+|--------------------|----------|-----------------|------------|----------------|---------------------|--------------------------|
+
+- \`Fix commit\`: 対応する修正 commit hash または commit subject
+- \`Test/assertion\`: 追加または更新した test/assertion。実装変更不要の場合も確認した assertion を記録
+- \`Verification result\`: 実行した検証コマンドと結果
+- \`Notes / no-change reason\`: 修正不要判断、scope 外判断、または補足
+
+${review_context}
+EOF
+
+  if [ -n "$debugger_context" ]; then
+    cat <<EOF
+
+### Debugger Fix Plan Context
+
+\`\`\`markdown
+${debugger_context}
+\`\`\`
+EOF
+  fi
+
+  return 0
+}
+
+# ─── pt_collect_reject_fingerprints <review_notes_path> ───
+#
+# review-notes.md の Findings から category + target の fingerprint を TSV で抽出する。
+# stdout: `<category>\t<target>`。抽出不能時は空 stdout + return 1。
+pt_collect_reject_fingerprints() {
+  local review_notes_path="$1"
+
+  if [ ! -f "$review_notes_path" ]; then
+    return 1
+  fi
+  if ! grep -Eq "(^|[[:space:]])RESULT:[[:space:]]*\`?reject\`?([[:space:]]|$)" "$review_notes_path"; then
+    return 1
+  fi
+
+  local findings_section
+  findings_section=$(awk '
+    /^## Findings[[:space:]]*$/ { in_section = 1; next }
+    in_section && /^## / { exit }
+    in_section { print }
+  ' "$review_notes_path")
+  if [ -z "$findings_section" ]; then
+    return 1
+  fi
+
+  printf '%s\n' "$findings_section" | awk '
+    function trim(value) {
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      return value
+    }
+    function flush() {
+      if (target != "" && category != "") {
+        clean_target = target
+        sub(/（.*$/, "", clean_target)
+        printf "%s\t%s\n", category, clean_target
+      }
+      target = ""
+      category = ""
+    }
+    /^### / { flush(); next }
+    /^[[:space:]]*-[[:space:]]+\*\*Target\*\*:/ {
+      line = $0
+      sub(/^[[:space:]]*-[[:space:]]+\*\*Target\*\*:[[:space:]]*/, "", line)
+      target = trim(line)
+      next
+    }
+    /^[[:space:]]*-[[:space:]]+\*\*Category\*\*:/ {
+      line = $0
+      sub(/^[[:space:]]*-[[:space:]]+\*\*Category\*\*:[[:space:]]*/, "", line)
+      category = trim(line)
+      next
+    }
+    END { flush() }
+  ' | awk 'NF && !seen[$0]++ { print }'
+}
+
+# ─── pt_collect_changed_test_paths <from_sha> <to_sha> ───
+#
+# 前回 reject 直後から次 Reviewer 起動前までに変更された test path を収集する。
+# heuristic: local-watcher/test/*, tests/*, */test/*, *_test.sh, *test*.sh
+pt_collect_changed_test_paths() {
+  local from_sha="$1"
+  local to_sha="$2"
+  local changed_paths path
+
+  if [ -z "$from_sha" ] || [ -z "$to_sha" ]; then
+    return 1
+  fi
+  if ! changed_paths=$(git diff --name-only "${from_sha}..${to_sha}" 2>/dev/null); then
+    return 1
+  fi
+
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    case "$path" in
+      local-watcher/test/*|tests/*|*/test/*|*_test.sh|*test*.sh)
+        printf '%s\n' "$path"
+        ;;
+    esac
+  done <<<"$changed_paths" | awk 'NF && !seen[$0]++ { print }'
+}
+
+pt_fingerprint_in_set() {
+  local needle="$1"
+  local haystack="$2"
+  grep -Fxq -- "$needle" <<<"$haystack"
+}
+
+pt_reject_category_needs_test_diff() {
+  local category="$1"
+  case "$category" in
+    "missing test"|"AC 未カバー") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# ─── pt_build_repeated_reject_warning <task_id> <next_round> <current_fingerprints> <changed_test_paths> [<prior_fingerprints>] ───
+#
+# 同一 missing test / AC target に対し test path 差分が無い場合の warning-only block を生成する。
+# prior_fingerprints が空なら round 2 前の risk warning、非空なら round 1 / 2 overlap のみ対象。
+pt_build_repeated_reject_warning() {
+  local task_id="$1"
+  local next_round="$2"
+  local current_fingerprints="$3"
+  local changed_test_paths="$4"
+  local prior_fingerprints="${5:-}"
+
+  if [ -z "$current_fingerprints" ] || [ -n "$changed_test_paths" ]; then
+    return 0
+  fi
+
+  local warning_rows=""
+  local category target fingerprint
+  while IFS=$'\t' read -r category target; do
+    if [ -z "$category" ] || [ -z "$target" ]; then
+      continue
+    fi
+    pt_reject_category_needs_test_diff "$category" || continue
+    fingerprint="${category}"$'\t'"${target}"
+    if [ -n "$prior_fingerprints" ] && ! pt_fingerprint_in_set "$fingerprint" "$prior_fingerprints"; then
+      continue
+    fi
+    warning_rows="${warning_rows}- Category: \`${category}\`; Target requirement: \`${target}\`; Diagnostic: no relevant test file changed after the prior reject."$'\n'
+    if [ -n "${LOG:-}" ]; then
+      pt_log "task=${task_id} repeated-reject-warning next_round=${next_round} category=${category} target=${target} changed_test_paths=none" >> "$LOG"
+    fi
+  done <<<"$current_fingerprints"
+
+  if [ -z "$warning_rows" ]; then
+    return 0
+  fi
+
+  cat <<EOF
+## Repeated Reject Warning（watcher 生成 / warning-only）
+
+Reviewer round ${next_round} を起動する前に、前回 reject 以降の関連 test path 差分が検出されませんでした。
+この warning は fail-fast ではありませんが、同一 target の未対応再発リスクとして扱ってください。
+
+- Task ID: \`${task_id}\`
+- Next Reviewer round: \`${next_round}\`
+- Changed test paths since prior reject: \`(none)\`
+
+### Risk fingerprints
+${warning_rows%$'\n'}
+EOF
+}
+
+# ─── pt_record_repeated_reject_warning_artifact <task_id> <next_round> <warning_block> <impl_notes_path> ───
+#
+# warning-only guard の診断を Developer-visible artifact として impl-notes.md に記録する。
+# 同じ task / round の block は marker comment で置換し、再実行時に重複させない。
+pt_record_repeated_reject_warning_artifact() {
+  local task_id="$1"
+  local next_round="$2"
+  local warning_block="$3"
+  local impl_notes_path="$4"
+
+  if [ -z "$warning_block" ]; then
+    return 0
+  fi
+
+  local impl_notes_dir
+  impl_notes_dir=$(dirname -- "$impl_notes_path")
+  mkdir -p "$impl_notes_dir" || return 1
+
+  if [ ! -f "$impl_notes_path" ]; then
+    cat >"$impl_notes_path" <<'EOF'
+# Implementation Notes
+
+## Implementation Notes
+EOF
+  elif ! grep -Eq '^## Implementation Notes[[:space:]]*$' "$impl_notes_path"; then
+    printf '\n## Implementation Notes\n' >> "$impl_notes_path" || return 1
+  fi
+
+  local start_marker end_marker artifact_block tmp_file
+  start_marker="<!-- idd-codex:repeated-reject-warning task=${task_id} round=${next_round} -->"
+  end_marker="<!-- /idd-codex:repeated-reject-warning task=${task_id} round=${next_round} -->"
+  read -r -d '' artifact_block <<EOF || true
+${start_marker}
+### Repeated Reject Warning（Task ${task_id} / before Reviewer round ${next_round}）
+
+Developer-visible warning generated before Reviewer round ${next_round}. 次の Implementer redo は、
+Reviewer round を追加で消費する前にこの診断を確認してください。
+
+\`\`\`markdown
+${warning_block}
+\`\`\`
+${end_marker}
+EOF
+
+  if grep -Fxq "$start_marker" "$impl_notes_path"; then
+    tmp_file=$(mktemp)
+    awk -v start="$start_marker" -v end="$end_marker" -v block="$artifact_block" '
+      $0 == start {
+        print block
+        in_block = 1
+        next
+      }
+      in_block && $0 == end {
+        in_block = 0
+        next
+      }
+      !in_block { print }
+    ' "$impl_notes_path" > "$tmp_file" || {
+      rm -f "$tmp_file"
+      return 1
+    }
+    mv "$tmp_file" "$impl_notes_path" || {
+      rm -f "$tmp_file"
+      return 1
+    }
+  else
+    printf '\n%s\n' "$artifact_block" >> "$impl_notes_path" || return 1
+  fi
+
+  if [ -n "${LOG:-}" ]; then
+    pt_log "task=${task_id} repeated-reject-warning developer-artifact=impl-notes next_round=${next_round} path=${impl_notes_path}" >> "$LOG"
+  fi
+  return 0
+}
+
+# ─── pt_build_repeated_reject_redo_context <task_id> <next_round> <warning_block> ───
+#
+# warning-only guard が発火した場合に、次 Reviewer round を消費する前の Developer
+# 再実行へ渡す dedicated redo context を組み立てる。
+pt_build_repeated_reject_redo_context() {
+  local task_id="$1"
+  local next_round="$2"
+  local warning_block="$3"
+
+  if [ -z "$warning_block" ]; then
+    return 0
+  fi
+
+  cat <<EOF
+## Repeated Reject Warning Context（watcher 生成 / per-task redo）
+
+この起動は、Reviewer round ${next_round} を追加で消費する前に warning-only guard の診断を
+Developer が確認するための dedicated redo です。以下の target について、前回 reject 以降に
+関連 test path 差分が検出されていません。
+
+- Task ID: \`${task_id}\`
+- Next Reviewer round: \`${next_round}\`
+- Redo kind: \`repeated-reject-warning\`
+
+### Required Action
+
+- Risk fingerprints の category / target requirement を確認し、必要な test/assertion を追加または更新してください。
+- 修正不要と判断する場合は、\`${SPEC_DIR_REL}/impl-notes.md\` の Finding Closure Matrix または Task ${task_id} learning に理由と確認結果を残してください。
+- 実装後、watcher は前回 reject 以降の test path 差分を再計算し、warning が解消していれば Reviewer prompt へ古い warning を渡しません。
+
+### Warning Block
+
+\`\`\`markdown
+${warning_block}
+\`\`\`
+EOF
+}
+
+# ─── pt_run_repeated_reject_warning_redo <task_id> <next_round> <warning_block> <tasks_md> ───
+#
+# warning-only guard が非空の場合、Reviewer 起動前に Developer を 1 回再実行する。
+# 戻り値は run_per_task_implementer と同じく 0 / 1 / 99 を返す。
+pt_run_repeated_reject_warning_redo() {
+  local task_id="$1"
+  local next_round="$2"
+  local warning_block="$3"
+  local tasks_md="$4"
+
+  if [ -z "$warning_block" ]; then
+    return 0
+  fi
+
+  local warning_redo_context
+  warning_redo_context=$(pt_build_repeated_reject_redo_context "$task_id" "$next_round" "$warning_block")
+  pt_log "task=$task_id redo-context injected kind=repeated-reject-warning round=$next_round" >> "$LOG"
+
+  local impl_warning_rc=0
+  run_per_task_implementer "$task_id" "$warning_redo_context" || impl_warning_rc=$?
+  case "$impl_warning_rc" in
+    0)
+      local _pt_check_warning_rc=0
+      pt_check_task_completed "$tasks_md" "$task_id" || _pt_check_warning_rc=$?
+      if [ "$_pt_check_warning_rc" != "0" ]; then
+        echo "❌ #$NUMBER: per-task Implementer warning redo (task=$task_id, phase=round${next_round}-warning-redo) rc=0 だが進捗ゼロ検出 (check_rc=$_pt_check_warning_rc) → codex-failed (per-task-implementer-no-progress)" | tee -a "$LOG"
+        pt_mark_no_progress_failed "$task_id" "round${next_round}-warning-redo" "$_pt_check_warning_rc"
+        return 1
+      fi
+      ;;
+    99)
+      echo "⏸️ #$NUMBER: per-task Implementer warning redo (task=$task_id, round=$next_round) で quota 超過検出 → codex-needs-quota-wait" | tee -a "$LOG"
+      return 99
+      ;;
+    *)
+      echo "❌ #$NUMBER: per-task Implementer warning redo (task=$task_id, round=$next_round) 失敗 → codex-failed" | tee -a "$LOG"
+      mark_issue_failed "per-task-implementer-warning-redo-failed" "per-task ループの repeated reject warning redo が task=\`${task_id}\` / next_round=\`${next_round}\` で失敗しました（codex 非 0 exit）。\`$LOG\` を確認してください。"
+      return 1
+      ;;
+  esac
+
+  return 0
+}
+
 # ─── pt_resolve_diff_range <task_id> ───
 #
 # per-task Reviewer に渡す diff range の開始 SHA / 終了 SHA を解決して
@@ -3273,7 +3881,7 @@ $(sed -n '1,180p' "$context_path")
 EOF
 }
 
-# ─── build_per_task_implementer_prompt <task_id> ───
+# ─── build_per_task_implementer_prompt <task_id> [<redo_context_block>] ───
 #
 # per-task Implementer 用の prompt を heredoc で組み立てて stdout に出力。
 # 既存 `build_dev_prompt_a` の形式を踏襲しつつ、以下を明示する:
@@ -3289,8 +3897,16 @@ EOF
 # Requirements: 2.2, 2.3, 2.4, 2.5, 4.1, 4.2, 4.3, 4.4
 build_per_task_implementer_prompt() {
   local task_id="$1"
+  local redo_context_block="${2:-}"
   local context_map_block
   context_map_block="$(cm_build_prompt_block)"
+  local retry_context_block=""
+  if [ -n "$redo_context_block" ]; then
+    read -r -d '' retry_context_block <<EOF || true
+
+${redo_context_block}
+EOF
+  fi
   local learnings
   learnings=$(pt_extract_learnings "$REPO_DIR/$SPEC_DIR_REL/impl-notes.md")
   local learnings_block
@@ -3339,6 +3955,7 @@ ${SPEC_DIR_REL}/
 - 本起動では \`tasks.md\` の **${task_id} 1 件のみ** を実装します。他の未完了 task には
   一切着手しないこと（次 task は別の fresh Implementer 起動で消化されます）
 ${context_map_block}
+${retry_context_block}
 
 ## 進め方
 
@@ -3435,7 +4052,7 @@ ${learnings_block}
 EOF
 }
 
-# ─── build_per_task_reviewer_prompt <task_id> <range_start_sha> <range_end_sha> <round> <prev_result> ───
+# ─── build_per_task_reviewer_prompt <task_id> <range_start_sha> <range_end_sha> <round> <prev_result> [<warning_block>] ───
 #
 # per-task Reviewer 用の prompt を heredoc で組み立てて stdout に出力。
 # 既存 `build_reviewer_prompt` の形式を踏襲しつつ、以下を明示する:
@@ -3456,8 +4073,16 @@ build_per_task_reviewer_prompt() {
   local range_end="$3"
   local round="$4"
   local prev_result="$5"
+  local warning_block="${6:-}"
   local context_map_block
   context_map_block="$(cm_build_prompt_block)"
+  local repeated_reject_warning_block=""
+  if [ -n "$warning_block" ]; then
+    read -r -d '' repeated_reject_warning_block <<EOF || true
+
+${warning_block}
+EOF
+  fi
 
   cat <<EOF
 あなたはこのリポジトリの Codex CLI オーケストレーターです。
@@ -3506,6 +4131,7 @@ missing test / boundary 逸脱の通常判定を続けず、\`${SPEC_DIR_REL}/re
 この reject は Developer の AC 不足ではなく、watcher が corrective commit を含まない range を
 渡した orchestration defect として扱います。
 ${context_map_block}
+${repeated_reject_warning_block}
 
 ## 必読ファイル
 
@@ -3587,7 +4213,7 @@ reviewer サブエージェントを起動し、以下を判定して \`${SPEC_D
 EOF
 }
 
-# ─── run_per_task_implementer <task_id> ───
+# ─── run_per_task_implementer <task_id> [<redo_context_block>] ───
 #
 # 当該 task 1 件のみを対象に fresh Codex session で Implementer を起動。
 #
@@ -3599,11 +4225,15 @@ EOF
 # Requirements: 2.2, 2.6, NFR 1.3, NFR 2.1, NFR 2.2
 run_per_task_implementer() {
   local task_id="$1"
+  local redo_context_block="${2:-}"
   local prompt
   cm_write_context_map "$task_id" "implementer" "" "" || cm_warn "failed to update context-map task=$task_id stage=implementer"
-  prompt=$(build_per_task_implementer_prompt "$task_id")
+  prompt=$(build_per_task_implementer_prompt "$task_id" "$redo_context_block")
 
   pt_log "task=$task_id implementer start (model=$DEV_MODEL, max-turns=$DEV_MAX_TURNS)" >> "$LOG"
+  if [ -n "$redo_context_block" ]; then
+    pt_log "task=$task_id implementer redo-context injected" >> "$LOG"
+  fi
   echo "--- per-task Implementer 実行 (task=$task_id) ---" >> "$LOG"
 
   local _qa_reset_file _qa_rc=0 _qa_ts _qa_stage_label
@@ -3685,7 +4315,7 @@ pt_guard_reviewer_range_fresh() {
   return 1
 }
 
-# ─── run_per_task_reviewer <task_id> <round> ───
+# ─── run_per_task_reviewer <task_id> <round> [<warning_block>] ───
 #
 # 当該 task の diff range のみを対象に fresh Codex session で Reviewer を起動。
 # `pt_resolve_diff_range` で range を解決し、`build_per_task_reviewer_prompt` で prompt を
@@ -3719,6 +4349,7 @@ pt_guard_reviewer_range_fresh() {
 run_per_task_reviewer() {
   local task_id="$1"
   local round="$2"
+  local warning_block="${3:-}"
 
   # diff range 解決
   local range_line range_start range_end
@@ -3752,7 +4383,10 @@ run_per_task_reviewer() {
 
   local prompt
   cm_write_context_map "$task_id" "reviewer" "$range_start" "$range_end" || cm_warn "failed to update context-map task=$task_id stage=reviewer"
-  prompt=$(build_per_task_reviewer_prompt "$task_id" "$range_start" "$range_end" "$round" "$prev_result")
+  prompt=$(build_per_task_reviewer_prompt "$task_id" "$range_start" "$range_end" "$round" "$prev_result" "$warning_block")
+  if [ -n "$warning_block" ]; then
+    pt_log "task=$task_id reviewer warning-context injected round=$round kind=repeated-reject" >> "$LOG"
+  fi
 
   # Issue #296 Req 2.4 / NFR 3.1 / Req 4.2: per-task 経路でもファイル不在起因の再起動は
   # 同一 round 内で最大 1 回まで（単発経路 run_reviewer_stage と対称）。
@@ -4372,8 +5006,21 @@ run_per_task_loop() {
         # reject 1 回目 → Implementer 再起動 + Reviewer round=2
         echo "🔁 #$NUMBER: per-task Reviewer (task=$task_id, round=1) reject → Implementer 再実行" | tee -a "$LOG"
 
+        local _pt_round1_reject_sha=""
+        local _pt_round1_fingerprints=""
+        _pt_round1_reject_sha=$(git rev-parse HEAD 2>/dev/null || true)
+        _pt_round1_fingerprints=$(pt_collect_reject_fingerprints "$REPO_DIR/$SPEC_DIR_REL/review-notes.md" || true)
+
+        local _pt_redo_context=""
+        _pt_redo_context=$(pt_build_redo_context_block \
+          "$task_id" \
+          "reviewer-reject" \
+          "1" \
+          "$REPO_DIR/$SPEC_DIR_REL/review-notes.md")
+        pt_log "task=$task_id redo-context injected kind=reviewer-reject round=1" >> "$LOG"
+
         local impl2_rc=0
-        run_per_task_implementer "$task_id" || impl2_rc=$?
+        run_per_task_implementer "$task_id" "$_pt_redo_context" || impl2_rc=$?
         case "$impl2_rc" in
           0)
             # Issue #263: Reviewer reject 後の Implementer 再実行も rc=0 で抜けたが進捗ゼロ
@@ -4398,8 +5045,48 @@ run_per_task_loop() {
             ;;
         esac
 
+        local _pt_warning_r2=""
+        if [ -n "$_pt_round1_reject_sha" ]; then
+          local _pt_changed_tests_r2=""
+          _pt_changed_tests_r2=$(pt_collect_changed_test_paths "$_pt_round1_reject_sha" "HEAD" || true)
+          _pt_warning_r2=$(pt_build_repeated_reject_warning \
+            "$task_id" \
+            "2" \
+            "$_pt_round1_fingerprints" \
+            "$_pt_changed_tests_r2" || true)
+          if ! pt_record_repeated_reject_warning_artifact \
+            "$task_id" \
+            "2" \
+            "$_pt_warning_r2" \
+            "$REPO_DIR/$SPEC_DIR_REL/impl-notes.md"; then
+            pt_log "task=$task_id repeated-reject-warning developer-artifact-unavailable next_round=2 path=$REPO_DIR/$SPEC_DIR_REL/impl-notes.md" >> "$LOG"
+          fi
+        fi
+        if [ -n "$_pt_warning_r2" ]; then
+          local _pt_warning_redo2_rc=0
+          pt_run_repeated_reject_warning_redo "$task_id" "2" "$_pt_warning_r2" "$tasks_md" || _pt_warning_redo2_rc=$?
+          case "$_pt_warning_redo2_rc" in
+            0)
+              if [ -n "$_pt_round1_reject_sha" ]; then
+                _pt_changed_tests_r2=$(pt_collect_changed_test_paths "$_pt_round1_reject_sha" "HEAD" || true)
+                _pt_warning_r2=$(pt_build_repeated_reject_warning \
+                  "$task_id" \
+                  "2" \
+                  "$_pt_round1_fingerprints" \
+                  "$_pt_changed_tests_r2" || true)
+              fi
+              ;;
+            99)
+              return 0
+              ;;
+            *)
+              return 1
+              ;;
+          esac
+        fi
+
         local rev2_rc=0
-        run_per_task_reviewer "$task_id" 2 || rev2_rc=$?
+        run_per_task_reviewer "$task_id" 2 "$_pt_warning_r2" || rev2_rc=$?
         case "$rev2_rc" in
           0)
             # round=2 approve → 次 task へ
@@ -4411,6 +5098,11 @@ run_per_task_loop() {
           1)
             # 再 reject → Phase 3 (#22) Debugger Gate に分岐 (Req 6.1, 6.3)、
             # 未対応なら codex-failed + Issue コメント
+            local _pt_round2_reject_sha=""
+            local _pt_round2_fingerprints=""
+            _pt_round2_reject_sha=$(git rev-parse HEAD 2>/dev/null || true)
+            _pt_round2_fingerprints=$(pt_collect_reject_fingerprints "$REPO_DIR/$SPEC_DIR_REL/review-notes.md" || true)
+
             if [ "${DEBUGGER_ENABLED:-false}" = "true" ] && ! detect_debugger_already_invoked "$task_id"; then
               echo "🐛 #$NUMBER: per-task Reviewer (task=$task_id, round=2) reject → Debugger Gate 起動（task scope）" | tee -a "$LOG"
               local _pt_dbg_rc=0
@@ -4429,10 +5121,18 @@ run_per_task_loop() {
                   ;;
               esac
 
-              # Implementer 再起動（Fix Plan 注入は per-task Implementer の prompt builder には未対応のため、
-              # debugger-notes.md の存在を Implementer が `### Task <id>` セクションで読むことに依拠する）
+              # Implementer 再起動（Reviewer Findings と Debugger Fix Plan を task scope で inline 注入）
+              local _pt_debugger_redo_context=""
+              _pt_debugger_redo_context=$(pt_build_redo_context_block \
+                "$task_id" \
+                "debugger-fix-plan" \
+                "2" \
+                "$REPO_DIR/$SPEC_DIR_REL/review-notes.md" \
+                "$REPO_DIR/$SPEC_DIR_REL/debugger-notes.md")
+              pt_log "task=$task_id redo-context injected kind=debugger-fix-plan round=2" >> "$LOG"
+
               local impl3_rc=0
-              run_per_task_implementer "$task_id" || impl3_rc=$?
+              run_per_task_implementer "$task_id" "$_pt_debugger_redo_context" || impl3_rc=$?
               case "$impl3_rc" in
                 0)
                   # Issue #263: Debugger 経由 Implementer 再実行も rc=0 で抜けたが進捗ゼロ
@@ -4460,8 +5160,50 @@ run_per_task_loop() {
               esac
 
               # Reviewer Round 3（task 単位）
+              local _pt_warning_r3=""
+              if [ -n "$_pt_round2_reject_sha" ]; then
+                local _pt_changed_tests_r3=""
+                _pt_changed_tests_r3=$(pt_collect_changed_test_paths "$_pt_round2_reject_sha" "HEAD" || true)
+                _pt_warning_r3=$(pt_build_repeated_reject_warning \
+                  "$task_id" \
+                  "3" \
+                  "$_pt_round2_fingerprints" \
+                  "$_pt_changed_tests_r3" \
+                  "$_pt_round1_fingerprints" || true)
+                if ! pt_record_repeated_reject_warning_artifact \
+                  "$task_id" \
+                  "3" \
+                  "$_pt_warning_r3" \
+                  "$REPO_DIR/$SPEC_DIR_REL/impl-notes.md"; then
+                  pt_log "task=$task_id repeated-reject-warning developer-artifact-unavailable next_round=3 path=$REPO_DIR/$SPEC_DIR_REL/impl-notes.md" >> "$LOG"
+                fi
+              fi
+              if [ -n "$_pt_warning_r3" ]; then
+                local _pt_warning_redo3_rc=0
+                pt_run_repeated_reject_warning_redo "$task_id" "3" "$_pt_warning_r3" "$tasks_md" || _pt_warning_redo3_rc=$?
+                case "$_pt_warning_redo3_rc" in
+                  0)
+                    if [ -n "$_pt_round2_reject_sha" ]; then
+                      _pt_changed_tests_r3=$(pt_collect_changed_test_paths "$_pt_round2_reject_sha" "HEAD" || true)
+                      _pt_warning_r3=$(pt_build_repeated_reject_warning \
+                        "$task_id" \
+                        "3" \
+                        "$_pt_round2_fingerprints" \
+                        "$_pt_changed_tests_r3" \
+                        "$_pt_round1_fingerprints" || true)
+                    fi
+                    ;;
+                  99)
+                    return 0
+                    ;;
+                  *)
+                    return 1
+                    ;;
+                esac
+              fi
+
               local rev3_rc=0
-              run_per_task_reviewer "$task_id" 3 || rev3_rc=$?
+              run_per_task_reviewer "$task_id" 3 "$_pt_warning_r3" || rev3_rc=$?
               case "$rev3_rc" in
                 0)
                   dbg_log "trigger=round2-reject issue=#${NUMBER} task=${task_id} round3 result=approve" >> "$LOG"

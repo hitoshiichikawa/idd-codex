@@ -1,0 +1,108 @@
+# Implementation Notes
+
+## Implementation Notes
+
+### Task 1
+
+- 採用方針: per-task retry 用の Reviewer / Debugger context 抽出を watcher helper と shell fixture に限定して追加した。
+- 重要な判断:
+  - `pt_extract_review_reject_context` は `review-notes.md` の `## Findings` から `Target` / `Category` / `Detail` / `Required Action` を parse し、欠落時は stdout を空にして診断付き return 1 に倒す。
+  - `pt_extract_debugger_task_section` は `## Task <id>` セクション単位で抽出し、Debugger contract の h3 4 セクション欠落を診断する。
+  - task 1 の境界に従い、Implementer prompt / loop 経路への接続は未実施。
+- 残存課題: task 2 で `pt_build_redo_context_block` と `run_per_task_loop` の retry 経路へ接続する必要がある。
+- 検証:
+  - `shellcheck local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/test/per_task_redo_context_test.sh`
+  - `bash local-watcher/test/per_task_redo_context_test.sh`
+  - `bash local-watcher/test/parse_review_result_test.sh`
+
+### Task 2
+
+- 採用方針: redo context block を optional prompt 引数として実装し、通常 per-task Implementer prompt は空引数時に従来どおり維持した。
+- 重要な判断:
+  - `pt_build_redo_context_block` は Reviewer / Debugger context の抽出失敗時も diagnostic block を返し、通常の同一 task 再実行と区別できるようにした。
+  - round 1 reject 後は `review-notes.md`、round 2 reject + Debugger 後は `review-notes.md` と `debugger-notes.md` の `## Task <id>` セクションを inline 注入する。
+  - Finding Closure Matrix の詳細 contract と repeated reject guard は後続 task の境界に残した。
+- 残存課題: task 3 で Finding Closure Matrix の必須列と Developer agent 同期、task 4 で連続 reject warning guard を実装する必要がある。
+
+### Task 3
+
+- 採用方針: Finding Closure Matrix の contract を redo prompt と Developer agent の per-task 指示へ同期し、shell fixture では prompt-only assertion として検証した。
+- 重要な判断:
+  - Matrix の必須列は `Target requirement` / `Category` / `Required Action` / `Fix commit` / `Test/assertion` / `Verification result` / `Notes / no-change reason` に固定した。
+  - 実 LLM に `impl-notes.md` を生成させる assertion は shell fixture の責務外のため、prompt が rejected target requirement、fix commit、test/assertion、verification result を要求していることを確認する方針にした。
+  - 手動確認範囲は prompt 文面、Developer agent 文面、root / repo-template agents の byte-identical 同期に限定した。
+- 残存課題: task 4 で連続 reject warning guard、task 5 で #23 shape の回帰 fixture を完成させる必要がある。
+
+### Task 4
+
+- 採用方針: 連続 reject guard は fail-fast ではなく warning-only とし、Reviewer prompt と watcher log の両方に残す形で実装した。
+- 重要な判断:
+  - fingerprint は `review-notes.md` の Findings から `category + target` TSV として抽出し、warning 対象は `missing test` / `AC 未カバー` に限定した。
+  - test 差分は `local-watcher/test/*` / `tests/*` / `*/test/*` / `*_test.sh` / `*test*.sh` の path heuristic で判定し、新規 dependency は追加しなかった。
+  - round 2 前は round 1 reject target の test 差分なし risk、round 3 前は round 1 / 2 の overlap かつ test 差分なしの場合だけ warning を注入する。
+- Reviewer round 1 reject 対応:
+  - warning-only guard の診断を Reviewer prompt だけでなく、watcher 生成の Developer-visible artifact として `impl-notes.md` に marker 付きで記録するようにした。
+  - marker 付き section は同じ task / round で置換されるため、watcher 再実行時に重複しない。
+  - fixture では artifact 本文と、`pt_extract_learnings` 経由で次の Implementer prompt に warning が含まれることを検証した。
+- Debugger round 2 reject 対応:
+  - warning が非空の場合は Reviewer round 2 / 3 を消費する前に `repeated-reject-warning` redo context で Developer を再実行する。
+  - Developer 再実行後に前回 reject SHA から `HEAD` までの test 差分を再計算し、warning が解消していれば Reviewer prompt へ古い warning を渡さない。
+  - fixture では warning redo が Reviewer より前に呼ばれる順序と、redo context に task ID / next round / category / target / changed test none が含まれることを検証した。
+- 残存課題: task 5 で #23 shape の Req 5.2 / 5.3 regression fixture を完成させる必要がある。
+
+#### Finding Closure Matrix
+
+| Target requirement | Category | Required Action | Fix commit | Test/assertion | Verification result | Notes / no-change reason |
+|--------------------|----------|-----------------|------------|----------------|---------------------|--------------------------|
+| 4.4 | AC 未カバー | warning-only guard の診断を Reviewer round 消費前に Developer も確認できる経路へ渡す | d6af879 fix(watcher): repeated reject warningをDeveloperにも可視化 | `local-watcher/test/per_task_repeated_reject_guard_test.sh` で Developer-visible artifact と Implementer prompt 露出を assertion | `shellcheck local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/test/per_task_repeated_reject_guard_test.sh`; `bash local-watcher/test/per_task_repeated_reject_guard_test.sh` PASS 24 / FAIL 0 | Reviewer prompt / operator log に加え、`impl-notes.md` marker section 経由で次 Implementer prompt に warning を含める |
+| 4.4 | AC 未カバー | warning-only guard の診断を Reviewer 起動前の Developer 実行機会へ渡し、Developer redo 後に warning を再計算する | 087d673 fix(watcher): repeated reject warningでDeveloperを再実行 | `local-watcher/test/per_task_repeated_reject_guard_test.sh` で warning redo → Reviewer の呼び出し順、redo context の task ID / round / target / changed test none、空 warning skip を assertion | `shellcheck local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/test/per_task_repeated_reject_guard_test.sh`; `bash local-watcher/test/per_task_repeated_reject_guard_test.sh` PASS 34 / FAIL 0 | `pt_run_repeated_reject_warning_redo` を round 2 / 3 前に挿入し、Developer 再実行後に Reviewer prompt 用 warning を再計算する |
+
+### Task 5
+
+- 採用方針: `per_task_redo_context_test.sh` に #23 shape 専用の round 1 / round 2 reject fixture と Debugger fixture を追加し、redo prompt の内容を prompt-only assertion で固定した。
+- 重要な判断:
+  - Req 5.2 / 5.3 の `missing test` が round 1 / round 2 に残る Review Notes を別 fixture にし、既存の抽出 helper と prompt builder を再利用した。
+  - Debugger fixture は `## Task 5` と h3 4 セクションを満たし、Reviewer context と Debugger Fix Plan が同じ redo prompt に入ることを検証した。
+  - 実 LLM に `impl-notes.md` を生成させる assertion は shell fixture の責務外のため、Finding Closure Matrix contract が prompt に含まれることを検証する方針にした。
+- 残存課題: task 6 で全体 verify と root / repo-template 同期確認を実施する必要がある。
+- 検証:
+  - `shellcheck local-watcher/test/per_task_redo_context_test.sh`
+  - `bash local-watcher/test/per_task_redo_context_test.sh` PASS 77 / FAIL 0
+
+#### Finding Closure Matrix
+
+| Target requirement | Category | Required Action | Fix commit | Test/assertion | Verification result | Notes / no-change reason |
+|--------------------|----------|-----------------|------------|----------------|---------------------|--------------------------|
+| 5.1 | missing test | #23 shape で Req 5.2 / 5.3 の missing test が round 1 / round 2 に残る fixture を作る | feat(test): #23 shape redo prompt回帰fixtureを追加 | `issue23_round1_review_notes` / `issue23_round2_review_notes` に Req 5.2 / 5.3 の連続 reject を追加 | `bash local-watcher/test/per_task_redo_context_test.sh` PASS 77 / FAIL 0 | prompt-only fixture として再現。実 Reviewer round は起動しない |
+| 5.1 | missing test | round 1 reject 後の redo prompt に actionable Reviewer context が含まれることを検証する | feat(test): #23 shape redo prompt回帰fixtureを追加 | `#23 round 1 prompt includes Req 5.2 target` / `Req 5.3 target` / Required Action assertions | `bash local-watcher/test/per_task_redo_context_test.sh` PASS 77 / FAIL 0 | Reviewer context 抽出 helper の実出力を `build_per_task_implementer_prompt` に渡して検証 |
+| 5.2 | missing test | round 2 reject 後の Debugger fixture と Debugger context 注入を検証する | feat(test): #23 shape redo prompt回帰fixtureを追加 | `issue23_debugger_notes` の `## Task 5` と h3 4 セクション、Debugger source / fix plan assertions | `bash local-watcher/test/per_task_redo_context_test.sh` PASS 77 / FAIL 0 | Reviewer context と Debugger Fix Plan が同一 prompt に入ることを検証 |
+| 5.3 | missing test | Finding Closure Matrix contract が rejected target requirement、fix commit、test/assertion、verification result の対応を要求することを検証する | feat(test): #23 shape redo prompt回帰fixtureを追加 | canonical matrix schema、`rejected target requirement ごとに`、`fix commit / test/assertion / verification result` assertions | `bash local-watcher/test/per_task_redo_context_test.sh` PASS 77 / FAIL 0 | 実 LLM 生成物ではなく prompt contract の shell-level assertion で代替 |
+| 5.6 | missing test | prompt-only assertion に留めた理由と検証範囲を実装メモに記録する | feat(test): #23 shape redo prompt回帰fixtureを追加 | 本 `### Task 5` learning と Finding Closure Matrix | `shellcheck local-watcher/test/per_task_redo_context_test.sh`; `bash local-watcher/test/per_task_redo_context_test.sh` PASS 77 / FAIL 0 | shell fixture は prompt 生成までを責務とし、LLM の実執筆までは検証しない |
+
+- Reviewer round 1 reject 対応:
+  - 指摘は task 5 実装内容ではなく、review range に task 4 corrective commit が混入した boundary 逸脱だった。
+  - task 5 の fixture / prompt contract は Reviewer の Verified Requirements で確認済みのため、code / test 差分は追加せず、retry range の終端を最新 `docs(tasks): mark 5 as done` marker に揃える。
+  - `debugger-notes.md` は存在しないため、Debugger Fix Plan への追加対応はなし。
+
+#### Reviewer Round 1 Finding Closure Matrix
+
+| Target requirement | Category | Required Action | Fix commit | Test/assertion | Verification result | Notes / no-change reason |
+|--------------------|----------|-----------------|------------|----------------|---------------------|--------------------------|
+| Task 5 boundary | boundary 逸脱 | task 5 range から task 4 corrective commit を分離し、task 5 差分を `per_task_redo_context_test.sh`、task 5 の impl-notes、canonical marker commit に限定する | docs(spec): record task 5 boundary closure / docs(tasks): mark 5 as done | `git diff --name-status d1bf389..HEAD` と `git log --oneline d1bf389..HEAD` で reject 後差分を確認し、最後に最新 marker commit を置く | `shellcheck local-watcher/test/per_task_redo_context_test.sh`; `bash local-watcher/test/per_task_redo_context_test.sh` PASS 77 / FAIL 0 | task 5 の Verified Requirements は承認済みのため、code / test 変更は不要。boundary 解消は retry range を reject marker 以降の task 5 closure note と最新 marker に限定することで対応 |
+
+### Task 6
+
+- 採用方針: task 6 は実装追加を行わず、指定された静的検証、#23 range fixture、root / repo-template 同期確認を実行して結果を記録した。
+- 重要な判断:
+  - `shellcheck local-watcher/bin/*.sh install.sh setup.sh .github/scripts/*.sh` と task 対象 shell fixture の shellcheck は警告なしで通過した。
+  - #23 shape の redo prompt coverage は `per_task_redo_context_test.sh` の prompt-only assertion で確認し、Req 5.2 / 5.3、Debugger context、Finding Closure Matrix contract が prompt に含まれることを PASS 77 / FAIL 0 で確認した。
+  - root / repo-template の agents と rules は `diff -r` が空で、byte-identical 同期を確認した。
+- 残存課題: なし。
+- 検証:
+  - `shellcheck local-watcher/bin/*.sh install.sh setup.sh .github/scripts/*.sh`
+  - `shellcheck local-watcher/test/per_task_redo_context_test.sh local-watcher/test/per_task_repeated_reject_guard_test.sh`
+  - `bash local-watcher/test/per_task_redo_context_test.sh` PASS 77 / FAIL 0
+  - `bash local-watcher/test/per_task_repeated_reject_guard_test.sh` PASS 34 / FAIL 0
+  - `bash local-watcher/test/per_task_marker_review_range_test.sh` PASS 33 / FAIL 0
+  - `diff -r .codex/agents repo-template/.codex/agents`
+  - `diff -r .codex/rules repo-template/.codex/rules`
