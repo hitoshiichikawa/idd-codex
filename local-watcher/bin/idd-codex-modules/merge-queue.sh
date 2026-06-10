@@ -57,9 +57,15 @@ mq_pr_review_decision_approved() {
 mq_resolve_marker_approval_signal() {
   local comments_json="$1"
   local head_sha="$2"
+  # Issue #50: approval marker は信頼できる author のコメントのみ採用する（偽造防止）。
+  # 公開 repo では誰でもコメント可能で head SHA も公開情報のため、author 検証が無いと
+  # 第三者が approve marker を偽造して Merge Queue を誤誘導できた。GitHub REST issue
+  # comments は author_association を必ず含む。watcher 自身の marker は投稿者 = repo owner
+  # （OWNER）。env MERGE_QUEUE_TRUSTED_ASSOCIATIONS で上書き可（既定 OWNER/MEMBER/COLLABORATOR）。
+  local trusted_assoc="${MERGE_QUEUE_TRUSTED_ASSOCIATIONS:-OWNER MEMBER COLLABORATOR}"
 
   local marker_state
-  if ! marker_state=$(printf '%s\n' "$comments_json" | jq -r --arg sha "$head_sha" '
+  if ! marker_state=$(printf '%s\n' "$comments_json" | jq -r --arg sha "$head_sha" --arg trusted "$trusted_assoc" '
     def has_approve_verdict:
       test("(^|[\r\n])[[:space:]]*VERDICT:[[:space:]]*approve[[:space:]]*($|[\r\n])"; "i");
     def has_blocking_verdict:
@@ -89,8 +95,11 @@ mq_resolve_marker_approval_signal() {
                 elif ($body_approve or $attr_approve) then "approve"
                 else "none" end)}
         end;
-    [
-      (.[]?.body // "")
+    ($trusted | ascii_upcase | split(" ")) as $trusted_set
+    | [
+      .[]?
+      | select(((.author_association // "") | ascii_upcase) as $a | ($trusted_set | any(. == $a)))
+      | (.body // "")
       | select(test("idd-codex:pr-reviewer"; "i") and test("kind=review"; "i"))
       | marker_record
     ] as $records
