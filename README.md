@@ -1260,6 +1260,28 @@ idd-codex は基本フロー（Triage → 実装 → PR 作成）以外の機能
 > であり、一覧表側はその要約に留めます（NFR 1.2）。一覧表と詳細セクションの記述が食い違って
 > いる場合は **詳細セクションを正本** として読んでください（Req 4.3）。
 
+> **Migration Note（セキュリティ修正 #47 / #49 / #50 / #52, 2026-06-10）**: セキュリティ
+> レビューに基づく以下の修正を入れました。挙動互換に影響するのは #52 のみです。
+>
+> - **#47（Critical）**: 未信頼の Issue タイトルを Triage プロンプトへ差し込む処理を `sed` から
+>   `awk` リテラル置換へ変更（`sed` の `e` コマンドを悪用した RCE を遮断）。正当なタイトルの
+>   描画結果は不変。
+> - **#49（High）**: Codex Guard Hook（`IDD_CODEX_HOOKS_ENABLED=true` 時）のコマンド解析を
+>   全 segment 走査・先頭トークン正規化（`env`/`command`/絶対パス/`bash -c` ラッパ）・束ね短 flag
+>   検出・G0 mutator 拡張へ強化。`true; git push --force origin main` 等の自明なバイパスを塞いだ。
+>   guard は opt-in のため未使用環境の挙動は不変。
+> - **#50（High）**: Merge Queue の approval marker / PR Iteration の一般コメント取り込みに
+>   **コメント著者の `author_association` 検証**を追加（既定 `OWNER` / `MEMBER` / `COLLABORATOR`）。
+>   公開 repo で第三者が approve marker を偽造したり、未信頼コメントを codex プロンプトへ注入する
+>   経路を遮断。watcher 自身（repo owner トークン投稿）の marker は従来どおり通る。信頼集合は
+>   `MERGE_QUEUE_TRUSTED_ASSOCIATIONS` / `PR_ITERATION_TRUSTED_ASSOCIATIONS`（空白区切り）で上書き可。
+> - **#52（Medium, 挙動変更あり）**: feature Issue テンプレートの自動付与ラベルを
+>   `codex-auto-dev` → `enhancement` に変更。**公開リポジトリで外部ユーザが Issue 作成だけで
+>   自律エージェントを起動できる経路を塞ぐため**、bug-report テンプレートと同様に「人間が確認後に
+>   手動で `codex-auto-dev` を付与」する運用へ統一した。**移行**: feature テンプレートからの
+>   自動起動に依存していた運用は、Issue 起票後に人間が `codex-auto-dev` を付与する手順へ切り替える
+>   こと。プライベート repo で従来挙動を維持したい場合は当該テンプレートの `labels` を戻してよい。
+
 ### デフォルト有効（無効化する場合のみ `=false` 明示）
 
 | 機能 | 制御変数 | 既定 | 正規化規則 | 追加 env（必須/推奨） | 詳細 | 関連 |
@@ -1300,10 +1322,18 @@ idd-codex は基本フロー（Triage → 実装 → PR 作成）以外の機能
 
 - **G0 hook 自己保護**: `$HOME/.idd-codex/hooks/` 配下の hook script と
   `${CODEX_HOME:-$HOME/.codex}/idd-codex-guard.config.toml` への Edit / Write / apply_patch /
-  Bash mutation を deny
+  Bash mutation を deny（`rm`/`mv`/`cp`/`ln`/`dd`/`truncate`/`install`/`tee`/`chmod` 等の
+  mutator・in-place 編集・任意のリダイレクトを検出。#49）
 - **G1 base push deny**: `$BASE_BRANCH`（既定 `main`）宛の `git push` を deny
-- **G2 unconditional force deny**: `git push -f` / `--force` / `+refspec` を deny。
-  `--force-with-lease` は base 宛でない限り allow
+- **G2 unconditional force deny**: `git push -f` / `--force` / 束ね短 flag（`-fu` 等）/ `+refspec`
+  を deny。`--force-with-lease` は base 宛でない限り allow
+
+> **#49 ハードニング (2026-06-10)**: 旧実装はコマンド文字列の **先頭 segment だけ**を、しかも
+> 先頭トークンが厳密に `git` のときだけ解析していたため、`true; git push --force origin main` /
+> `command git push -f ...` / `/usr/bin/git push -f ...` / `bash -c "git push -f ..."` /
+> `git push -fu ...` 等で全規則がバイパスできた。現在は **全 segment**（`;` `&&` `||` `|` 改行 `&`）を
+> 走査し、先頭トークンの `env`/`command`/`VAR=`/絶対パスを正規化、`bash -c "<script>"` の inline script を
+> 再帰解析する。
 
 配置は `./install.sh --local` が行います。hook script は `$HOME/.idd-codex/hooks/idd-codex-guard.sh`、
 profile config は `${CODEX_HOME:-$HOME/.codex}/idd-codex-guard.config.toml` に生成されます。ON のときは
@@ -1312,11 +1342,14 @@ watcher 起動時に Codex version / install 完全性 / hook smoke test を確�
 
 既知の限界:
 
-- hook が見られるのは top-level の Bash command 文字列です。`bash wrapper.sh` の内部で実行される
-  `git push` は literal 解析できません。
+- `bash -c "<inline script>"` の中身は再帰解析しますが（#49）、`bash wrapper.sh` のように
+  **スクリプトファイル**経由で実行される `git push` は literal 解析できません（ファイル内容は hook から
+  見えないため）。
 - 引数なしの bare `git push` は command 文字列だけでは宛先 branch を判定できません。
-- これは GitHub branch protection の代替ではなく、Codex agent turn 内の早期フィードバック用の
-  追加防御です。
+- 文字列マッチによる防御は原理的に完全ではありません。これは GitHub branch protection の代替ではなく、
+  Codex agent turn 内の早期フィードバック用の追加防御（defense-in-depth）です。hook script / config 自体は
+  cron 実行ユーザが書き換え可能なため、より強い保証が必要なら hooks ディレクトリを別ユーザ所有や
+  read-only マウントにする運用を検討してください。
 
 各機能は**互いに独立**に制御できます。例えば `MERGE_QUEUE_RECHECK_ENABLED=false` だけを
 明示して Re-check Processor だけ無効化、といった構成も可能です。

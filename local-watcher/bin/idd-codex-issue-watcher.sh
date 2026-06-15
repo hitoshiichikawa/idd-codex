@@ -9572,6 +9572,40 @@ dr_check_dependencies() {
   return 0
 }
 
+# Triage プロンプトテンプレートの {{NUMBER}} / {{TITLE}} / {{URL}} / {{FILE}} を
+# リテラル置換して stdout に出力する（Issue #47）。
+#
+# 引数: $1=テンプレートパス $2=NUMBER $3=TITLE $4=URL $5=TRIAGE_FILE
+#
+# セキュリティ: 未信頼の Issue タイトル（公開 repo では誰でも設定可）を sed プログラムへ
+# 補間すると、GNU sed の `e` コマンド等を悪用した command injection（RCE）が成立する。
+# sed / eval を使わず awk の index/substr によるリテラル置換で差し込む（PR Iteration の
+# pi_build_iteration_prompt と同方針）。値は ENVIRON 経由で渡すことで、awk -v の backslash
+# 解釈や bash パラメータ展開の `&`（matched-text、bash 5.1+）といった置換値の再解釈を排除する。
+# repl() は挿入済みの値を再走査しないため、値内に別プレースホルダ文字列があっても再展開しない。
+_triage_render_prompt() {
+  local tmpl="$1"
+  IDD_TRIAGE_NUMBER="$2" IDD_TRIAGE_TITLE="$3" IDD_TRIAGE_URL="$4" IDD_TRIAGE_FILE="$5" \
+  awk '
+    function repl(s, key, val,    out, idx) {
+      out = ""
+      while ((idx = index(s, key)) > 0) {
+        out = out substr(s, 1, idx - 1) val
+        s = substr(s, idx + length(key))
+      }
+      return out s
+    }
+    {
+      line = $0
+      line = repl(line, "{{NUMBER}}", ENVIRON["IDD_TRIAGE_NUMBER"])
+      line = repl(line, "{{TITLE}}",  ENVIRON["IDD_TRIAGE_TITLE"])
+      line = repl(line, "{{URL}}",    ENVIRON["IDD_TRIAGE_URL"])
+      line = repl(line, "{{FILE}}",   ENVIRON["IDD_TRIAGE_FILE"])
+      print line
+    }
+  ' "$tmpl"
+}
+
 # 1 Issue を 1 slot worktree で処理する Worker 本体。
 # サブシェル `( _slot_run_issue n issue_json ) &` から呼び出される前提。
 #
@@ -9796,14 +9830,10 @@ _slot_run_issue() {
     local TRIAGE_FILE="/tmp/triage-${REPO_SLUG}-${NUMBER}-${TS}.json"
     rm -f "$TRIAGE_FILE"
 
-    local TITLE_SAFE="${TITLE//|/\\|}"
+    # Issue #47: 未信頼の Issue タイトル（公開 repo では誰でも設定可）を安全に差し込む。
+    # 詳細は _triage_render_prompt のコメント参照。
     local TRIAGE_PROMPT
-    TRIAGE_PROMPT=$(sed \
-      -e "s|{{NUMBER}}|${NUMBER}|g" \
-      -e "s|{{TITLE}}|${TITLE_SAFE}|g" \
-      -e "s|{{URL}}|${URL}|g" \
-      -e "s|{{FILE}}|${TRIAGE_FILE}|g" \
-      "$TRIAGE_TEMPLATE")
+    TRIAGE_PROMPT=$(_triage_render_prompt "$TRIAGE_TEMPLATE" "$NUMBER" "$TITLE" "$URL" "$TRIAGE_FILE")
 
     echo "--- Triage 実行 ---" >> "$LOG"
     # Issue #66: Quota-Aware Watcher 経由で codex を起動。opt-out 時は素通し
