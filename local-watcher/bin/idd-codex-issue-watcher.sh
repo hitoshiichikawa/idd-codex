@@ -8677,6 +8677,291 @@ _resume_detect_existing_branch() {
   return 1
 }
 
+# ─── failed recovery / stale worktree helpers (Issue #58) ───
+#
+# `codex-failed` から復旧した Issue は、PR 作成前に origin branch だけが残ることがある。
+# この状態を通常 impl として origin/$BASE_BRANCH から fresh checkout すると、既存成果物を
+# 捨てるだけでなく、同じ branch が別 slot worktree に checkout 済みの場合は Git の
+# worktree 制約で `already used by worktree` となり再失敗する。以下の helper は:
+#   - 既存 origin branch がある impl を origin branch 起点で resume する
+#   - 対象 branch を checkout 済みの inactive clean slot worktree を detached に戻す
+#   - dirty / local-only branch or commit / 非 slot worktree は自動破棄せず codex-needs-decisions に倒す
+# ための安全弁である。
+
+_failed_recovery_branch_worktrees() {
+  local branch="$1"
+  local target_ref="refs/heads/$branch"
+  git worktree list --porcelain 2>/dev/null | awk -v target="$target_ref" '
+    /^worktree / {
+      if (wt != "" && br == target) {
+        print wt
+      }
+      wt = substr($0, 10)
+      br = ""
+      next
+    }
+    /^branch / {
+      br = substr($0, 8)
+      next
+    }
+    /^$/ {
+      if (wt != "" && br == target) {
+        print wt
+      }
+      wt = ""
+      br = ""
+      next
+    }
+    END {
+      if (wt != "" && br == target) {
+        print wt
+      }
+    }
+  '
+}
+
+_failed_recovery_slot_for_worktree() {
+  local wt="$1"
+  local wt_physical
+  wt_physical=$(cd "$wt" 2>/dev/null && pwd -P || printf '%s' "$wt")
+  local n=1
+  while [ "$n" -le "${PARALLEL_SLOTS:-1}" ]; do
+    local expected expected_physical
+    expected="$(_worktree_path "$n")"
+    expected_physical=$(cd "$expected" 2>/dev/null && pwd -P || printf '%s' "$expected")
+    if [ "$wt" = "$expected" ] || [ "$wt_physical" = "$expected_physical" ]; then
+      echo "$n"
+      return 0
+    fi
+    n=$((n + 1))
+  done
+  return 1
+}
+
+_failed_recovery_escalate_needs_decisions() {
+  local reason="$1"
+  local branch="$2"
+  local wt="$3"
+  local detail="$4"
+
+  rs_set_result codex-needs-decisions || true
+
+  local body
+  body="🛑 failed recovery preflight が自動復旧を中止しました（Issue #58）。
+
+- 対象 Issue: #${NUMBER}
+- 対象 branch: \`${branch}\`
+- 対象 worktree: \`${wt:-n/a}\`
+- 理由: \`${reason}\`
+- ログ: \`${LOG}\`
+
+${detail}
+
+この状態で自動的に branch を reset すると、未 push の成果物や人間の作業を失う可能性があります。
+内容を確認し、必要なら成果物を退避したうえで \`${LABEL_NEEDS_DECISIONS}\` ラベルを外してください。"
+
+  mark_issue_needs_decisions "failed-recovery-${reason}" "$body"
+  return 0
+}
+
+_failed_recovery_local_branch_safe_to_reset() {
+  local branch="$1"
+  local has_origin_branch="$2"
+
+  [ "$has_origin_branch" = "true" ] || return 0
+  git show-ref --verify --quiet "refs/heads/$branch" || return 0
+
+  local local_sha origin_sha base_sha ahead_count
+  local_sha=$(git rev-parse "refs/heads/$branch" 2>/dev/null || echo "")
+  origin_sha=$(git rev-parse "refs/remotes/origin/$branch" 2>/dev/null || echo "")
+  base_sha=$(git rev-parse "refs/remotes/origin/${BASE_BRANCH}" 2>/dev/null || echo "")
+
+  if [ -z "$local_sha" ] || [ -z "$origin_sha" ]; then
+    _failed_recovery_escalate_needs_decisions \
+      "branch-state-unresolved" \
+      "$branch" \
+      "" \
+      "local / origin branch の SHA を解決できませんでした。"
+    return 20
+  fi
+
+  if [ "$local_sha" = "$origin_sha" ]; then
+    return 0
+  fi
+
+  # 古い slot の `_worktree_reset` が branch checkout 状態のまま origin/$BASE_BRANCH へ
+  # reset した場合、local branch は base branch HEAD と一致する。この reset-corruption
+  # 形は origin branch を正本に戻せばよいため自動復旧を許可する。
+  if [ -n "$base_sha" ] && [ "$local_sha" = "$base_sha" ]; then
+    slot_log "failed-recovery: local branch reset-corruption detected branch=$branch local=$local_sha origin=$origin_sha base=$base_sha"
+    return 0
+  fi
+
+  ahead_count=$(git rev-list --count "origin/${branch}..${branch}" 2>/dev/null || echo "unknown")
+  case "$ahead_count" in
+    ''|*[!0-9]*)
+      _failed_recovery_escalate_needs_decisions \
+        "branch-divergence-unresolved" \
+        "$branch" \
+        "" \
+        "local branch と origin branch の差分を判定できませんでした。
+
+- local: \`${local_sha}\`
+- origin: \`${origin_sha}\`
+- base: \`${base_sha:-unknown}\`"
+      return 20
+      ;;
+    0)
+      return 0
+      ;;
+    *)
+      _failed_recovery_escalate_needs_decisions \
+        "local-only-commits" \
+        "$branch" \
+        "" \
+        "local branch に origin 未 push の commit が \`${ahead_count}\` 件あります。
+
+- local: \`${local_sha}\`
+- origin: \`${origin_sha}\`
+- base: \`${base_sha:-unknown}\`
+
+自動復旧で \`git checkout -B ${branch} origin/${branch}\` を実行すると、local branch ref が origin 側へ戻り、未 push commit が branch から外れるため停止しました。"
+      return 20
+      ;;
+  esac
+}
+
+_failed_recovery_prepare_branch_checkout() {
+  local branch="$1"
+  local has_origin_branch="${2:-false}"
+
+  local rc=0
+  _failed_recovery_local_branch_safe_to_reset "$branch" "$has_origin_branch" || rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+
+  local wt
+  while IFS= read -r wt; do
+    [ -n "$wt" ] || continue
+    if [ -n "${IDD_SLOT_WORKTREE:-}" ] && [ "$wt" = "$IDD_SLOT_WORKTREE" ]; then
+      continue
+    fi
+
+    if [ "$has_origin_branch" != "true" ]; then
+      _failed_recovery_escalate_needs_decisions \
+        "local-branch-without-origin" \
+        "$branch" \
+        "$wt" \
+        "対象 branch が local worktree に checkout されていますが、対応する origin branch がありません。local-only の成果物を失う可能性があるため自動 detach / reset しません。"
+      return 20
+    fi
+
+    local slot=""
+    slot=$(_failed_recovery_slot_for_worktree "$wt" 2>/dev/null || true)
+    if [ -z "$slot" ]; then
+      _failed_recovery_escalate_needs_decisions \
+        "non-slot-worktree" \
+        "$branch" \
+        "$wt" \
+        "対象 branch が idd-codex 管理外の worktree に checkout されています。人間の作業中 worktree の可能性があるため自動 detach しません。"
+      return 20
+    fi
+
+    if [ "$slot" = "${IDD_SLOT_NUMBER:-}" ]; then
+      continue
+    fi
+
+    if ! _slot_acquire "$slot"; then
+      _failed_recovery_escalate_needs_decisions \
+        "active-slot-worktree" \
+        "$branch" \
+        "$wt" \
+        "対象 branch を checkout している slot-${slot} は現在 lock 中です。別 worker が処理中の可能性があるため自動 detach しません。"
+      return 20
+    fi
+
+    local status_snapshot=""
+    status_snapshot=$(git -C "$wt" status --porcelain --untracked-files=all 2>/dev/null || echo "__status_failed__")
+    if [ -n "$status_snapshot" ]; then
+      _slot_release "$slot" || true
+      local shown_status
+      shown_status=$(printf '%s\n' "$status_snapshot" | sed -n '1,40p')
+      _failed_recovery_escalate_needs_decisions \
+        "dirty-stale-worktree" \
+        "$branch" \
+        "$wt" \
+        "対象 branch を checkout している slot-${slot} worktree に未コミット差分があります。
+
+\`\`\`
+${shown_status}
+\`\`\`"
+      return 20
+    fi
+
+    if ! git -C "$wt" checkout --detach --force HEAD >/dev/null 2>&1; then
+      _slot_release "$slot" || true
+      _failed_recovery_escalate_needs_decisions \
+        "stale-worktree-detach-failed" \
+        "$branch" \
+        "$wt" \
+        "slot-${slot} worktree は clean でしたが、\`git checkout --detach --force HEAD\` に失敗しました。"
+      return 20
+    fi
+    _slot_release "$slot" || true
+    slot_log "failed-recovery: stale worktree detached branch=$branch slot=$slot wt=$wt"
+  done < <(_failed_recovery_branch_worktrees "$branch")
+
+  return 0
+}
+
+_failed_recovery_checkout_branch() {
+  local branch="$1"
+  local start_ref="$2"
+  local has_origin_branch="${3:-false}"
+  local failed_message="$4"
+
+  local stderr_tmp rc=0
+  stderr_tmp="$(mktemp -t failed-recovery-checkout-XXXXXX.err 2>/dev/null || echo "")"
+  if [ -n "$stderr_tmp" ]; then
+    git checkout -B "$branch" "$start_ref" 2>"$stderr_tmp" || rc=$?
+  else
+    git checkout -B "$branch" "$start_ref" || rc=$?
+  fi
+  if [ "$rc" -eq 0 ]; then
+    [ -n "$stderr_tmp" ] && rm -f "$stderr_tmp" 2>/dev/null || true
+    return 0
+  fi
+
+  if [ -n "$stderr_tmp" ] && [ -s "$stderr_tmp" ]; then
+    cat "$stderr_tmp" >&2 || true
+  fi
+
+  if [ -n "$stderr_tmp" ] && grep -q "already used by worktree" "$stderr_tmp" 2>/dev/null; then
+    slot_warn "branch checkout が worktree 使用中で失敗したため stale worktree recovery を試行: $branch"
+    local prep_rc=0
+    _failed_recovery_prepare_branch_checkout "$branch" "$has_origin_branch" || prep_rc=$?
+    if [ "$prep_rc" -eq 0 ]; then
+      rc=0
+      : > "$stderr_tmp"
+      git checkout -B "$branch" "$start_ref" 2>"$stderr_tmp" || rc=$?
+      if [ "$rc" -eq 0 ]; then
+        [ -n "$stderr_tmp" ] && rm -f "$stderr_tmp" 2>/dev/null || true
+        return 0
+      fi
+      if [ -s "$stderr_tmp" ]; then
+        cat "$stderr_tmp" >&2 || true
+      fi
+    elif [ "$prep_rc" -eq 20 ]; then
+      [ -n "$stderr_tmp" ] && rm -f "$stderr_tmp" 2>/dev/null || true
+      return 1
+    fi
+  fi
+
+  [ -n "$stderr_tmp" ] && rm -f "$stderr_tmp" 2>/dev/null || true
+  slot_warn "$failed_message: $branch"
+  _slot_mark_failed "branch-checkout" "ブランチ \`$branch\` の checkout に失敗しました。"
+  return 1
+}
+
 # `impl-resume` モードの branch 初期化を `IMPL_RESUME_PRESERVE_COMMITS` flag によって
 # 2 戦略のいずれかにディスパッチする。既存の `git checkout -B "$BRANCH" "origin/$BASE_BRANCH"`
 # + `git push -u origin "$BRANCH" --force-with-lease` シーケンスを内包する。
@@ -8734,17 +9019,17 @@ _resume_branch_init() {
   # origin/$BASE_BRANCH 起点。
   local origin_sha=""
   if _resume_detect_existing_branch "$BRANCH"; then
-    if ! git checkout -B "$BRANCH" "origin/$BRANCH"; then
+    local prep_rc=0
+    _failed_recovery_prepare_branch_checkout "$BRANCH" "true" || prep_rc=$?
+    [ "$prep_rc" -eq 0 ] || return 1
+    if ! _failed_recovery_checkout_branch "$BRANCH" "origin/$BRANCH" "true" "既存 branch resume に失敗"; then
       slot_warn "既存 branch resume に失敗: $BRANCH"
-      _slot_mark_failed "branch-checkout" "既存 origin branch \`$BRANCH\` からの resume に失敗しました。"
       return 1
     fi
     origin_sha=$(git rev-parse --short=7 "origin/$BRANCH" 2>/dev/null || echo "unknown")
     slot_log "resume-mode=existing-branch branch=$BRANCH origin_sha=$origin_sha"
   else
-    if ! git checkout -B "$BRANCH" "origin/${BASE_BRANCH}"; then
-      slot_warn "branch 作成に失敗: $BRANCH"
-      _slot_mark_failed "branch-checkout" "ブランチ \`$BRANCH\` の作成に失敗しました。"
+    if ! _failed_recovery_checkout_branch "$BRANCH" "origin/${BASE_BRANCH}" "false" "branch 作成に失敗"; then
       return 1
     fi
     slot_log "resume-mode=fresh-from-base branch=$BRANCH base=$BASE_BRANCH"
@@ -9948,11 +10233,11 @@ _slot_run_issue() {
       BRANCH="codex/issue-${NUMBER}-impl-${SLUG}"
       ;;
   esac
-  # impl-resume モードのときだけ Strategy Pattern による branch 初期化に分岐させる
-  # （Issue #67）。design / impl モードでは本機能導入前と完全に等価な挙動を維持する
-  # （Req 1.1, 1.2, NFR 1.1, NFR 1.2）。`_resume_branch_init` は内部で
-  # `IMPL_RESUME_PRESERVE_COMMITS` を見て legacy / preserve 戦略にディスパッチし、
-  # 失敗時は `_slot_mark_failed` 既に発射済の状態で非 0 を返す。
+  # impl-resume は既存 Strategy Pattern による branch 初期化に分岐する（Issue #67）。
+  # 通常 impl でも、PR 作成前に failed した Issue が再投入されると origin branch だけが
+  # 残ることがあるため、origin branch が存在する場合は failed recovery として既存 branch
+  # 起点で resume する（Issue #58）。origin branch が無い fresh Issue は従来どおり
+  # origin/$BASE_BRANCH 起点で作成する。
   if [ "$MODE" = "impl-resume" ]; then
     # Issue #114 Req 2: origin の `codex/issue-<N>-impl-*` ブランチを resume 候補として
     # 検出するとき、ブランチ名のスラグ部と expected-slug を照合する。不一致時は
@@ -9965,12 +10250,23 @@ _slot_run_issue() {
     if ! _resume_branch_init; then
       return 1
     fi
+  elif [ "$MODE" = "impl" ] && _resume_detect_existing_branch "$BRANCH"; then
+    local prep_rc=0
+    _failed_recovery_prepare_branch_checkout "$BRANCH" "true" || prep_rc=$?
+    [ "$prep_rc" -eq 0 ] || return 1
+    if ! _failed_recovery_checkout_branch "$BRANCH" "origin/$BRANCH" "true" "既存 branch resume に失敗"; then
+      return 1
+    fi
+    local origin_sha
+    origin_sha=$(git rev-parse --short=7 "origin/$BRANCH" 2>/dev/null || echo "unknown")
+    slot_log "failed-recovery-mode=existing-branch branch=$BRANCH origin_sha=$origin_sha"
+    if ! _resume_push "$BRANCH"; then
+      return 1
+    fi
   else
     # worktree は detached HEAD で起動するため -B で新規 branch 作成
     # （local $BASE_BRANCH を持たない）
-    if ! git checkout -B "$BRANCH" "origin/${BASE_BRANCH}"; then
-      slot_warn "branch 作成に失敗: $BRANCH"
-      _slot_mark_failed "branch-checkout" "ブランチ \`$BRANCH\` の作成に失敗しました。"
+    if ! _failed_recovery_checkout_branch "$BRANCH" "origin/${BASE_BRANCH}" "false" "branch 作成に失敗"; then
       return 1
     fi
     if ! git push -u origin "$BRANCH" --force-with-lease; then
