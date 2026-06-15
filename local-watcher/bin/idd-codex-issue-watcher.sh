@@ -95,6 +95,12 @@ LABEL_AWAITING_SLOT="codex-awaiting-slot"
 # 既存 `codex-needs-decisions`（汎用人間判断要求）とは意味的に独立した運用シグナル
 # （Req 9.1〜9.4）。
 LABEL_BLOCKED="codex-blocked"
+# Issue #56: `codex-blocked` Issue の依存状態を watcher cycle 冒頭で再評価し、
+# すべて resolved になった場合に自動で `codex-blocked` を解除する processor。
+# GitHub Issue の read + label/comment mutation を追加する新規外部サービス呼び出しのため、
+# 明示 opt-in (`DEPENDENCY_AUTO_UNBLOCK_ENABLED=true`) のときだけ起動する。
+DEPENDENCY_AUTO_UNBLOCK_ENABLED="${DEPENDENCY_AUTO_UNBLOCK_ENABLED:-false}"
+DEPENDENCY_AUTO_UNBLOCK_LIMIT="${DEPENDENCY_AUTO_UNBLOCK_LIMIT:-20}"
 # Issue #200: codex-hotfix 優先ティアを示すラベル。Dispatcher の候補処理順を
 # FIFO（Issue 番号昇順）にしたうえで、本ラベル付き Issue を非 codex-hotfix Issue より
 # 先に投入する 2 段優先のキー。人間が手動付与する運用前提（自動付与なし）。
@@ -9171,8 +9177,8 @@ ${items}
 ### 次の手順
 
 1. 上記依存 Issue の解消（merge）を進めてください
-2. すべて merge 済みになったら、本 Issue から \`codex-blocked\` ラベルを手動で除去してください
-3. 次回 cron tick (\`watcher 起動\` 後) で依存チェックが再実行され、解消済みなら通常の Triage / 実装フローに合流します
+2. \`DEPENDENCY_AUTO_UNBLOCK_ENABLED=true\` の環境では、次回以降の watcher cycle 冒頭で依存状態が再評価され、すべて resolved なら \`codex-blocked\` が自動解除されます
+3. 自動解除を待たない場合、または auto-unblock を有効化していない環境では、すべて merge 済みになった後に本 Issue から \`codex-blocked\` ラベルを手動で除去してください
 
 ### \`codex-blocked\` と \`codex-needs-decisions\` の使い分け
 
@@ -9569,6 +9575,279 @@ dr_check_dependencies() {
 
   # 全件 resolved → Triage 続行
   dr_log "issue=#${issue_num} extracted=${extracted_csv} resolved=${resolved_csv} unresolved= api_errors= verdict=all_resolved"
+  return 0
+}
+
+# 引数:
+#   $1 = 改行区切りラベル一覧
+#   $2 = 完全一致で探すラベル名
+# 戻り値:
+#   0 = 含む / 1 = 含まない
+dr_labels_contain() {
+  local labels="$1"
+  local target="$2"
+  printf '%s\n' "$labels" | grep -qx -- "$target"
+}
+
+# 引数 $1 = 改行区切りラベル一覧。
+# 戻り値:
+#   0 = auto-unblock してはいけない停止・進行中ラベルを含む
+#   1 = auto-unblock 対象として再評価してよい
+dr_auto_unblock_has_hold_label() {
+  local labels="$1"
+  local hold
+  for hold in \
+      "$LABEL_FAILED" \
+      "$LABEL_NEEDS_DECISIONS" \
+      "$LABEL_AWAITING_DESIGN" \
+      "$LABEL_READY" \
+      "$LABEL_PICKED" \
+      "$LABEL_CLAIMED" \
+      "$LABEL_NEEDS_ITERATION" \
+      "$LABEL_NEEDS_REBASE" \
+      "$LABEL_NEEDS_QUOTA_WAIT" \
+      "$LABEL_STAGED_FOR_RELEASE" \
+      "$LABEL_ST_FAILED" \
+      "$LABEL_AWAITING_SLOT"; do
+    if dr_labels_contain "$labels" "$hold"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+dr_auto_unblock_marker() {
+  local issue_num="$1"
+  printf '<!-- idd-codex:dependency-auto-unblock:#%s -->\n' "$issue_num"
+}
+
+# 引数 $1 = 解決済み依存リスト（"#N|reason|detail" の改行区切り）。
+# stdout = auto-unblock 完了コメント本文。
+dr_format_auto_unblock_comment() {
+  local resolved="$1"
+
+  local items
+  items=$(printf '%s\n' "$resolved" \
+    | awk -F'|' 'NF >= 2 && $1 != "" {
+        detail = ""
+        if (NF >= 3 && $3 != "") {
+          detail = " / detail: " $3
+        }
+        printf "- 依存先: %s / 状態: %s%s\n", $1, $2, detail
+      }')
+
+  cat <<EOF_DR_AUTO_UNBLOCK
+依存 Issue がすべて解消済みになったため、\`codex-blocked\` を自動解除しました。
+
+### 解消済み依存
+
+${items}
+
+次回以降の dispatcher pickup で通常の Triage / 実装フローに合流します。
+EOF_DR_AUTO_UNBLOCK
+}
+
+# 引数:
+#   $1 = 対象 Issue 番号
+#   $2 = marker 文字列
+# 戻り値:
+#   0 = 既存コメントあり
+#   1 = 既存コメントなし
+#   2 = GitHub API 取得失敗
+dr_auto_unblock_comment_exists() {
+  local issue_num="$1"
+  local marker="$2"
+
+  local comments
+  if ! comments=$(timeout "${DRR_GH_TIMEOUT:-${MERGE_QUEUE_GIT_TIMEOUT:-60}}" \
+      gh api "repos/${REPO}/issues/${issue_num}/comments" --paginate --jq '.[].body' 2>/dev/null); then
+    return 2
+  fi
+
+  if printf '%s\n' "$comments" | grep -Fq -- "$marker"; then
+    return 0
+  fi
+  return 1
+}
+
+# 引数:
+#   $1 = 対象 Issue 番号
+#   $2 = 解決済み依存リスト（"#N|reason|detail" の改行区切り）
+# 戻り値:
+#   0 = ラベル解除成功（コメント投稿は best-effort）
+#   1 = ラベル解除失敗
+dr_apply_auto_unblock() {
+  local issue_num="$1"
+  local resolved="$2"
+
+  if ! gh issue edit "$issue_num" --repo "$REPO" \
+        --remove-label "$LABEL_BLOCKED" \
+        --add-label "$LABEL_TRIGGER" >/dev/null 2>&1; then
+    dr_warn "auto-unblock issue=#${issue_num} gh issue edit (codex-blocked 解除 / codex-auto-dev 付与) に失敗"
+    return 1
+  fi
+
+  local marker body marker_rc
+  marker=$(dr_auto_unblock_marker "$issue_num")
+  body="${marker}"$'\n'"$(dr_format_auto_unblock_comment "$resolved")"
+  marker_rc=0
+  dr_auto_unblock_comment_exists "$issue_num" "$marker" || marker_rc=$?
+  case "$marker_rc" in
+    0)
+      dr_log "auto-unblock issue=#${issue_num} comment=skip_existing_marker"
+      ;;
+    1)
+      if ! gh issue comment "$issue_num" --repo "$REPO" --body "$body" >/dev/null 2>&1; then
+        dr_warn "auto-unblock issue=#${issue_num} 完了コメント投稿に失敗"
+      fi
+      ;;
+    *)
+      dr_warn "auto-unblock issue=#${issue_num} 既存コメント確認に失敗したためコメント投稿を skip"
+      ;;
+  esac
+
+  return 0
+}
+
+# 引数:
+#   $1 = 対象 Issue 番号
+#   $2 = Issue 本文
+#   $3 = 改行区切りラベル一覧
+# 戻り値:
+#   常に 0（processor 全体は fail-open）
+dr_auto_unblock_one() {
+  local issue_num="$1"
+  local body="$2"
+  local labels="$3"
+
+  if ! dr_labels_contain "$labels" "$LABEL_BLOCKED"; then
+    dr_log "auto-unblock issue=#${issue_num} verdict=skip_no_blocked_label"
+    return 0
+  fi
+
+  if dr_auto_unblock_has_hold_label "$labels"; then
+    dr_log "auto-unblock issue=#${issue_num} verdict=skip_hold_label"
+    return 0
+  fi
+
+  local extracted
+  extracted=$(dr_extract_deps "$body")
+  if [ -z "$extracted" ]; then
+    dr_log "auto-unblock issue=#${issue_num} extracted= verdict=skip_no_deps"
+    return 0
+  fi
+
+  local extracted_csv resolved_csv unresolved_csv api_errors_csv resolved_lines unresolved_lines
+  extracted_csv=""
+  resolved_csv=""
+  unresolved_csv=""
+  api_errors_csv=""
+  resolved_lines=""
+  unresolved_lines=""
+  local dep verdict_for_dep dep_verdict dep_reason dep_detail resolved_item
+  while IFS= read -r dep; do
+    [ -z "$dep" ] && continue
+    extracted_csv="${extracted_csv:+${extracted_csv},}#${dep}"
+    verdict_for_dep=$(dr_resolve_one "$dep")
+    dep_verdict="${verdict_for_dep%%|*}"
+    dep_reason=""
+    dep_detail=""
+    if [ "$dep_verdict" != "$verdict_for_dep" ]; then
+      local rest="${verdict_for_dep#*|}"
+      dep_reason="${rest%%|*}"
+      if [ "$dep_reason" != "$rest" ]; then
+        dep_detail="${rest#*|}"
+      fi
+    fi
+
+    case "$dep_verdict" in
+      resolved)
+        dep_reason="${dep_reason:-closing-pr}"
+        resolved_item="#${dep}(${dep_reason}${dep_detail:+:${dep_detail}})"
+        resolved_csv="${resolved_csv:+${resolved_csv},}${resolved_item}"
+        resolved_lines="${resolved_lines}#${dep}|${dep_reason}|${dep_detail}"$'\n'
+        ;;
+      open)
+        dep_reason="${dep_reason:-open}"
+        unresolved_csv="${unresolved_csv:+${unresolved_csv},}#${dep} (${dep_reason})"
+        unresolved_lines="${unresolved_lines}#${dep}|${dep_reason}"$'\n'
+        ;;
+      "closed unmerged")
+        dep_reason="${dep_reason:-closed-unmerged}"
+        unresolved_csv="${unresolved_csv:+${unresolved_csv},}#${dep} (${dep_reason})"
+        unresolved_lines="${unresolved_lines}#${dep}|${dep_reason}"$'\n'
+        ;;
+      "api error")
+        dep_reason="${dep_reason:-api-error}"
+        api_errors_csv="${api_errors_csv:+${api_errors_csv},}#${dep}"
+        unresolved_lines="${unresolved_lines}#${dep}|${dep_reason}"$'\n'
+        ;;
+      *)
+        dr_warn "auto-unblock issue=#${issue_num} dep=#${dep} 未知の verdict: ${verdict_for_dep}"
+        api_errors_csv="${api_errors_csv:+${api_errors_csv},}#${dep}"
+        unresolved_lines="${unresolved_lines}#${dep}|api error"$'\n'
+        ;;
+    esac
+  done <<< "$extracted"
+
+  if [ -n "$unresolved_lines" ]; then
+    dr_log "auto-unblock issue=#${issue_num} extracted=${extracted_csv} resolved=${resolved_csv} unresolved=${unresolved_csv} api_errors=${api_errors_csv} verdict=still_blocked"
+    return 0
+  fi
+
+  dr_log "auto-unblock issue=#${issue_num} extracted=${extracted_csv} resolved=${resolved_csv} unresolved= api_errors= verdict=unblock"
+  if ! dr_apply_auto_unblock "$issue_num" "${resolved_lines%$'\n'}"; then
+    dr_warn "auto-unblock issue=#${issue_num} dr_apply_auto_unblock 失敗"
+  fi
+  return 0
+}
+
+# `codex-blocked` Issue の依存状態を cycle 冒頭で再評価し、すべて解決済みなら
+# `codex-blocked` を外して `codex-auto-dev` に戻す。新規 GitHub mutation を含むため
+# `DEPENDENCY_AUTO_UNBLOCK_ENABLED=true` の明示 opt-in 時のみ起動する。
+dr_process_auto_unblock() {
+  if [ "${DEPENDENCY_AUTO_UNBLOCK_ENABLED:-false}" != "true" ]; then
+    return 0
+  fi
+
+  local limit="${DEPENDENCY_AUTO_UNBLOCK_LIMIT:-20}"
+  if ! [[ "$limit" =~ ^[1-9][0-9]*$ ]]; then
+    dr_warn "auto-unblock DEPENDENCY_AUTO_UNBLOCK_LIMIT が不正: ${limit}; 20 にフォールバック"
+    limit=20
+  fi
+
+  local issues
+  if ! issues=$(timeout "${DRR_GH_TIMEOUT:-${MERGE_QUEUE_GIT_TIMEOUT:-60}}" \
+      gh issue list \
+        --repo "$REPO" \
+        --label "$LABEL_BLOCKED" \
+        --state open \
+        --json number,title,body,labels \
+        --limit "$limit" 2>&1); then
+    dr_warn "auto-unblock codex-blocked Issue 取得に失敗: ${issues}"
+    return 0
+  fi
+
+  local count
+  if ! count=$(printf '%s' "$issues" | jq 'length' 2>/dev/null); then
+    dr_warn "auto-unblock codex-blocked Issue JSON parse に失敗"
+    return 0
+  fi
+  if [ "$count" -eq 0 ]; then
+    dr_log "auto-unblock candidates=0"
+    return 0
+  fi
+
+  dr_log "auto-unblock candidates=${count}"
+  local issue issue_num issue_body issue_labels
+  while IFS= read -r issue; do
+    [ -z "$issue" ] && continue
+    issue_num=$(printf '%s' "$issue" | jq -r '.number')
+    issue_body=$(printf '%s' "$issue" | jq -r '.body // ""')
+    issue_labels=$(printf '%s' "$issue" | jq -r '.labels[].name')
+    dr_auto_unblock_one "$issue_num" "$issue_body" "$issue_labels"
+  done <<< "$(printf '%s' "$issues" | jq -c '.[]')"
+
   return 0
 }
 
@@ -10237,6 +10516,10 @@ _dispatcher_run() {
   if ! _parallel_validate_slots; then
     return 1
   fi
+
+  # Issue #56: `codex-blocked` の依存再評価は dispatch 候補取得前に行う。
+  # 解除された Issue は同じ cycle の通常 candidate query で拾われる。
+  dr_process_auto_unblock
 
   # Req 7.5: 既存の Issue 取得クエリ（フィルタ・limit 5）を据え置き
   # Issue #54 Req 1.1 / 1.3 / 5.2: PR 専用ラベル `codex-needs-iteration` が誤って Issue 側に
