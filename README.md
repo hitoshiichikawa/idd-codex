@@ -1001,6 +1001,12 @@ PR #184）を防ぐための「最後の砦」です。
 
 - `codex-failed` を除去すると watcher が次サイクルで再 pickup し、Triage / 設計 /
   実装が再起動されます
+- 既に `origin/codex/issue-<N>-impl-*` branch が存在する場合、watcher は fresh run ではなく
+  **failed recovery preflight** として既存 origin branch から resume します（Issue #58）。
+  同じ branch を checkout 済みの古い slot worktree があれば、inactive かつ clean な場合のみ
+  自動で detached HEAD に戻してから現在の slot で checkout します。dirty / 未 push commit /
+  origin branch が無い local branch / 管理外 worktree / active slot を検出した場合は
+  自動破棄せず `codex-needs-decisions` に倒します
 - これ以上自動再実行を望まない場合は `codex-failed` を残したまま `codex-auto-dev` も
   外してください
 
@@ -2985,6 +2991,10 @@ slot worktree は Issue 投入ごとに `git reset --hard origin/<branch>` → `
 Docker bind mount などで root 所有の `node_modules/` / `.next/` 等が残ると、通常ユーザーの
 `git clean -fdx` が permission denied で失敗することがあります。
 
+Issue #58 以降、reset 前に必ず `origin/<branch>` の detached HEAD へ戻します。これにより、
+前回 Issue の branch を checkout したまま slot が再利用されても、その古い branch ref 自体を
+base branch へ動かしてしまう事故を防ぎます。
+
 このケースでは、watcher は失敗時 stderr を slot log に残したうえで permission denied を検出します。
 `WORKTREE_DOCKER_CLEANUP_ENABLED=true` を明示している場合のみ、`WORKTREE_DOCKER_CLEANUP_IMAGE`
 （既定 `busybox`）の一時コンテナで worktree 直下の artifact を削除し、reset/clean を再試行します。
@@ -3613,7 +3623,9 @@ resume・`tasks.md` 進捗追跡・force-push 抑止 + 非 fast-forward 検出�
 
 > **注**: 親 Issue [#67](https://github.com/hitoshiichikawa/idd-codex/issues/67) の実装。
 > 本機能は **`MODE = "impl-resume"`** のときのみ branch 初期化を分岐させます。
-> `design` / `impl` モードの挙動は完全に温存されます。
+> Issue #58 以降は、通常 `impl` でも `origin/codex/issue-<N>-impl-*` が既に存在する場合だけ
+> failed recovery preflight として同じ既存 branch resume 経路を使います。origin branch が無い
+> fresh `impl` / `design` の挙動は従来どおりです。
 
 ### 環境変数
 

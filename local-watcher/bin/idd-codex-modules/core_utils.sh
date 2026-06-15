@@ -315,6 +315,16 @@ _worktree_reset() {
   # 確保できる（親 fetch から slot 起動までの遅延による ref stale は許容範囲）。
   #
   # 1. detached HEAD を origin/$BASE_BRANCH に強制移動。
+  #    ここを `git reset --hard origin/$BASE_BRANCH` だけで済ませると、前回 Issue の
+  #    branch が checkout されたままの slot を再利用した場合に、その branch ref 自体を
+  #    base branch へ動かしてしまう。reset 前に必ず detached に戻し、古い Issue branch を
+  #    汚染しない（Issue #58）。
+  if ! git -C "$wt" checkout --detach --force "origin/${BASE_BRANCH}" >/dev/null; then
+    echo "[$(date '+%F %T')] worktree-reset: git checkout --detach failed (wt=$wt, base=origin/${BASE_BRANCH})" >&2
+    return 1
+  fi
+
+  # 2. origin/$BASE_BRANCH に強制移動。
   #    Issue #295: stderr は SLOT_LOG に残すため `2>/dev/null` を外す（Req 1.1, 1.3）。
   #    成功時 git reset --hard は stderr に書かないため標準出力量は増えない（Req 1.4）。
   if ! git -C "$wt" reset --hard "origin/${BASE_BRANCH}" >/dev/null; then
@@ -322,7 +332,7 @@ _worktree_reset() {
     return 1
   fi
 
-  # 2. untracked + ignored を消去（前回 Issue の build artifact / node_modules を残さない）。
+  # 3. untracked + ignored を消去（前回 Issue の build artifact / node_modules を残さない）。
   #    EACCES 起因の失敗を検出して escalated cleanup に分岐するため、stderr を tmp file に
   #    キャプチャしてから内容を SLOT_LOG（>&2 経由）にも転写する。
   local clean_stderr=""

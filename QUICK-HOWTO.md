@@ -266,6 +266,11 @@ watcher が連続失敗したことを示します。`$HOME/.idd-codex/issue-wat
 gh issue edit <番号> --repo owner/your-repo --remove-label codex-failed
 ```
 
+PR 作成前に失敗して `origin/codex/issue-<N>-impl-*` branch だけが残っている場合、watcher は
+次回 pickup で既存 branch から resume します。古い slot worktree が同じ branch を checkout
+していても、inactive かつ clean なら自動で detached に戻します。dirty / 未 push commit /
+origin branch が無い local branch がある場合は破棄せず `codex-needs-decisions` に退避します。
+
 ---
 
 ## 7. 次に読むもの
