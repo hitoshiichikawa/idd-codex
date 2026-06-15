@@ -1,16 +1,18 @@
 name: 機能要望・改善（idd-codex 自動開発）
 description: Codex CLI に自動開発を依頼する Issue テンプレート。PM エージェントが誤解なくキャッチできる順序で質問を並べています
 title: ""
-labels: ["codex-auto-dev"]
+labels: ["enhancement"]
 body:
   - type: markdown
     attributes:
       value: |
         ## このテンプレートを使うと何が起きるか
 
-        1. `codex-auto-dev` ラベルが自動で付きます
-        2. 数分以内に idd-codex の Product Manager (PM) エージェントが Triage（要件精査 + モード判定）
-        3. 以下のいずれかに分岐:
+        1. `enhancement` ラベルが自動で付きます（**codex-auto-dev は付きません**）
+        2. **まず人間が** 内容を確認し、スコープが妥当と判断したら手動で `codex-auto-dev` ラベルを付けます
+           （公開リポジトリでは、未信頼の Issue 本文がそのまま自律エージェントへ渡るのを防ぐ人間ゲートです。Issue #52）
+        3. `codex-auto-dev` が付くと、数分以内に idd-codex の Product Manager (PM) エージェントが Triage（要件精査 + モード判定）
+        4. 以下のいずれかに分岐:
            - **impl モード**: PM → Developer → PjM が実装 PR を作成（~10〜30 分）
            - **design モード**: PM → Architect → PjM が設計 PR を作成（人間レビュー後に実装 PR）
            - **codex-needs-decisions**: 判断が必要な論点を Issue コメントで質問、人間の回答待ち

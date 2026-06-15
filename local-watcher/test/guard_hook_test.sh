@@ -100,6 +100,27 @@ assert_decision "allow unrelated apply_patch" "allow" "$(json_apply_patch "*** B
 +y
 *** End Patch")"
 
+# ── Issue #49: コマンドパーサ・バイパス回帰（全 segment 走査 / 先頭トークン正規化 /
+#    束ね短 flag / G0 mutator 拡張）──
+assert_decision "deny push after no-op prefix (;)" "deny" "$(json_bash "true; git push --force origin main")"
+assert_decision "deny push after no-op prefix (&&)" "deny" "$(json_bash "echo a && git push -f origin main")"
+assert_decision "deny push after pipe" "deny" "$(json_bash "echo x | git push --force origin main")"
+assert_decision "deny push via command wrapper" "deny" "$(json_bash "command git push -f origin main")"
+assert_decision "deny push via env wrapper" "deny" "$(json_bash "env X=1 git push -f origin main")"
+assert_decision "deny push via absolute path git" "deny" "$(json_bash "/usr/bin/git push -f origin main")"
+assert_decision "deny push via bash -c wrapper" "deny" "$(json_bash 'bash -c "git push --force origin main"')"
+assert_decision "deny bundled short force flag -fu" "deny" "$(json_bash "git push -fu origin codex/issue-1")"
+assert_decision "deny self-mutation via cp" "deny" "$(json_bash "cp /dev/null $IDD_CODEX_HOOKS_DIR/idd-codex-guard.sh")"
+assert_decision "deny self-mutation via ln" "deny" "$(json_bash "ln -sf /evil $IDD_CODEX_HOOKS_DIR/idd-codex-guard.sh")"
+assert_decision "deny self-mutation via truncate" "deny" "$(json_bash "truncate -s0 $IDD_CODEX_HOOKS_DIR/idd-codex-guard.sh")"
+assert_decision "deny self-mutation redirect no-space" "deny" "$(json_bash "echo x >$IDD_CODEX_HOOKS_DIR/idd-codex-guard.sh")"
+assert_decision "deny self-mutation via bash -c rm" "deny" "$(json_bash "bash -c \"rm $IDD_CODEX_HOOKS_DIR/idd-codex-guard.sh\"")"
+# 正当系（誤検知しないこと）
+assert_decision "allow legit push after no-op prefix" "allow" "$(json_bash "true && git push origin codex/issue-1")"
+assert_decision "allow bash -c with test command" "allow" "$(json_bash 'bash -c "npm test && npm run build"')"
+assert_decision "allow rm in repo (non-protected)" "allow" "$(json_bash "rm -rf node_modules")"
+assert_decision "allow read of protected path" "allow" "$(json_bash "cat $IDD_CODEX_HOOKS_DIR/idd-codex-guard.sh")"
+
 echo ""
 echo "==========================================="
 echo "PASS: $PASS_COUNT, FAIL: $FAIL_COUNT"

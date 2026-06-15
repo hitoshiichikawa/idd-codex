@@ -144,28 +144,48 @@ assert_eq "formal review approval は GitHub 承認として扱う" \
 export MERGE_QUEUE_APPROVAL_SIGNAL_TEST_API_FAIL="false"
 
 current_marker_pr=$(pr_json 58 "abc123" "")
-set_comments '[{"body":"## 結論\nVERDICT: approve\n\n<!-- idd-codex:pr-reviewer sha=abc123 kind=review tool=codex -->"}]'
+set_comments '[{"author_association":"OWNER","body":"## 結論\nVERDICT: approve\n\n<!-- idd-codex:pr-reviewer sha=abc123 kind=review tool=codex -->"}]'
 assert_eq "current-SHA approve marker は idd-codex 承認として扱う" \
   $'0\tapproved|idd-codex-marker' \
   "$(resolve_signal "$current_marker_pr")"
 
 old_marker_pr=$(pr_json 59 "new456" "")
-set_comments '[{"body":"## 結論\nVERDICT: approve\n\n<!-- idd-codex:pr-reviewer sha=old123 kind=review tool=codex -->"}]'
+set_comments '[{"author_association":"OWNER","body":"## 結論\nVERDICT: approve\n\n<!-- idd-codex:pr-reviewer sha=old123 kind=review tool=codex -->"}]'
 assert_eq "old-SHA approve marker は stale として承認しない" \
   $'0\trejected|stale-marker' \
   "$(resolve_signal "$old_marker_pr")"
 
 iteration_marker_pr=$(pr_json 60 "abc123" "")
-set_comments '[{"body":"## 結論\nVERDICT: codex-needs-iteration\n\n<!-- idd-codex:pr-reviewer sha=abc123 kind=review tool=codex -->"}]'
+set_comments '[{"author_association":"OWNER","body":"## 結論\nVERDICT: codex-needs-iteration\n\n<!-- idd-codex:pr-reviewer sha=abc123 kind=review tool=codex -->"}]'
 assert_eq "current-SHA iteration marker は承認しない" \
   $'0\trejected|iteration-marker' \
   "$(resolve_signal "$iteration_marker_pr")"
 
 reject_marker_pr=$(pr_json 61 "abc123" "")
-set_comments '[{"body":"## 結論\nVERDICT: reject\n\n<!-- idd-codex:pr-reviewer sha=abc123 kind=review tool=codex -->"}]'
+set_comments '[{"author_association":"OWNER","body":"## 結論\nVERDICT: reject\n\n<!-- idd-codex:pr-reviewer sha=abc123 kind=review tool=codex -->"}]'
 assert_eq "current-SHA reject marker は承認しない" \
   $'0\trejected|iteration-marker' \
   "$(resolve_signal "$reject_marker_pr")"
+
+# Issue #50: 未信頼 author（外部ユーザ）の偽造 approve marker は採用しない
+forged_none_pr=$(pr_json 63 "abc123" "")
+set_comments '[{"author_association":"NONE","body":"## 結論\nVERDICT: approve\n\n<!-- idd-codex:pr-reviewer sha=abc123 kind=review tool=codex -->"}]'
+assert_eq "未信頼 author(NONE) の current-SHA approve marker は承認しない" \
+  $'0\trejected|none' \
+  "$(resolve_signal "$forged_none_pr")"
+
+forged_contributor_pr=$(pr_json 64 "abc123" "")
+set_comments '[{"author_association":"CONTRIBUTOR","body":"## 結論\nVERDICT: approve\n\n<!-- idd-codex:pr-reviewer sha=abc123 kind=review tool=codex -->"}]'
+assert_eq "未信頼 author(CONTRIBUTOR) の approve marker は承認しない" \
+  $'0\trejected|none' \
+  "$(resolve_signal "$forged_contributor_pr")"
+
+# 信頼 author の marker は採用し、同時に存在する未信頼 author の偽造 marker は無視される
+mixed_pr=$(pr_json 65 "abc123" "")
+set_comments '[{"author_association":"NONE","body":"VERDICT: codex-needs-iteration\n<!-- idd-codex:pr-reviewer sha=abc123 kind=review tool=codex -->"},{"author_association":"MEMBER","body":"VERDICT: approve\n<!-- idd-codex:pr-reviewer sha=abc123 kind=review tool=codex -->"}]'
+assert_eq "未信頼の blocking marker は無視され、信頼 author の approve が通る" \
+  $'0\tapproved|idd-codex-marker' \
+  "$(resolve_signal "$mixed_pr")"
 
 api_failure_pr=$(pr_json 62 "abc123" "")
 export MERGE_QUEUE_APPROVAL_SIGNAL_TEST_API_FAIL="true"
@@ -177,7 +197,7 @@ export MERGE_QUEUE_APPROVAL_SIGNAL_TEST_API_FAIL="false"
 echo ""
 echo "--- mq_select_approved_prs cases ---"
 
-set_comments '[{"body":"## 結論\nVERDICT: approve\n\n<!-- idd-codex:pr-reviewer sha=marker123 kind=review tool=codex -->"}]'
+set_comments '[{"author_association":"OWNER","body":"## 結論\nVERDICT: approve\n\n<!-- idd-codex:pr-reviewer sha=marker123 kind=review tool=codex -->"}]'
 prs_json=$(jq -sc '.' \
   <(pr_json 70 "formal123" "APPROVED") \
   <(pr_json 71 "marker123" "") \

@@ -148,11 +148,16 @@ check_g0_bash() {
   local cmd="$1"
   command_mentions_protected_path "$cmd" || return 0
 
-  if [[ "$cmd" =~ (^|[[:space:];&|])(rm|mv|chmod|tee)([[:space:]]|$) ]] \
-       || [[ "$cmd" =~ sed[[:space:]]+-i ]] \
-       || [[ "$cmd" =~ [[:space:]]\>\>?[[:space:]] ]] \
-       || [[ "$cmd" =~ [[:space:]]\>\>?$ ]] \
-       || [[ "$cmd" =~ cat[[:space:]]+\> ]]; then
+  # Issue #49: 保護パスを参照する segment では、書込・改変につながる動詞／in-place 編集／
+  # 任意のリダイレクトを広めに deny する（defense-in-depth）。旧実装は rm/mv/chmod/tee と
+  # 空白付きリダイレクトのみで、cp/ln/dd/truncate/install、空白なし `>file`、引用直後の verb を
+  # 取りこぼしていた。verb の前置境界に `(` も含め、bash -c ラッパ内は analyze_bash_command の
+  # 再帰で raw segment として再評価される。
+  local verb_re='(^|[[:space:];&|(])(rm|rmdir|mv|cp|ln|dd|chmod|chown|chgrp|tee|truncate|install|shred|touch|mkdir|ed)([[:space:]]|$)'
+  local inplace_re='(sed|perl|ruby|python3?|gawk|awk)[[:space:]]+(-[A-Za-z]*i|--in-place)'
+  if [[ "$cmd" =~ $verb_re ]] \
+       || [[ "$cmd" =~ $inplace_re ]] \
+       || [[ "$cmd" == *">"* ]]; then
     emit_deny "guard self-mutation denied: protected path mentioned in mutating Bash command"
   fi
 }
@@ -235,13 +240,27 @@ analyze_push() {
   local i=0
   while [ "$i" -lt "$n" ]; do
     case "${tokens[$i]}" in
-      -f|--force)
+      --force-with-lease|--force-with-lease=*)
+        : # lease 付きは base 以外なら許可（既存仕様を維持）
+        ;;
+      --force)
         has_force=1
         ;;
-      --force-with-lease|--force-with-lease=*)
-        ;;
-      -d|--delete)
+      --delete)
         has_delete=1
+        ;;
+      --*)
+        : # その他の long option は無視
+        ;;
+      -*)
+        # Issue #49: 束ねた短 flag（-fu / -uf / -fq ...）も検出する。
+        # 旧実装は `-f` 完全一致のみで -fu 等を取りこぼしていた。
+        case "${tokens[$i]}" in
+          *f*) has_force=1 ;;
+        esac
+        case "${tokens[$i]}" in
+          *d*) has_delete=1 ;;
+        esac
         ;;
     esac
     i=$((i + 1))
@@ -320,9 +339,14 @@ analyze_push() {
   done
 }
 
-parse_top_level_tokens() {
+# Issue #49: コマンド文字列を top-level セパレータ（; 改行 && || | &）で「全 segment」に
+# 分割する。旧 parse_top_level_tokens は最初のセパレータで return し先頭 segment しか
+# 検査しなかったため、`true; git push --force origin main` 等で全規則がバイパスされた。
+# クォート（' "）とバックスラッシュエスケープを尊重し、segment 文字列は原文（クォート込み）
+# のまま保持する（G0 の substring 判定・後続の tokenize_segment が利用する）。
+split_top_level_segments() {
   local cmd="$1"
-  TOKENS=()
+  SEGMENTS=()
   local i=0
   local n=${#cmd}
   local cur=""
@@ -333,24 +357,20 @@ parse_top_level_tokens() {
     local c="${cmd:$i:1}"
 
     if [ "$in_single" -eq 1 ]; then
-      if [ "$c" = "'" ]; then
-        in_single=0
-      else
-        cur+="$c"
-      fi
+      cur+="$c"
+      [ "$c" = "'" ] && in_single=0
       i=$((i + 1))
       continue
     fi
 
     if [ "$in_double" -eq 1 ]; then
+      cur+="$c"
       if [ "$c" = '"' ]; then
         in_double=0
       elif [ "$c" = "\\" ] && [ $((i + 1)) -lt "$n" ]; then
         cur+="${cmd:$((i + 1)):1}"
         i=$((i + 2))
         continue
-      else
-        cur+="$c"
       fi
       i=$((i + 1))
       continue
@@ -359,35 +379,22 @@ parse_top_level_tokens() {
     case "$c" in
       "'")
         in_single=1
+        cur+="$c"
         ;;
       '"')
         in_double=1
+        cur+="$c"
         ;;
       "\\")
+        cur+="$c"
         if [ $((i + 1)) -lt "$n" ]; then
           cur+="${cmd:$((i + 1)):1}"
           i=$((i + 1))
         fi
         ;;
-      " "|$'\t')
-        if [ -n "$cur" ]; then
-          TOKENS+=("$cur")
-          cur=""
-        fi
-        ;;
-      $'\n'|";")
-        if [ -n "$cur" ]; then
-          TOKENS+=("$cur")
-          cur=""
-        fi
-        return 0
-        ;;
-      "&"|"|")
-        if [ -n "$cur" ]; then
-          TOKENS+=("$cur")
-          cur=""
-        fi
-        return 0
+      $'\n'|";"|"&"|"|")
+        SEGMENTS+=("$cur")
+        cur=""
         ;;
       *)
         cur+="$c"
@@ -396,9 +403,190 @@ parse_top_level_tokens() {
     i=$((i + 1))
   done
 
-  if [ -n "$cur" ]; then
-    TOKENS+=("$cur")
-  fi
+  SEGMENTS+=("$cur")
+}
+
+# 1 つの segment（top-level セパレータを含まない）を whitespace でトークン化する。
+# クォート除去・バックスラッシュエスケープを処理し、結果トークンには区切り文字を残さない。
+tokenize_segment() {
+  local seg="$1"
+  TOKENS=()
+  local i=0
+  local n=${#seg}
+  local cur=""
+  local has=0
+  local in_single=0
+  local in_double=0
+
+  while [ "$i" -lt "$n" ]; do
+    local c="${seg:$i:1}"
+
+    if [ "$in_single" -eq 1 ]; then
+      if [ "$c" = "'" ]; then in_single=0; else cur+="$c"; has=1; fi
+      i=$((i + 1))
+      continue
+    fi
+
+    if [ "$in_double" -eq 1 ]; then
+      if [ "$c" = '"' ]; then
+        in_double=0
+      elif [ "$c" = "\\" ] && [ $((i + 1)) -lt "$n" ]; then
+        cur+="${seg:$((i + 1)):1}"
+        has=1
+        i=$((i + 2))
+        continue
+      else
+        cur+="$c"
+        has=1
+      fi
+      i=$((i + 1))
+      continue
+    fi
+
+    case "$c" in
+      "'") in_single=1; has=1 ;;
+      '"') in_double=1; has=1 ;;
+      "\\")
+        if [ $((i + 1)) -lt "$n" ]; then
+          cur+="${seg:$((i + 1)):1}"
+          has=1
+          i=$((i + 1))
+        fi
+        ;;
+      " "|$'\t')
+        if [ "$has" -eq 1 ]; then TOKENS+=("$cur"); cur=""; has=0; fi
+        ;;
+      *) cur+="$c"; has=1 ;;
+    esac
+    i=$((i + 1))
+  done
+
+  # NOTE: 末尾を `&&` 結合にすると has=0 のとき rc=1 を返し、set -e の呼び出し元を
+  # 巻き込んで途中終了する（末尾空白を含む segment で発覚）。if/fi で rc=0 を保証する。
+  if [ "$has" -eq 1 ]; then TOKENS+=("$cur"); fi
+  return 0
+}
+
+# bash/sh -c "<script>" の inline script 引数を取り出す（再帰解析用）。
+# script ファイル実行（-c なし）は inline ではないため空を返す。
+extract_dash_c_arg() {
+  local -a t=("$@")
+  local n=${#t[@]}
+  local i=1
+  while [ "$i" -lt "$n" ]; do
+    case "${t[$i]}" in
+      -*c)
+        # -c / -lc / -ic 等、c を含む短 option クラスタの直後を inline script とみなす
+        if [ $((i + 1)) -lt "$n" ]; then printf '%s' "${t[$((i + 1))]}"; fi
+        return 0
+        ;;
+      -*) i=$((i + 1)) ;;
+      *) return 0 ;;
+    esac
+  done
+  return 0
+}
+
+# 先頭トークンから env / command / builtin / VAR=... 等の wrapper を剥がし、
+# 実コマンドの先頭に正規化する。剥がした結果のトークン列を NORM_TOKENS に設定する。
+normalize_leading_tokens() {
+  local -a toks=("$@")
+  local progressed=1
+  while [ "$progressed" -eq 1 ] && [ "${#toks[@]}" -gt 0 ]; do
+    progressed=0
+    local lead="${toks[0]}"
+    local base="${lead##*/}"
+    case "$base" in
+      env)
+        toks=("${toks[@]:1}")
+        while [ "${#toks[@]}" -gt 0 ]; do
+          case "${toks[0]}" in
+            *=*|-*) toks=("${toks[@]:1}") ;;
+            *) break ;;
+          esac
+        done
+        progressed=1
+        ;;
+      command|builtin|exec|nohup|nice|time|stdbuf|setsid|timeout|ionice|sudo|doas)
+        toks=("${toks[@]:1}")
+        while [ "${#toks[@]}" -gt 0 ]; do
+          case "${toks[0]}" in
+            -*|*=*) toks=("${toks[@]:1}") ;;
+            *) break ;;
+          esac
+        done
+        progressed=1
+        ;;
+      *=*)
+        toks=("${toks[@]:1}")
+        progressed=1
+        ;;
+    esac
+  done
+  NORM_TOKENS=("${toks[@]:-}")
+}
+
+# Bash コマンド全体を解析する。全 segment を走査し、segment ごとに
+#   - G0 自己改変チェック（raw segment 文字列）
+#   - 先頭トークン正規化 → git なら push 解析、bash/sh -c なら inline script を再帰解析
+# を行う。深さ制限で再帰爆発を防ぐ。
+analyze_bash_command() {
+  local cmd="$1"
+  local depth="${2:-0}"
+  [ "$depth" -ge 6 ] && return 0
+
+  SEGMENTS=()
+  split_top_level_segments "$cmd"
+
+  local seg
+  for seg in "${SEGMENTS[@]:-}"; do
+    [ -z "${seg//[[:space:]]/}" ] && continue
+
+    check_g0_bash "$seg"
+
+    TOKENS=()
+    tokenize_segment "$seg"
+    [ "${#TOKENS[@]}" -eq 0 ] && continue
+
+    NORM_TOKENS=()
+    normalize_leading_tokens "${TOKENS[@]}"
+    [ "${#NORM_TOKENS[@]}" -eq 0 ] && continue
+
+    local lead="${NORM_TOKENS[0]}"
+    local base="${lead##*/}"
+    # 実行ファイルの basename に正規化（/usr/bin/git → git）
+    NORM_TOKENS[0]="$base"
+
+    case "$base" in
+      git)
+        PUSH_TOKENS=()
+        extract_push_tokens "${NORM_TOKENS[@]}"
+        if [ -n "${PUSH_TOKENS[*]:-}" ]; then
+          analyze_push "${PUSH_TOKENS[@]}"
+        fi
+        ;;
+      bash|sh|zsh|dash|ksh|ash)
+        local inner
+        inner="$(extract_dash_c_arg "${NORM_TOKENS[@]}")"
+        [ -n "$inner" ] && analyze_bash_command "$inner" "$((depth + 1))"
+        ;;
+      xargs)
+        local -a rest=("${NORM_TOKENS[@]:1}")
+        while [ "${#rest[@]}" -gt 0 ]; do
+          case "${rest[0]}" in
+            -*) rest=("${rest[@]:1}") ;;
+            *) break ;;
+          esac
+        done
+        if [ "${#rest[@]}" -gt 0 ] && [ "${rest[0]##*/}" = "git" ]; then
+          rest[0]="git"
+          PUSH_TOKENS=()
+          extract_push_tokens "${rest[@]}"
+          [ -n "${PUSH_TOKENS[*]:-}" ] && analyze_push "${PUSH_TOKENS[@]}"
+        fi
+        ;;
+    esac
+  done
 }
 
 main() {
@@ -442,18 +630,9 @@ main() {
       command_str="$(printf '%s' "$input" | jq -r '.tool_input.command // empty')"
       [ -z "$command_str" ] && emit_allow "$tool_name empty command"
 
-      check_g0_bash "$command_str"
-
-      TOKENS=()
-      parse_top_level_tokens "$command_str"
-
-      if [ "${#TOKENS[@]}" -ge 1 ] && [ "${TOKENS[0]}" = "git" ]; then
-        PUSH_TOKENS=()
-        extract_push_tokens "${TOKENS[@]}"
-        if [ -n "${PUSH_TOKENS[*]:-}" ]; then
-          analyze_push "${PUSH_TOKENS[@]}"
-        fi
-      fi
+      # Issue #49: 全 segment を走査し（先頭 segment 限定をやめ）、env/command/絶対パス/
+      # bash -c ラッパを正規化・再帰解析した上で G0 / push 規則を適用する。
+      analyze_bash_command "$command_str"
 
       emit_allow "$tool_name ok"
       ;;

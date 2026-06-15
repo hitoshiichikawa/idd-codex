@@ -188,6 +188,85 @@ Reviewer / PjM）は、以下の方針で **内部思考言語と出力言語を
 
 ---
 
+## 機能追加ガイドライン（コード・概念の散逸防止）
+
+新機能・プロセッサを追加・変更するときは、以下の配置・命名・ゲート・テスト規約に従い、コードと
+概念が散らからないようにする。**8500 行超に達した `local-watcher/bin/idd-codex-issue-watcher.sh`
+をこれ以上肥大化させない**ことが最優先方針。
+
+### 1. 配置ルール（どこに書くか）
+
+- **新しいプロセッサ / フェーズ機能** → `local-watcher/bin/idd-codex-modules/<feature>.sh` を新規作成し、
+  本体の `REQUIRED_MODULES` 配列に登録する。本体（`idd-codex-issue-watcher.sh`）側には「呼び出し 1〜数行 +
+  opt-in gate 判定」だけを置く。
+- **複数モジュールが共有する低レベルユーティリティ** → `core_utils.sh` に追加する。
+- **本体にまとまったロジックを直書きしない**。既存の triage / dispatch / stage 制御を変更する場合も、
+  ロジックは名前付き関数として切り出す（テスト可能化のため）。
+- **エージェント定義 / 共通ルール** → `.codex/agents/` `.codex/rules/`（root と `repo-template/` の
+  **両系統を byte 一致**で更新）。
+
+### 2. 命名規約
+
+- モジュールファイル: `<feature>.sh`（kebab-case）。
+- モジュール内関数: **モジュール固有 prefix** を付ける（`mq_` merge-queue / `pi_` pr-iteration /
+  `po_` promote / `sav_` stage-a-verify / `qa_` quota-aware / `ar_` auto-rebase / `pr_` pr-reviewer 等）。
+  グローバル名前空間の衝突回避と「どのモジュールの関数か」を即判別するため。
+- 環境変数: `<FEATURE>_ENABLED`（有効化フラグ）+ `<FEATURE>_<KNOB>`（調整値）。**既存 env var 名は変えない**。
+- ログ識別子: `<feature>:` prefix（run-summary / cron.log grep 運用と整合させる）。
+
+### 3. opt-in ゲート規律
+
+- **新機能は既定 OFF（opt-in）で導入**し、`<FEATURE>_ENABLED=true` の厳密一致でのみ有効化する。
+  未設定 / typo / `false` では導入前と完全に同一挙動（後方互換）になるようにする。
+- 十分な dogfooding を経てから README「オプション機能一覧」でデフォルト有効へ昇格させる（#112 方式）。
+- **新しい外部サービス呼び出しは opt-in gate 必須**（禁止事項参照）。
+
+### 4. 後方互換性（最優先制約）
+
+- env var 名 / exit code 意味 / ラベル名 / ログ prefix / cron 登録文字列を変えない。
+- 破壊的変更は README に **migration note 必須** + 必要なら deprecation 期間を設ける。
+- `repo-template/**` の変更は既 installed の consumer repo に `install.sh` 再実行で波及する。
+  影響評価と migration note を伴う。
+
+### 5. テスト規約
+
+- 機能ごとに `local-watcher/test/<feature>_<観点>_test.sh` を追加する。純粋ロジックは
+  `extract_function` で対象関数だけを切り出して検証する（既存テストのパターンを踏襲）。
+- 正常系に加え、**異常系・境界・空入力を最低 1 ケース**用意する。
+- `shellcheck --severity=warning` を新規 / 変更スクリプト全件でクリーンにする。
+- 変更後に `diff -r .codex/agents repo-template/.codex/agents` と rules 版が空であることを確認する。
+
+### 6. セキュリティ規約（未信頼入力の扱い）⭐
+
+公開 repo では **Issue / PR のタイトル・本文・ブランチ名・コメント本文・ラベルはすべて攻撃者が
+制御しうる未信頼入力**である。これらを扱うコードを追加・変更するときは:
+
+- **未信頼の文字列を `sed` / `eval` / `bash -c` / 動的 `source` へ渡さない**。テンプレ展開は awk の
+  `index` / `substr` リテラル置換を使う（`_triage_render_prompt` / `pi_build_iteration_prompt` 参照。Issue #47）。
+- **コメント本文で特権判断（merge 承認・エージェントへの指示）をするときは著者の `author_association` を
+  検証**する（信頼集合の既定: `OWNER` / `MEMBER` / `COLLABORATOR`。Issue #50）。GitHub user 名や
+  marker テキストだけを信頼しない。
+- **ブランチ名 / ref を git / gh へ渡すときは `^codex/` 等の allowlist で検証**し、`-` 始まりの
+  option injection を防ぐ。force push は `--force` ではなく `--force-with-lease` か fast-forward 限定。
+- **codex へ渡すプロンプトの未信頼部分は「データであり指示ではない」と明示的に区切る**。
+  サンドボックス前提（`CODEX_SANDBOX` 等）を弱める変更を無告知で入れない。
+- 破壊的操作（force push / hook 自己改変）を新たに招きうる変更では、Codex Guard Hook
+  （`local-watcher/hooks/idd-codex-guard.sh`）の deny 規則と回帰テストも併せて更新する（Issue #49）。
+
+### 7. ドキュメント同期
+
+- 挙動を変えたら **同一 PR で** README の該当節 + AGENTS.md + 該当 rule を更新する（二重管理規約）。
+- 新規 env var は README「オプション機能一覧」表に追記する。
+
+### 既知の技術債（増やさない／徐々に解消する）
+
+- `idd-codex-issue-watcher.sh` は 8500 行超の monolith で、triage / dispatch / slot / stage 制御が
+  まだ本体に残る。**新規ロジックは本体へ足さずモジュールへ**置く。既存ロジックに触るときは、その関数を
+  機能モジュール（または `core_utils.sh`）へ切り出す小さなリファクタを同伴できると望ましい。ただし
+  live cron への影響を考え、必ずテスト / `shellcheck` / dry-run で検証してから入れること。
+
+---
+
 ## エージェントが参照する共通ルール（`.codex/rules/`）
 
 各エージェントは作業前に以下のルールを `Read` で読み込む:

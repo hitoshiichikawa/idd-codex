@@ -263,6 +263,24 @@ pi_general_filter_self() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# pi_general_filter_untrusted_authors: 未信頼 author のコメントを除外（Issue #50）
+#   入力: stdin に raw comments JSON 配列（GitHub REST 形式。author_association を含む）
+#   出力: stdout にフィルタ後の JSON 配列
+#
+#   公開 repo では誰でも PR にコメントでき、その本文がそのまま iteration プロンプト経由で
+#   codex agent への指示として流れる（prompt injection 面）。信頼できる author_association
+#   （既定 OWNER/MEMBER/COLLABORATOR）のコメントのみ採用し、外部ユーザの投稿を入力から外す。
+#   env PR_ITERATION_TRUSTED_ASSOCIATIONS で上書き可能。raw 段（projection 前）で適用する
+#   ため、後段の射影スキーマには author_association を持ち込まない（template 互換維持）。
+# ─────────────────────────────────────────────────────────────────────────────
+pi_general_filter_untrusted_authors() {
+  local trusted="${PR_ITERATION_TRUSTED_ASSOCIATIONS:-OWNER MEMBER COLLABORATOR}"
+  jq --arg trusted "$trusted" '
+    ($trusted | ascii_upcase | split(" ")) as $t
+    | [ .[]? | select(((.author_association // "") | ascii_upcase) as $a | ($t | any(. == $a))) ]'
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # pi_general_filter_resolved: 過去 round で対応済みと判定できるコメントを除外
 #   入力: $1=last_run (ISO8601 string, 空文字列 = 初回 round)
 #         stdin に一般コメント JSON 配列
@@ -346,6 +364,17 @@ pi_collect_general_comments() {
     echo "[]"
     return 0
   fi
+
+  # 1.5. Issue #50: 未信頼 author のコメントを除外（author_association を持つ raw 段で適用）。
+  #      公開 repo では未信頼の外部コメント本文が codex agent への指示として流入しうるため、
+  #      信頼できる author のコメントのみ後段へ渡す。
+  local trusted_general
+  if ! trusted_general=$(printf '%s' "$raw_general" | pi_general_filter_untrusted_authors 2>/dev/null); then
+    pi_warn "PR #${pr_number}: author 信頼フィルタに失敗、空配列で続行"
+    echo "[]"
+    return 0
+  fi
+  raw_general="$trusted_general"
 
   # 2. 射影: { id, user, body, url, created_at } のスキーマに整形（Req 6.2 / Data Model）
   local projected
