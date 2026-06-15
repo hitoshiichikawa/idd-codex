@@ -87,6 +87,10 @@ eval "$(extract_function "$WATCHER_SH" "qa_detect_rate_limit")"
 # shellcheck disable=SC1090
 eval "$(extract_function "$WATCHER_SH" "qa_extract_usage_limit_reset_epoch")"
 # shellcheck disable=SC1090
+eval "$(extract_function "$WATCHER_SH" "qa_usage_limit_has_reset_hint")"
+# shellcheck disable=SC1090
+eval "$(extract_function "$WATCHER_SH" "qa_usage_limit_fallback_reset_epoch")"
+# shellcheck disable=SC1090
 eval "$(extract_function "$WATCHER_SH" "qa_sanitize_summary_token")"
 # shellcheck disable=SC1090
 eval "$(extract_function "$WATCHER_SH" "qa_infer_collab_agent_role")"
@@ -117,7 +121,7 @@ eval "$(extract_function "$WATCHER_SH" "rs_record_degraded_event")"
 # shellcheck disable=SC1090
 eval "$(extract_function "$WATCHER_SH" "rs_emit")"
 
-for fn in qa_log qa_warn qa_error qa_detect_rate_limit qa_extract_usage_limit_reset_epoch qa_sanitize_summary_token qa_infer_collab_agent_role qa_collab_mark_seen qa_collab_set_repeated_flag qa_detect_collab_spawn_failures qa_run_codex_stage qa_format_iso8601 qa_persist_reset_time qa_build_escalation_comment qa_handle_quota_exceeded codex_log_detect_529 rs_init rs_sanitize_token rs_record_degraded_event rs_emit; do
+for fn in qa_log qa_warn qa_error qa_detect_rate_limit qa_extract_usage_limit_reset_epoch qa_usage_limit_has_reset_hint qa_usage_limit_fallback_reset_epoch qa_sanitize_summary_token qa_infer_collab_agent_role qa_collab_mark_seen qa_collab_set_repeated_flag qa_detect_collab_spawn_failures qa_run_codex_stage qa_format_iso8601 qa_persist_reset_time qa_build_escalation_comment qa_handle_quota_exceeded codex_log_detect_529 rs_init rs_sanitize_token rs_record_degraded_event rs_emit; do
   if ! declare -F "$fn" >/dev/null; then
     echo "ERROR: $fn not loaded" >&2
     exit 2
@@ -129,6 +133,7 @@ REPO_SLUG="owner-test"
 LOG_DIR="$TMPDIR_TEST/logs"
 QUOTA_RESET_STATE_FILE="$TMPDIR_TEST/quota-reset-times.json"
 QUOTA_RESUME_GRACE_SEC="60"
+QUOTA_USAGE_LIMIT_FALLBACK_WAIT_SEC="300"
 LABEL_CLAIMED="codex-claimed"
 LABEL_PICKED="codex-picked-up"
 LABEL_NEEDS_QUOTA_WAIT="codex-needs-quota-wait"
@@ -136,6 +141,7 @@ LABEL_FAILED="codex-failed"
 GH_CALL_LOG="$TMPDIR_TEST/gh-calls.log"
 MARK_FAILED_LOG="$TMPDIR_TEST/mark-failed.log"
 export REPO REPO_SLUG LOG_DIR QUOTA_RESET_STATE_FILE QUOTA_RESUME_GRACE_SEC
+export QUOTA_USAGE_LIMIT_FALLBACK_WAIT_SEC
 export LABEL_CLAIMED LABEL_PICKED LABEL_NEEDS_QUOTA_WAIT LABEL_FAILED
 
 gh() {
@@ -264,7 +270,15 @@ run_case() {
   rm -f "$reset_file" "${reset_file}.detect"
 
   assert_eq "$label rc" "$expected_rc" "$rc"
-  assert_eq "$label reset_file" "$expected_reset" "$actual_reset"
+  if [ "$expected_reset" = "__NUMERIC__" ]; then
+    if [[ "$actual_reset" =~ ^[0-9]+$ ]]; then
+      assert_eq "$label reset_file numeric" "true" "true"
+    else
+      assert_eq "$label reset_file numeric" "true" "false"
+    fi
+  else
+    assert_eq "$label reset_file" "$expected_reset" "$actual_reset"
+  fi
 }
 
 run_quota_wait_label_case() {
@@ -502,11 +516,31 @@ else
   assert_eq "usage-limit time-only reset parser returns numeric epoch (Issue #31)" "true" "false"
 fi
 
+usage_feedman32_reset_epoch=$(qa_extract_usage_limit_reset_epoch "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 8:11 PM.")
+if [[ "$usage_feedman32_reset_epoch" =~ ^[0-9]+$ ]]; then
+  assert_eq "feedman-ios #32 usage-limit parser returns numeric epoch (Issue #54)" "true" "true"
+else
+  assert_eq "feedman-ios #32 usage-limit parser returns numeric epoch (Issue #54)" "true" "false"
+fi
+
+usage_unparsed_fallback_epoch=$(qa_usage_limit_fallback_reset_epoch "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at around 8:11 PM.")
+if [[ "$usage_unparsed_fallback_epoch" =~ ^[0-9]+$ ]]; then
+  assert_eq "usage-limit reset hint fallback returns numeric epoch (Issue #54)" "true" "true"
+else
+  assert_eq "usage-limit reset hint fallback returns numeric epoch (Issue #54)" "true" "false"
+fi
+
 run_case "StageA usage-limit-with-reset → quota wait (Issue #12 Req 1, 6)" \
   99 "$usage_reset_epoch" "usage-limit-with-reset.jsonl" 1 "StageA"
 
 run_case "StageA usage-limit-time-only-reset → quota wait (Issue #31)" \
   99 "$usage_time_only_reset_epoch" "usage-limit-time-only-reset.jsonl" 1 "StageA"
+
+run_case "Reviewer feedman-ios #32 usage-limit-time-only-reset → quota wait (Issue #54)" \
+  99 "$usage_feedman32_reset_epoch" "usage-limit-feedman32-time-only-reset.jsonl" 1 "Reviewer-r1-a1"
+
+run_case "Reviewer usage-limit unparsed reset hint → fallback quota wait (Issue #54)" \
+  99 "__NUMERIC__" "usage-limit-unparsed-reset-hint.jsonl" 1 "Reviewer-r1-a1"
 
 run_case "Reviewer usage-limit-with-reset → quota wait (Issue #12 Req 1, 6)" \
   99 "$usage_reset_epoch" "usage-limit-with-reset.jsonl" 1 "Reviewer-r1-a1"

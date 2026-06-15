@@ -3165,8 +3165,11 @@ quota 超過時に codex CLI は `rate_limit_event (status=exceeded)` を含む 
 予定時刻が経過したら、cron tick 冒頭の **Quota Resume Processor** が自動的に
 ラベルを除去して通常 pickup ループへ戻します。`codex-failed` への一律 escalation を
 回避し、quota 起因と他失敗（parse-failed / coverage 不足等）をラベルだけで分離
-できます。usage-limit 風 fatal message でも reset 時刻を抽出できない場合は自動 resume
-条件が確定できないため、従来どおり通常失敗へ透過します。
+できます。usage-limit 風 fatal message でも reset hint が無い場合は自動 resume
+条件が確定できないため、従来どおり通常失敗へ透過します。`try again at ...` の reset hint
+があるのに parser が epoch 化できない場合は、Codex CLI 側の表現揺れとして
+`QUOTA_USAGE_LIMIT_FALLBACK_WAIT_SEC`（既定 18000 秒）後を reset 予定時刻にして
+`codex-needs-quota-wait` へ退避します。
 
 > **注**: `QUOTA_AWARE_ENABLED` は #112 以降デフォルト `true`。明示的に opt-out したい
 > 場合は `QUOTA_AWARE_ENABLED=false` を渡すと本機能の全コードパスが skip され、本機能
@@ -3200,6 +3203,7 @@ quota 超過時に codex CLI は `rate_limit_event (status=exceeded)` を含む 
 |---|---|---|
 | `QUOTA_AWARE_ENABLED` | `true`（#112） | Quota-Aware Watcher の有効化 / 無効化（**デフォルト有効**）。`=false` を明示すると完全 skip し本機能導入前と等価に動作 |
 | `QUOTA_RESUME_GRACE_SEC` | `60` | reset 予定時刻 + 本秒数を経過するまで `codex-needs-quota-wait` を除去しない grace 期間（同 cron tick 内の付与/除去往復を構造的に抑止 / NFR 3.3） |
+| `QUOTA_USAGE_LIMIT_FALLBACK_WAIT_SEC` | `18000` | usage-limit fatal に `try again at ...` の reset hint があるが epoch 化できない場合の保守的 fallback 待機秒数。reset hint が無い場合は従来どおり通常失敗へ透過 |
 
 cron 例（明示 opt-out したい場合）:
 

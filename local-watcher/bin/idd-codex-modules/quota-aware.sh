@@ -164,7 +164,8 @@ qa_detect_rate_limit() {
 # watcher 実行環境の local timezone で解釈する。絶対日付付き
 # `try again at Jun 9th, 2026 1:16 AM.` と、同日内の時刻だけを返す
 # `try again at 11:26 AM.` の両方を受理する。時刻だけの値が現在時刻以前なら翌日の
-# reset とみなす。抽出不能時は空文字を返し、呼び出し側は既存失敗経路へ透過する。
+# reset とみなす。抽出不能時は空文字を返す。`try again at` の reset hint があるのに
+# epoch 化できない場合は qa_run_codex_stage 側で保守的 fallback reset を使う。
 qa_extract_usage_limit_reset_epoch() {
   local message="${1:-}"
   if [ -z "$message" ]; then
@@ -227,6 +228,26 @@ qa_extract_usage_limit_reset_epoch() {
   fi
   echo ""
   return 0
+}
+
+qa_usage_limit_has_reset_hint() {
+  local message="${1:-}"
+  printf '%s\n' "$message" | grep -Eiq 'try again at[[:space:]]+'
+}
+
+qa_usage_limit_fallback_reset_epoch() {
+  local message="${1:-}"
+  if ! qa_usage_limit_has_reset_hint "$message"; then
+    echo ""
+    return 0
+  fi
+
+  local wait_sec="${QUOTA_USAGE_LIMIT_FALLBACK_WAIT_SEC:-18000}"
+  if ! [[ "$wait_sec" =~ ^[0-9]+$ ]] || [ "$wait_sec" -le 0 ]; then
+    wait_sec="18000"
+  fi
+
+  echo "$(($(date '+%s') + wait_sec))"
 }
 
 qa_sanitize_summary_token() {
@@ -479,8 +500,9 @@ qa_run_codex_stage() {
     fi
 
     # Codex CLI の usage-limit fatal は stream-json の通常 error message として出ることがある。
-    # reset 時刻を抽出できる場合だけ quota wait に分類し、抽出不能時は codex_rc を透過して
-    # 既存の codex-failed 経路へ委譲する（Issue #12 Option B）。
+    # reset 時刻を抽出できる場合は quota wait に分類する。`try again at` の reset hint が
+    # あるのに parser が取りこぼした場合は、Codex 側の表現揺れとして保守的 fallback reset を
+    # 使う。reset hint 自体が無い場合は codex_rc を透過し、Issue #12 Option B を維持する。
     local _usage_line _usage_rest _usage_epoch _usage_message
     _usage_line=$(awk -F '\t' '$1 == "usage_limit_fatal" { last = $0 } END { print last }' "$detect_file")
     if [ -n "$_usage_line" ]; then
@@ -489,6 +511,12 @@ qa_run_codex_stage() {
       _usage_message="${_usage_rest#*$'\t'}"
       if ! [[ "$_usage_epoch" =~ ^[0-9]+$ ]]; then
         _usage_epoch=$(qa_extract_usage_limit_reset_epoch "$_usage_message")
+      fi
+      if ! [[ "$_usage_epoch" =~ ^[0-9]+$ ]]; then
+        _usage_epoch=$(qa_usage_limit_fallback_reset_epoch "$_usage_message")
+        if [[ "$_usage_epoch" =~ ^[0-9]+$ ]]; then
+          qa_warn "stage detected usage-limit reset hint but parser failed label=$stage_label fallback_wait_sec=${QUOTA_USAGE_LIMIT_FALLBACK_WAIT_SEC:-18000} reset_epoch=$_usage_epoch"
+        fi
       fi
       if [[ "$_usage_epoch" =~ ^[0-9]+$ ]]; then
         printf '%s\n' "$_usage_epoch" > "$reset_file"

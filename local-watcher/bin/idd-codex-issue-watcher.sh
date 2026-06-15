@@ -514,6 +514,9 @@ QUOTA_AWARE_ENABLED="${QUOTA_AWARE_ENABLED:-true}"
 # reset 予定時刻 + 本秒数を経過するまで `codex-needs-quota-wait` を除去しない（NFR 3.3:
 # 同 cron tick 内で付与/除去を往復させない構造的抑止）。
 QUOTA_RESUME_GRACE_SEC="${QUOTA_RESUME_GRACE_SEC:-60}"
+# usage-limit fatal に `try again at ...` の reset hint があるが自然言語 parser が epoch 化
+# できない場合の保守的 fallback 待機秒数。reset hint 自体が無い fatal は従来どおり透過する。
+QUOTA_USAGE_LIMIT_FALLBACK_WAIT_SEC="${QUOTA_USAGE_LIMIT_FALLBACK_WAIT_SEC:-18000}"
 
 # ─── Phase C: Issue 並列化 (worktree slot + dispatcher, #16) ───
 # 入口（codex-auto-dev Issue 処理）の並列度を制御する env var 群。
