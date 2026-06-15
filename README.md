@@ -1050,7 +1050,7 @@ commit 済みだった artifact を含む既存 ahead commit が origin branch �
 | `codex-staged-for-release` | Issue | `develop` merge 済み、`main` 到達待ち（multi-branch 運用専用。`main` 到達 = GitHub auto-close が発火して Issue は close される前提） | 人間（もしくは Phase B Promote Pipeline の自動付与）／解除は ST success → Phase B が自動除去（`PROMOTE_PIPELINE_ENABLED=true` 時）、または `main` merge 時に GitHub auto-close で Issue が閉じることで実質的に意味を失う |
 | `codex-st-failed` | Issue | ST failure 検知後に revert 済み（Phase B Promote Pipeline が付与） | Codex（Phase B Promote Pipeline）／解除は ST failure を修正する PR を merge した運用者が手動で除去 |
 | `codex-awaiting-slot` | Issue | hot file 競合予防で同サイクル dispatch を見送り中（Phase E Path Overlap Checker 付与） | Codex（Phase E Path Overlap Checker）／解除は同 Phase が次サイクルで自動除去（先行 Issue PR merge で in-flight 集合縮小 → overlap empty）、または運用者が手動除去 |
-| `codex-blocked` | Issue | 依存 Issue 未 merge により codex-auto-dev 進行不能（PM phase の Dependency Resolver Gate #146 が付与） | Codex（PM Phase Orchestrator / Dependency Resolver Gate）／解除は人間が依存先 Issue を merge した後に手動除去（auto-unblock は提供しない） |
+| `codex-blocked` | Issue | 依存 Issue 未 merge により codex-auto-dev 進行不能（PM phase の Dependency Resolver Gate #146 が付与） | Codex（PM Phase Orchestrator / Dependency Resolver Gate）／解除は人間が依存先 Issue を merge した後に手動除去、または `DEPENDENCY_AUTO_UNBLOCK_ENABLED=true` 時に Dependency Auto-Unblock Processor が自動除去 |
 | `codex-hotfix` | Issue | codex-hotfix 優先処理対象。Dispatcher が候補を FIFO（番号昇順）で処理する際、本ラベル付き Issue を非 codex-hotfix より先に投入する（#200） | 人間が手動付与（自動付与なし）／緊急対応の完了後に運用者が手動除去 |
 
 ポーリングクエリ:
@@ -1090,8 +1090,10 @@ Dependency Resolver Gate #146 が付与）を pickup 候補から除外するた
 依存記法（canonical `Depends on: #N` / alias `前提依存: #N` / alias `Blocked by: #N`）を書くと、
 PM phase で依存先 Issue の merge 状態が自動的にチェックされ、未解決依存が 1 件でもあれば
 本ラベルが付与される。依存先を merge してから本ラベルを **手動除去**すれば、次 cron tick で
-依存チェックが再実行され、解消済みなら通常 Triage / 実装フローに合流する（auto-unblock は
-提供しない / Out of Scope）。`codex-blocked` と `codex-needs-decisions` の意味的差分: `codex-blocked` は **依存
+依存チェックが再実行され、解消済みなら通常 Triage / 実装フローに合流する。さらに
+`DEPENDENCY_AUTO_UNBLOCK_ENABLED=true` を明示した環境では、watcher cycle 冒頭で
+`codex-blocked` Issue を再評価し、全依存が resolved になった時点で `codex-blocked` を自動除去して
+`codex-auto-dev` に戻す（Dependency Auto-Unblock Processor #56）。`codex-blocked` と `codex-needs-decisions` の意味的差分: `codex-blocked` は **依存
 Issue 未 merge 専用**、`codex-needs-decisions` はそれ以外の汎用人間判断要求。両ラベルは独立した
 状態遷移を持ち、将来統合しない方針（Req 8.5, 9.4）。
 
@@ -1109,8 +1111,9 @@ codex-claimed (Triage 実行中)
    ↓ Dependency Resolver Gate (Issue #146) — 本文に `Depends on:` / `前提依存:` / `Blocked by:` がある場合のみ発火
    ├─ 依存未解決 → + codex-blocked − codex-claimed (エスカレーションコメント 1 件)
    │                       ↓ 人間が依存解消 + codex-blocked 手動除去
-   │                       ↓ 次 cron tick で再評価
-   │                       └─ 依存解消済 → 通常 Triage に合流（auto-unblock は提供しない）
+   │                       ├─ 次 cron tick で再評価 → 依存解消済なら通常 Triage に合流
+   │                       └─ DEPENDENCY_AUTO_UNBLOCK_ENABLED=true 時は watcher cycle 冒頭で自動再評価
+   │                          └─ 全依存 resolved → − codex-blocked + codex-auto-dev → 通常 dispatch に合流
    ↓ Triage
    ├─ codex-needs-decisions       ─(人間がラベル除去)─→ 再 Triage
    ├─ codex-awaiting-design-review ─(人間が設計 PR merge & ラベル除去)─→ impl-resume
@@ -1138,6 +1141,23 @@ codex-claimed (Triage 実行中)
 > 再度 gate にかかり、in-flight 集合の縮小と同時に `codex-awaiting-slot` 自動除去 → 通常 dispatch
 > に合流します（Req 6.1〜6.4）。`PATH_OVERLAP_CHECK` 未設定環境ではそもそも本 gate が
 > no-op なので、`codex-awaiting-slot` が付くこと自体がありません。
+
+### `codex-blocked` 依存自動解除（Dependency Auto-Unblock, #56）
+
+`DEPENDENCY_AUTO_UNBLOCK_ENABLED=true` を watcher の cron / launchd 環境に設定すると、cycle 冒頭で
+open な `codex-blocked` Issue を最大 `DEPENDENCY_AUTO_UNBLOCK_LIMIT` 件（既定 `20`）取得し、
+Issue 本文の `Depends on:` / `前提依存:` / `Blocked by:` を既存 Dependency Resolver と同じ
+`dr_extract_deps` / `dr_resolve_one` で再評価します。
+
+全依存が resolved の場合のみ `codex-blocked` を除去し、`codex-auto-dev` を付与して通常の
+dispatcher pickup に戻します。未解決依存または API error が 1 件でも残る場合は label / comment
+を変更しません。`codex-failed` / `codex-needs-decisions` / `codex-ready-for-review` /
+`codex-picked-up` / `codex-claimed` / `codex-needs-quota-wait` など、別の停止・進行中ラベルがある
+Issue も自動解除対象外です。
+
+自動解除時は hidden marker 付きコメントを 1 件だけ投稿します。既に同じ marker のコメントがある
+場合は重複投稿せず、GitHub API で既存コメント確認に失敗した場合もコメント投稿を skip します
+（ラベル解除自体は成功済みなら維持）。
 
 Multi-branch（gitflow 系: `BASE_BRANCH=develop` 等）運用での補助フロー:
 
@@ -1307,6 +1327,7 @@ idd-codex は基本フロー（Triage → 実装 → PR 作成）以外の機能
 | **Phase C: Issue 入口並列化**（複数 codex-auto-dev Issue を slot 単位で並列処理） | `PARALLEL_SLOTS` | `1`（直列） | 整数。`1` で直列（本機能導入前と同一挙動）、`>=2` で並列。`0` / 負数 / 非数値 / 空文字 / 先頭ゼロは ERROR ログ + `exit 1`（サイクル中断） | 推奨: `SLOT_INIT_HOOK`（言語ランタイム / 依存ツール準備が必要な repo のみ。絶対パス指定）、`WORKTREE_BASE_DIR`（既定 `$HOME/.idd-codex/issue-watcher/worktrees`） | [並列実行 (Phase C, #16)](#並列実行-phase-c-16) | #16 |
 | **Phase D: Auto Rebase Processor**（`codex-needs-rebase` + approved PR を Codex で rebase し、allowlist 内なら approve 維持・allowlist 外なら approve 剥がし） | `AUTO_REBASE_MODE` | `off` | `=codex` 厳密一致のみ有効。それ以外（未設定 / `off` / `on` / `true` / 大文字小文字違い / typo）はすべて OFF に正規化 | 推奨: `MECHANICAL_PATHS`（mechanical 扱いする path allowlist。カンマ区切り bash glob。**空のままだと全件 semantic 扱い**で approve が dismiss される） | [Auto Rebase Processor (Phase D)](#auto-rebase-processor-phase-d) | #17 |
 | **Phase E: Path Overlap Checker**（Triage で推定した編集見込み path を in-flight Issue 集合と突合し、重複時は `codex-awaiting-slot` で dispatch を見送り） | `PATH_OVERLAP_CHECK` | `off` | `=true` 厳密一致のみ有効。それ以外（未設定 / `off` / `on` / `1` / `True` / 大文字小文字違い / typo）はすべて OFF に正規化 | 連動: `MECHANICAL_PATHS`（Phase D と共有。Phase E では top-level path 突合の補助知識として参照） | [Path Overlap Checker (Phase E)](#path-overlap-checker-phase-e) | #18 |
+| **Dependency Auto-Unblock Processor**（`codex-blocked` Issue の依存を cycle 冒頭で再評価し、全依存 resolved なら `codex-blocked` を自動解除） | `DEPENDENCY_AUTO_UNBLOCK_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `on` / `True` / `1` / typo）はすべて OFF | 推奨: `DEPENDENCY_AUTO_UNBLOCK_LIMIT`（既定 `20`。1 cycle で再評価する `codex-blocked` Issue 数上限） | [`codex-blocked` 依存自動解除](#codex-blocked-依存自動解除dependency-auto-unblock-56) | #56 |
 | **Phase 2: Per-task TDD Implementation Loop**（tasks.md の task 1 件ごとに fresh Implementer + fresh Reviewer を起動し、`### Task <id>` learnings を後続 task に前方伝播） | `PER_TASK_LOOP_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて `false` 等価 | 推奨: `PER_TASK_MAX_TASKS`（暴走防止 knob。既定 `0` = 無制限。正の整数で task 件数上限を設定すると上限超過時に `codex-failed` で停止） | [Per-task TDD Implementation Loop (#21)](#per-task-tdd-implementation-loop-21) | #21 |
 | **Phase 3: Debugger Subagent**（Reviewer Round 2 reject 直前 / Developer BLOCKED 宣言時に fresh Debugger を web search 権限付きで起動し、Fix Plan markdown を後続 Developer 再起動 prompt に注入） | `DEBUGGER_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて `false` 等価 | 任意: `DEBUGGER_MODEL`（既定 `gpt-5.5`）、`DEBUGGER_MAX_TURNS`（既定 `40`） | [Debugger Subagent (Phase 3, #22)](#debugger-subagent-phase-3-22) | #22 |
 | **Codex Guard Hook**（Codex PreToolUse hook で base branch push / 無条件 force push / hook 自己改変を事前 deny） | `IDD_CODEX_HOOKS_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて OFF。ON かつ preflight 失敗時は watcher が fail-closed 停止 | 任意: `IDD_CODEX_HOOKS_DIR`（既定 `$HOME/.idd-codex/hooks`）、`IDD_CODEX_HOOKS_PROFILE_NAME`（既定 `idd-codex-guard`）、`IDD_CODEX_HOOKS_MIN_VERSION`（既定 `0.0.0`）、`CODEX_HOME`（profile config 配置先） | [Codex Guard Hook (#294)](#codex-guard-hook-294) | #294 |
