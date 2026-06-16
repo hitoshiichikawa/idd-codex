@@ -11,6 +11,7 @@
 #         - `&`（bash 5.1+ の置換特殊文字）がリテラルとして残る
 #         - バックスラッシュがリテラルとして残る（awk -v の解釈差を回避）
 #         - タイトルに別プレースホルダ文字列が含まれても再展開しない
+#         - Dependency Resolver preflight の任意 placeholder が安全に差し込まれる
 #
 # 配置先: local-watcher/test/triage_prompt_render_safety_test.sh
 # 依存:   bash 4+, awk
@@ -60,6 +61,18 @@ assert_eq() {
   fi
 }
 
+assert_contains() {
+  local label="$1" needle="$2" haystack="$3"
+  if printf '%s' "$haystack" | grep -Fq -- "$needle"; then
+    echo "PASS: $label"; PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    echo "FAIL: $label"
+    echo "  needle: $(printf '%q' "$needle")"
+    echo "  in    : $(printf '%q' "$haystack")"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  fi
+}
+
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 TMPL="$TMP_DIR/triage.tmpl"
@@ -68,6 +81,7 @@ Number: {{NUMBER}}
 Title: {{TITLE}}
 URL: {{URL}}
 File: {{FILE}}
+{{DEPENDENCY_PREFLIGHT}}
 EOF
 
 echo "--- _triage_render_prompt safety cases (Issue #47) ---"
@@ -88,6 +102,7 @@ assert_eq "RCE payload はリテラルとして本文に残る" \
 out=$(_triage_render_prompt "$TMPL" 7 "Fix login bug" "https://example/7" "/tmp/y.json")
 assert_eq "NUMBER が置換される" "Number: 7" "$(printf '%s\n' "$out" | sed -n '1p')"
 assert_eq "TITLE が置換される" "Title: Fix login bug" "$(printf '%s\n' "$out" | sed -n '2p')"
+assert_eq "DEPENDENCY_PREFLIGHT は未指定なら空" "" "$(printf '%s\n' "$out" | sed -n '5p')"
 
 # 3. `&`（bash 5.1+ の置換特殊文字）がリテラルとして残る
 out=$(_triage_render_prompt "$TMPL" 8 "rename A & B" "https://example/8" "/tmp/z.json")
@@ -106,6 +121,19 @@ out=$(_triage_render_prompt "$TMPL" 10 '{{TITLE}}' "https://example/10" "/tmp/v.
 assert_eq "挿入値内の {{TITLE}} は再展開されずリテラルとして残る" \
   "Title: {{TITLE}}" \
   "$(printf '%s\n' "$out" | sed -n '2p')"
+
+# 6. Dependency Resolver preflight は複数行でもリテラルとして差し込まれる
+dep_preflight=$'## Dependency Resolver Preflight\n\n- #38(staged-for-release)\n- #43(base-merged:#86)\n\nopen であることだけを理由に `codex-needs-decisions` を出してはいけません'
+out=$(_triage_render_prompt "$TMPL" 11 "Deps" "https://example/11" "/tmp/deps.json" "$dep_preflight")
+assert_eq "DEPENDENCY_PREFLIGHT 見出しが差し込まれる" \
+  "## Dependency Resolver Preflight" \
+  "$(printf '%s\n' "$out" | sed -n '5p')"
+assert_contains "DEPENDENCY_PREFLIGHT の staged 依存が保持される" \
+  "- #38(staged-for-release)" \
+  "$out"
+assert_contains "DEPENDENCY_PREFLIGHT の needs-decisions 抑止文が保持される" \
+  'open であることだけを理由に `codex-needs-decisions` を出してはいけません' \
+  "$out"
 
 echo ""
 echo "==========================================="

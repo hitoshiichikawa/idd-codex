@@ -9,6 +9,8 @@
 - Title : {{TITLE}}
 - URL   : {{URL}}
 
+{{DEPENDENCY_PREFLIGHT}}
+
 Issue の取得は次の順で行ってください。
 
 1. **本文（必須）**: `gh issue view {{NUMBER}}` で本文を取得する。
@@ -65,10 +67,15 @@ Issue 本文に `## 関連` セクション（英語 repo では `## Related`）
 - `Split from: #N` / `分割元: #N` — 元 Issue を分割した結果として生まれたことを示す履歴
 - `Sibling: #N` / `Related: #N` — 兄弟 Issue / 関連参照（informational）
 
-`Depends on:` で参照される Issue がまだ open / 未着手の場合、当該 Issue は事前依存が
-未解決の可能性があるため、`rationale` に「Depends on: #N が未解決の可能性」として記述する
-ことを推奨します（人間判断の論点として扱える）。本 Triage プロンプトの判定ロジック自体は
-変更せず、依存表現の読み取り指針のみを追加します。
+Dependency Resolver Preflight セクションが存在する場合、そこに列挙された `Depends on:` の依存は
+idd-codex の deterministic resolver が Triage 起動前に resolved 判定済みです。GitHub Issue が
+open のままでも、`codex-staged-for-release` / base branch merged managed PR / closing PR 等の
+resolver reason により実装着手可と扱います。これらの依存 Issue が open であることだけを理由に
+`codex-needs-decisions` を出してはいけません。
+
+Dependency Resolver Preflight に列挙されていない `Depends on:` 参照がまだ open / 未着手の場合は、
+当該 Issue の事前依存が未解決の可能性があるため、`rationale` に「Depends on: #N が未解決の可能性」
+として記述することを推奨します（人間判断の論点として扱える）。
 
 ## 出力形式
 

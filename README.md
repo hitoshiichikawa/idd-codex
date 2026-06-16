@@ -1099,7 +1099,11 @@ PM phase で依存先 Issue の merge 状態が自動的にチェックされ、
 依存チェックが再実行され、解消済みなら通常 Triage / 実装フローに合流する。さらに
 `DEPENDENCY_AUTO_UNBLOCK_ENABLED=true` を明示した環境では、watcher cycle 冒頭で
 `codex-blocked` Issue を再評価し、全依存が resolved になった時点で `codex-blocked` を自動除去して
-`codex-auto-dev` に戻す（Dependency Auto-Unblock Processor #56）。`codex-blocked` と `codex-needs-decisions` の意味的差分: `codex-blocked` は **依存
+`codex-auto-dev` に戻す（Dependency Auto-Unblock Processor #56）。Dependency Resolver Gate が
+`codex-staged-for-release` / base branch merged managed PR / closing PR などを理由に依存を
+resolved 判定した場合、その preflight summary は Triage prompt に渡される。Triage は該当依存
+Issue が open であることだけを理由に `codex-needs-decisions` を付与しない。
+`codex-blocked` と `codex-needs-decisions` の意味的差分: `codex-blocked` は **依存
 Issue 未 merge 専用**、`codex-needs-decisions` はそれ以外の汎用人間判断要求。両ラベルは独立した
 状態遷移を持ち、将来統合しない方針（Req 8.5, 9.4）。
 

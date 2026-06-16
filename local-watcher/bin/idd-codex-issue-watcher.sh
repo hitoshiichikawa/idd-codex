@@ -9473,6 +9473,33 @@ ${items}
 EOF_DR_COMMENT
 }
 
+# 引数 $1 = resolved 依存リスト（"#N(reason),#M(reason:detail)" のカンマ区切り）。
+# stdout = Triage prompt に差し込む Dependency Resolver の事前判定サマリ。
+# 副作用なし（純粋関数）。
+#
+# Triage は GitHub Issue の open / closed 状態だけを見て「依存未解決の可能性」と
+# 誤判定し得るため、Triage 起動前の deterministic resolver が解消済みと判定した
+# 依存を明示的に渡す。空入力では何も出力しない。
+dr_format_triage_dependency_preflight() {
+  local resolved_csv="$1"
+  [ -n "$resolved_csv" ] || return 0
+
+  local items
+  items=$(printf '%s' "$resolved_csv" \
+    | tr ',' '\n' \
+    | awk 'NF {printf "- %s\n", $0}')
+
+  cat <<EOF_DR_PREFLIGHT
+## Dependency Resolver Preflight
+
+idd-codex の deterministic Dependency Resolver Gate は、Triage 起動前に \`Depends on:\` / \`前提依存:\` / \`Blocked by:\` を検証し、以下の依存を実装着手可として resolved 判定しました。
+
+${items}
+
+上記の依存 Issue は、GitHub Issue が open でも resolver reason により解消済み扱いです。Triage は、これらの依存 Issue が open であることだけを理由に \`codex-needs-decisions\` を出してはいけません。依存以外の設計判断や仕様不明点は従来どおり判定してください。
+EOF_DR_PREFLIGHT
+}
+
 # 引数:
 #   $1 = owner（$REPO の owner 部）
 #   $2 = repo 名（$REPO の repo 部）
@@ -9778,6 +9805,7 @@ dr_check_dependencies() {
   local issue_num="$1"
   local body="$2"
   local labels="$3"
+  DR_RESOLVED_DEPENDENCY_SUMMARY=""
 
   # 冪等性ガード: 既に codex-blocked が付与されている → 再付与せず caller 側 skip
   # （Req 3.4）。LABELS は改行区切りなので `grep -qx` で完全一致判定。
@@ -9859,6 +9887,7 @@ dr_check_dependencies() {
   fi
 
   # 全件 resolved → Triage 続行
+  DR_RESOLVED_DEPENDENCY_SUMMARY="$resolved_csv"
   dr_log "issue=#${issue_num} extracted=${extracted_csv} resolved=${resolved_csv} unresolved= api_errors= verdict=all_resolved"
   return 0
 }
@@ -10136,10 +10165,11 @@ dr_process_auto_unblock() {
   return 0
 }
 
-# Triage プロンプトテンプレートの {{NUMBER}} / {{TITLE}} / {{URL}} / {{FILE}} を
-# リテラル置換して stdout に出力する（Issue #47）。
+# Triage プロンプトテンプレートの {{NUMBER}} / {{TITLE}} / {{URL}} / {{FILE}} /
+# {{DEPENDENCY_PREFLIGHT}} をリテラル置換して stdout に出力する（Issue #47 / #60）。
 #
 # 引数: $1=テンプレートパス $2=NUMBER $3=TITLE $4=URL $5=TRIAGE_FILE
+#       $6=Dependency Resolver preflight text（任意）
 #
 # セキュリティ: 未信頼の Issue タイトル（公開 repo では誰でも設定可）を sed プログラムへ
 # 補間すると、GNU sed の `e` コマンド等を悪用した command injection（RCE）が成立する。
@@ -10150,6 +10180,7 @@ dr_process_auto_unblock() {
 _triage_render_prompt() {
   local tmpl="$1"
   IDD_TRIAGE_NUMBER="$2" IDD_TRIAGE_TITLE="$3" IDD_TRIAGE_URL="$4" IDD_TRIAGE_FILE="$5" \
+  IDD_TRIAGE_DEPENDENCY_PREFLIGHT="${6:-}" \
   awk '
     function repl(s, key, val,    out, idx) {
       out = ""
@@ -10165,6 +10196,7 @@ _triage_render_prompt() {
       line = repl(line, "{{TITLE}}",  ENVIRON["IDD_TRIAGE_TITLE"])
       line = repl(line, "{{URL}}",    ENVIRON["IDD_TRIAGE_URL"])
       line = repl(line, "{{FILE}}",   ENVIRON["IDD_TRIAGE_FILE"])
+      line = repl(line, "{{DEPENDENCY_PREFLIGHT}}", ENVIRON["IDD_TRIAGE_DEPENDENCY_PREFLIGHT"])
       print line
     }
   ' "$tmpl"
@@ -10396,8 +10428,13 @@ _slot_run_issue() {
 
     # Issue #47: 未信頼の Issue タイトル（公開 repo では誰でも設定可）を安全に差し込む。
     # 詳細は _triage_render_prompt のコメント参照。
+    local TRIAGE_DEPENDENCY_PREFLIGHT=""
+    if [ -n "${DR_RESOLVED_DEPENDENCY_SUMMARY:-}" ]; then
+      TRIAGE_DEPENDENCY_PREFLIGHT=$(dr_format_triage_dependency_preflight "$DR_RESOLVED_DEPENDENCY_SUMMARY")
+    fi
+
     local TRIAGE_PROMPT
-    TRIAGE_PROMPT=$(_triage_render_prompt "$TRIAGE_TEMPLATE" "$NUMBER" "$TITLE" "$URL" "$TRIAGE_FILE")
+    TRIAGE_PROMPT=$(_triage_render_prompt "$TRIAGE_TEMPLATE" "$NUMBER" "$TITLE" "$URL" "$TRIAGE_FILE" "$TRIAGE_DEPENDENCY_PREFLIGHT")
 
     echo "--- Triage 実行 ---" >> "$LOG"
     # Issue #66: Quota-Aware Watcher 経由で codex を起動。opt-out 時は素通し
