@@ -39,5 +39,5 @@
 - 重要な判断: production code / tests は変更しない docs-only task として扱い、requirements.md / design.md / tasks.md 本文は marker commit まで変更しない。
 - review-notes.md は Task 2 round 2 が `RESULT: approve` で Findings なしだったことを確認した。debugger-notes.md は存在しなかった。
 - Finding Closure Matrix:
-  - 前回 Reviewer Findings なし / Target: 4.4 / Category: closure proof / 変更: `README.md`, `docs/specs/50--security-high-pr-issue-approval-marker/impl-notes.md` / テスト: `git diff --check HEAD~2..HEAD` / status: closed
+  - 前回 Reviewer Findings なし / Target: 4.4 / Category: closure proof / 変更: `README.md`, `docs/specs/50--security-high-pr-issue-approval-marker/impl-notes.md` / テスト: `git diff --check d0cef7c342c69b6a9a4d4de8ab0b4e76aad188f2..HEAD` / status: closed
 - 残存課題: なし。
