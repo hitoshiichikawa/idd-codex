@@ -199,12 +199,27 @@ assert_contains "label parse failure emits warning" \
 
 echo "--- dr_check_dependencies reason logging ---"
 
-check_log=$(dr_check_dependencies 99 $'Depends on: #14 #15 #17' "" 2>"$TMPROOT/dr-check.err") || rc=$?
-rc="${rc:-0}"
+rc=0
+dr_check_dependencies 99 $'Depends on: #14 #15 #17' "" >"$TMPROOT/dr-check.out" 2>"$TMPROOT/dr-check.err" || rc=$?
+check_log=$(cat "$TMPROOT/dr-check.out")
 assert_eq "all development-resolved dependencies allow triage" "0" "$rc"
 assert_contains "log records staged-for-release reason" "#14(staged-for-release)" "$check_log"
 assert_contains "log records base-merged reason and PR number" "#15(base-merged:#57)" "$check_log"
 assert_contains "log records existing closing-pr reason" "#17(closing-pr)" "$check_log"
+assert_contains "resolved summary records staged-for-release reason" "#14(staged-for-release)" "$DR_RESOLVED_DEPENDENCY_SUMMARY"
+assert_contains "resolved summary records base-merged reason and PR number" "#15(base-merged:#57)" "$DR_RESOLVED_DEPENDENCY_SUMMARY"
+
+resolved_summary="$DR_RESOLVED_DEPENDENCY_SUMMARY"
+preflight=$(dr_format_triage_dependency_preflight "$resolved_summary")
+assert_contains "preflight includes deterministic resolver heading" "Dependency Resolver Preflight" "$preflight"
+assert_contains "preflight includes resolved staged dependency" "- #14(staged-for-release)" "$preflight"
+assert_contains "preflight tells Triage not to ask open-only decisions" "open であることだけを理由に \`codex-needs-decisions\` を出してはいけません" "$preflight"
+
+DR_RESOLVED_DEPENDENCY_SUMMARY="stale-summary"
+rc=0
+dr_check_dependencies 100 "No dependency markers" "" >"$TMPROOT/dr-check-no-deps.out" 2>"$TMPROOT/dr-check-no-deps.err" || rc=$?
+assert_eq "no dependency markers allow triage" "0" "$rc"
+assert_eq "no dependency markers clear resolved summary" "" "$DR_RESOLVED_DEPENDENCY_SUMMARY"
 
 echo "--- single-branch compatibility ---"
 
