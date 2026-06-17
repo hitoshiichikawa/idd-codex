@@ -28,7 +28,7 @@
   - _Boundary: SecurityDocumentation_
   - _Depends: 1.1_
 
-- [ ] 4. 静的解析と関連 shell tests を通す
+- [x] 4. 静的解析と関連 shell tests を通す
   - `shellcheck --severity=warning` を変更対象 shell script と関連 test に対して実行する
   - 4-C 新規 test、4-A 既存 regression test、4-B 既存 regression test を実行する
   - 失敗があれば production code または test fixture を修正し、未信頼 marker が採用されない性質を保つ
