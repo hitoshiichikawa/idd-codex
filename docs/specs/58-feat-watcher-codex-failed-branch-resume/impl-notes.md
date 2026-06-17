@@ -32,3 +32,18 @@ README.md は既に `codex-failed` 復旧手順で、既存 origin branch resume
 ## 確認事項
 
 なし。
+
+## Reviewer round=1 reject 是正
+
+Reviewer 指摘に基づき、実装変更ではなく回帰テストと境界 artifact を補強した。
+
+- `local-watcher/test/failed_recovery_worktree_test.sh`
+  - stale slot 側の tracked file (`feature.txt`) を変更するケースを追加し、`_failed_recovery_prepare_branch_checkout "$BRANCH" "true"` が `rc=20`、`codex-needs-decisions` 1 回、stale slot は branch checkout のまま、current slot は detached のままであることを検証した。
+  - checkout busy 後の recovery が `rc=20` で失敗するケースを追加し、recovery 呼び出しが 1 回だけ、checkout 再試行なし、`codex-needs-decisions` 1 回、`codex-failed` へは進まないことを検証した。
+- `docs/specs/58-feat-watcher-codex-failed-branch-resume/tasks.md`
+  - 履歴上に既存 `tasks.md` / `design.md` が存在しなかったため、Reviewer が境界判定できる最小の `tasks.md` を追加した。
+
+検証結果:
+
+- `bash local-watcher/test/failed_recovery_worktree_test.sh` 成功
+- `shellcheck local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/bin/idd-codex-modules/core_utils.sh local-watcher/test/failed_recovery_worktree_test.sh` 成功
