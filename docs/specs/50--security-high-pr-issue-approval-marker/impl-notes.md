@@ -41,3 +41,15 @@
 - Finding Closure Matrix:
   - 前回 Reviewer Findings なし / Target: 4.4 / Category: closure proof / 変更: `README.md`, `docs/specs/50--security-high-pr-issue-approval-marker/impl-notes.md` / テスト: `git diff --check d0cef7c342c69b6a9a4d4de8ab0b4e76aad188f2..HEAD` / status: closed
 - 残存課題: なし。
+
+### Task 4
+
+- 採用方針: task 4 は検証専用 task として扱い、production code / tests は変更せず、指定 verify block をそのまま通した。
+- 重要な判断: `shellcheck --severity=warning` は 4-C / 4-A / 4-B の production module と関連 shell tests 全件で成功した。
+- 重要な判断: 4-C 新規 regression、4-A Merge Queue regression、4-B PR Iteration regression はすべて成功し、未信頼 marker / 未信頼コメントを採用しない性質を維持していることを確認した。
+- 重要な判断: 既存 env var、ラベル、exit code、cron / launchd 前提は変更していない。検証 task のため code / test 差分は不要と判断した。
+- 検証結果: `shellcheck --severity=warning local-watcher/bin/idd-codex-modules/promote-pipeline.sh local-watcher/bin/idd-codex-modules/merge-queue.sh local-watcher/bin/idd-codex-modules/pr-iteration.sh local-watcher/test/po_load_edit_paths_trusted_authors_test.sh local-watcher/test/merge_queue_approval_signal_test.sh local-watcher/test/pi_general_filter_untrusted_authors_test.sh && bash local-watcher/test/po_load_edit_paths_trusted_authors_test.sh && bash local-watcher/test/merge_queue_approval_signal_test.sh && bash local-watcher/test/pi_general_filter_untrusted_authors_test.sh` は成功した。
+- review-notes.md は Task 3 round 1 が `RESULT: approve` で Findings なしだったことを確認した。debugger-notes.md は存在しなかった。
+- Finding Closure Matrix:
+  - 前回 Reviewer Findings なし / Target: 3.5, 4.4, NFR 2.1, NFR 2.2 / Category: closure proof / 変更: `docs/specs/50--security-high-pr-issue-approval-marker/impl-notes.md` の検証記録のみ、code / test 差分なし（task 4 が静的解析と関連 shell tests の実行 task のため） / テスト: verify block 全体 / status: closed
+- 残存課題: なし。
