@@ -8919,6 +8919,13 @@ ${shown_status}
   return 0
 }
 
+_failed_recovery_checkout_error_is_worktree_busy() {
+  local stderr_file="$1"
+  [ -n "$stderr_file" ] || return 1
+  [ -s "$stderr_file" ] || return 1
+  grep -Eq "(already used by worktree|is already checked out at)" "$stderr_file" 2>/dev/null
+}
+
 _failed_recovery_checkout_branch() {
   local branch="$1"
   local start_ref="$2"
@@ -8933,7 +8940,9 @@ _failed_recovery_checkout_branch() {
     git checkout -B "$branch" "$start_ref" || rc=$?
   fi
   if [ "$rc" -eq 0 ]; then
-    [ -n "$stderr_tmp" ] && rm -f "$stderr_tmp" 2>/dev/null || true
+    if [ -n "$stderr_tmp" ]; then
+      rm -f "$stderr_tmp" 2>/dev/null || true
+    fi
     return 0
   fi
 
@@ -8941,7 +8950,7 @@ _failed_recovery_checkout_branch() {
     cat "$stderr_tmp" >&2 || true
   fi
 
-  if [ -n "$stderr_tmp" ] && grep -q "already used by worktree" "$stderr_tmp" 2>/dev/null; then
+  if _failed_recovery_checkout_error_is_worktree_busy "$stderr_tmp"; then
     slot_warn "branch checkout が worktree 使用中で失敗したため stale worktree recovery を試行: $branch"
     local prep_rc=0
     _failed_recovery_prepare_branch_checkout "$branch" "$has_origin_branch" || prep_rc=$?
@@ -8950,19 +8959,25 @@ _failed_recovery_checkout_branch() {
       : > "$stderr_tmp"
       git checkout -B "$branch" "$start_ref" 2>"$stderr_tmp" || rc=$?
       if [ "$rc" -eq 0 ]; then
-        [ -n "$stderr_tmp" ] && rm -f "$stderr_tmp" 2>/dev/null || true
+        if [ -n "$stderr_tmp" ]; then
+          rm -f "$stderr_tmp" 2>/dev/null || true
+        fi
         return 0
       fi
       if [ -s "$stderr_tmp" ]; then
         cat "$stderr_tmp" >&2 || true
       fi
     elif [ "$prep_rc" -eq 20 ]; then
-      [ -n "$stderr_tmp" ] && rm -f "$stderr_tmp" 2>/dev/null || true
+      if [ -n "$stderr_tmp" ]; then
+        rm -f "$stderr_tmp" 2>/dev/null || true
+      fi
       return 1
     fi
   fi
 
-  [ -n "$stderr_tmp" ] && rm -f "$stderr_tmp" 2>/dev/null || true
+  if [ -n "$stderr_tmp" ]; then
+    rm -f "$stderr_tmp" 2>/dev/null || true
+  fi
   slot_warn "$failed_message: $branch"
   _slot_mark_failed "branch-checkout" "ブランチ \`$branch\` の checkout に失敗しました。"
   return 1
@@ -9035,6 +9050,9 @@ _resume_branch_init() {
     origin_sha=$(git rev-parse --short=7 "origin/$BRANCH" 2>/dev/null || echo "unknown")
     slot_log "resume-mode=existing-branch branch=$BRANCH origin_sha=$origin_sha"
   else
+    local prep_rc=0
+    _failed_recovery_prepare_branch_checkout "$BRANCH" "false" || prep_rc=$?
+    [ "$prep_rc" -eq 0 ] || return 1
     if ! _failed_recovery_checkout_branch "$BRANCH" "origin/${BASE_BRANCH}" "false" "branch 作成に失敗"; then
       return 1
     fi
@@ -10612,6 +10630,9 @@ _slot_run_issue() {
   else
     # worktree は detached HEAD で起動するため -B で新規 branch 作成
     # （local $BASE_BRANCH を持たない）
+    local prep_rc=0
+    _failed_recovery_prepare_branch_checkout "$BRANCH" "false" || prep_rc=$?
+    [ "$prep_rc" -eq 0 ] || return 1
     if ! _failed_recovery_checkout_branch "$BRANCH" "origin/${BASE_BRANCH}" "false" "branch 作成に失敗"; then
       return 1
     fi

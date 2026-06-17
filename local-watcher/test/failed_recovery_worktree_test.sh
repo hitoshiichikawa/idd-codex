@@ -5,10 +5,11 @@
 #
 # 検証観点:
 #   - inactive clean slot worktree が対象 branch を checkout 済みなら detached に戻す
-#   - dirty slot worktree は破棄せず codex-needs-decisions に倒す
+#   - dirty / untracked slot worktree は破棄せず codex-needs-decisions に倒す
 #   - origin branch が無い local-only branch は破棄せず codex-needs-decisions に倒す
 #   - reset-corruption（local branch が origin/main に動いた状態）は origin branch へ復旧可能
 #   - local-only commit がある branch は自動 reset せず codex-needs-decisions に倒す
+#   - checkout busy recovery は成功 / 失敗とも 1 回だけ試行する
 #
 # 配置先: local-watcher/test/failed_recovery_worktree_test.sh
 # 依存:   bash 4+, git, awk, flock
@@ -48,13 +49,19 @@ eval "$(extract_function "$WATCHER_SH" "_failed_recovery_escalate_needs_decision
 eval "$(extract_function "$WATCHER_SH" "_failed_recovery_local_branch_safe_to_reset")"
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$WATCHER_SH" "_failed_recovery_prepare_branch_checkout")"
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$WATCHER_SH" "_failed_recovery_checkout_error_is_worktree_busy")"
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$WATCHER_SH" "_failed_recovery_checkout_branch")"
 
 for fn in \
   _failed_recovery_branch_worktrees \
   _failed_recovery_slot_for_worktree \
   _failed_recovery_escalate_needs_decisions \
   _failed_recovery_local_branch_safe_to_reset \
-  _failed_recovery_prepare_branch_checkout; do
+  _failed_recovery_prepare_branch_checkout \
+  _failed_recovery_checkout_error_is_worktree_busy \
+  _failed_recovery_checkout_branch; do
   if ! declare -F "$fn" >/dev/null; then
     echo "ERROR: $fn not loaded" >&2
     exit 2
@@ -108,6 +115,18 @@ assert_failure() {
   fi
 }
 
+git() {
+  if [ "${GIT_STUB_CHECKOUT_BUSY:-false}" = "true" ] && [ "${1:-}" = "checkout" ]; then
+    GIT_CHECKOUT_COUNT=$((GIT_CHECKOUT_COUNT + 1))
+    if [ "$GIT_CHECKOUT_COUNT" -eq 1 ]; then
+      echo "fatal: '$BRANCH' is already checked out at '/tmp/stale-slot'" >&2
+      return 128
+    fi
+    return 0
+  fi
+  command git "$@"
+}
+
 slot_log() {
   echo "slot-log: $*" >> "$LOG"
 }
@@ -132,6 +151,13 @@ rs_set_result() {
   return 0
 }
 
+FAILED_COUNT=0
+_slot_mark_failed() {
+  FAILED_COUNT=$((FAILED_COUNT + 1))
+  return 0
+}
+
+# shellcheck disable=SC2034
 setup_case() {
   local name="$1"
   CASE_ROOT="$TMPROOT/$name"
@@ -153,6 +179,7 @@ setup_case() {
   LAST_DECISION_STATUS=""
   LAST_DECISION_BODY=""
   LAST_RESULT=""
+  FAILED_COUNT=0
 
   mkdir -p "$CASE_ROOT" "$WORKTREE_BASE_DIR/$REPO_SLUG" "$SLOT_LOCK_DIR"
   : > "$LOG"
@@ -203,9 +230,18 @@ setup_case "dirty"
 echo "local note" > "$(_worktree_path 2)/local.txt"
 rc=0
 _failed_recovery_prepare_branch_checkout "$BRANCH" "true" || rc=$?
-assert_eq "dirty stale slot: prepare escalates with rc=20" "20" "$rc"
-assert_eq "dirty stale slot: needs-decisions emitted once" "1" "$DECISION_COUNT"
-assert_eq "dirty stale slot: slot-2 remains on branch" "$BRANCH" "$(current_branch_or_detached "$(_worktree_path 2)")"
+assert_eq "untracked stale slot: prepare escalates with rc=20" "20" "$rc"
+assert_eq "untracked stale slot: needs-decisions emitted once" "1" "$DECISION_COUNT"
+assert_eq "untracked stale slot: slot-2 remains on branch" "$BRANCH" "$(current_branch_or_detached "$(_worktree_path 2)")"
+
+setup_case "tracked-dirty"
+echo "tracked local edit" >> "$(_worktree_path 2)/feature.txt"
+rc=0
+_failed_recovery_prepare_branch_checkout "$BRANCH" "true" || rc=$?
+assert_eq "tracked dirty stale slot: prepare escalates with rc=20" "20" "$rc"
+assert_eq "tracked dirty stale slot: needs-decisions emitted once" "1" "$DECISION_COUNT"
+assert_eq "tracked dirty stale slot: slot-2 remains on branch" "$BRANCH" "$(current_branch_or_detached "$(_worktree_path 2)")"
+assert_eq "tracked dirty stale slot: current slot remains detached" "DETACHED" "$(current_branch_or_detached "$IDD_SLOT_WORKTREE")"
 
 setup_case "local-branch-no-origin"
 git -C "$REPO_DIR" push --quiet origin --delete "$BRANCH"
@@ -240,8 +276,73 @@ _failed_recovery_prepare_branch_checkout "$BRANCH" "true" || rc=$?
 assert_eq "local-only commits: prepare escalates with rc=20" "20" "$rc"
 assert_eq "local-only commits: needs-decisions emitted once" "1" "$DECISION_COUNT"
 assert_eq "local-only commits: slot-2 remains on branch" "$BRANCH" "$(current_branch_or_detached "$(_worktree_path 2)")"
-assert_failure "local-only commits: current slot still cannot checkout same branch" \
-  git -C "$IDD_SLOT_WORKTREE" checkout -B "$BRANCH" "origin/$BRANCH"
+assert_eq "local-only commits: current slot remains detached" "DETACHED" "$(current_branch_or_detached "$IDD_SLOT_WORKTREE")"
+
+setup_case "fresh-no-origin-clean"
+git -C "$(_worktree_path 2)" checkout --quiet --detach --force origin/main
+git -C "$REPO_DIR" branch -D "$BRANCH" >/dev/null
+git -C "$REPO_DIR" push --quiet origin --delete "$BRANCH"
+git -C "$REPO_DIR" fetch --quiet --prune origin
+rc=0
+_failed_recovery_prepare_branch_checkout "$BRANCH" "false" || rc=$?
+assert_eq "fresh no origin: prepare succeeds without stale branch" "0" "$rc"
+assert_eq "fresh no origin: no needs-decisions" "0" "$DECISION_COUNT"
+assert_success "fresh no origin: current slot can create branch from base" \
+  git -C "$IDD_SLOT_WORKTREE" checkout -B "$BRANCH" "origin/main"
+
+setup_case "fresh-no-origin-local-stale"
+git -C "$REPO_DIR" push --quiet origin --delete "$BRANCH"
+git -C "$REPO_DIR" fetch --quiet --prune origin
+rc=0
+_failed_recovery_prepare_branch_checkout "$BRANCH" "false" || rc=$?
+assert_eq "fresh local-only stale: prepare escalates with rc=20" "20" "$rc"
+assert_eq "fresh local-only stale: needs-decisions emitted once" "1" "$DECISION_COUNT"
+assert_eq "fresh local-only stale: slot-2 remains on branch" "$BRANCH" "$(current_branch_or_detached "$(_worktree_path 2)")"
+
+busy_err="$TMPROOT/worktree-busy.err"
+printf "fatal: '%s' is already checked out at '/tmp/stale-slot'\n" "$BRANCH" > "$busy_err"
+assert_success "checkout error matcher: already checked out at" \
+  _failed_recovery_checkout_error_is_worktree_busy "$busy_err"
+printf "fatal: '%s' already used by worktree at '/tmp/stale-slot'\n" "$BRANCH" > "$busy_err"
+assert_success "checkout error matcher: already used by worktree" \
+  _failed_recovery_checkout_error_is_worktree_busy "$busy_err"
+
+PREP_COUNT=0
+GIT_CHECKOUT_COUNT=0
+GIT_STUB_CHECKOUT_BUSY=true
+_failed_recovery_prepare_branch_checkout() {
+  PREP_COUNT=$((PREP_COUNT + 1))
+  return 0
+}
+rc=0
+_failed_recovery_checkout_branch "$BRANCH" "origin/$BRANCH" "true" "既存 branch resume に失敗" || rc=$?
+GIT_STUB_CHECKOUT_BUSY=false
+assert_eq "checkout busy retry: succeeds after one recovery" "0" "$rc"
+assert_eq "checkout busy retry: recovery attempted once" "1" "$PREP_COUNT"
+assert_eq "checkout busy retry: checkout attempted twice" "2" "$GIT_CHECKOUT_COUNT"
+assert_eq "checkout busy retry: no failed label" "0" "$FAILED_COUNT"
+
+setup_case "busy-recovery-fails"
+PREP_COUNT=0
+GIT_CHECKOUT_COUNT=0
+GIT_STUB_CHECKOUT_BUSY=true
+_failed_recovery_prepare_branch_checkout() {
+  PREP_COUNT=$((PREP_COUNT + 1))
+  _failed_recovery_escalate_needs_decisions \
+    "dirty-stale-worktree" \
+    "$1" \
+    "/tmp/stale-slot" \
+    "stubbed recovery failure"
+  return 20
+}
+rc=0
+_failed_recovery_checkout_branch "$BRANCH" "origin/$BRANCH" "true" "既存 branch resume に失敗" || rc=$?
+GIT_STUB_CHECKOUT_BUSY=false
+assert_eq "checkout busy failed recovery: returns failure" "1" "$rc"
+assert_eq "checkout busy failed recovery: recovery attempted once" "1" "$PREP_COUNT"
+assert_eq "checkout busy failed recovery: checkout not retried" "1" "$GIT_CHECKOUT_COUNT"
+assert_eq "checkout busy failed recovery: needs-decisions emitted once" "1" "$DECISION_COUNT"
+assert_eq "checkout busy failed recovery: no failed label" "0" "$FAILED_COUNT"
 
 echo ""
 echo "==========================================="
