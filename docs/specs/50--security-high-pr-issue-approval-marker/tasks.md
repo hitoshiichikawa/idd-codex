@@ -1,6 +1,6 @@
 # Implementation Plan
 
-- [ ] 1. 4-C Path Overlap marker loader を信頼済み著者コメント限定にする
+- [x] 1. 4-C Path Overlap marker loader を信頼済み著者コメント限定にする
 - [x] 1.1 `po_load_edit_paths` の抽出順序を author filter → marker extraction → JSON validation に変更し、同じタスク内で 4-C regression test を追加する
   - `gh issue view "$issue_number" --repo "$REPO" --json comments` の 1 回呼び出し契約を維持する
   - `.comments[]` を `author_association` の信頼集合で先に filter する
