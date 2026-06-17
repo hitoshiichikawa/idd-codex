@@ -20,7 +20,7 @@
   - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 4.2, 4.3, 4.4, NFR 2.1, NFR 3.2_
   - _Boundary: MergeQueueApprovalResolver, PRIterationGeneralCommentFilter, SecurityRegressionTests_
 
-- [ ] 3. README に #50 4-C のセキュリティ修正範囲を追記する (P)
+- [x] 3. README に #50 4-C のセキュリティ修正範囲を追記する (P)
   - 既存 #50 migration note または Path Overlap Checker (Phase E) の説明へ、`edit-paths-json` marker が信頼済み `author_association` のコメントからのみ採用されることを追記する
   - 新規 env var は追加しない前提のため、オプション機能一覧には新項目を追加しない
   - `PATH_OVERLAP_CHECK` の opt-in / off semantics が変わらないことを明記する
