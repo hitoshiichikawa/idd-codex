@@ -38,4 +38,6 @@
 - 重要な判断: 新規 env var は追加せず、オプション機能一覧の項目も増やしていない。`PATH_OVERLAP_CHECK=true` の厳密 opt-in と、未設定 / `off` / 不正値では完全 no-op になる off semantics は変わらないことを README に明記した。
 - 重要な判断: production code / tests は変更しない docs-only task として扱い、requirements.md / design.md / tasks.md 本文は marker commit まで変更しない。
 - review-notes.md は Task 2 round 2 が `RESULT: approve` で Findings なしだったことを確認した。debugger-notes.md は存在しなかった。
+- Finding Closure Matrix:
+  - 前回 Reviewer Findings なし / Target: 4.4 / Category: closure proof / 変更: `README.md`, `docs/specs/50--security-high-pr-issue-approval-marker/impl-notes.md` / テスト: `git diff --check HEAD~2..HEAD` / status: closed
 - 残存課題: なし。
