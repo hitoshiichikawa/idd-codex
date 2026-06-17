@@ -12,7 +12,7 @@
   - 新規 env var、ラベル、exit code、cron / launchd 前提を追加・変更しない
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 2.1, 2.2, 2.3, 2.4, 4.1, 4.4, NFR 1.1, NFR 1.2, NFR 2.2, NFR 3.1_
 
-- [ ] 2. 4-A / 4-B の既存修正を regression として固定する (P)
+- [x] 2. 4-A / 4-B の既存修正を regression として固定する (P)
   - `local-watcher/test/merge_queue_approval_signal_test.sh` を実行対象に含め、未信頼 approve / iteration / reject marker が approval / control signal にならないことを確認する
   - `local-watcher/test/pi_general_filter_untrusted_authors_test.sh` を実行対象に含め、未信頼一般コメントが PR Iteration prompt 入力候補から除外されることを確認する
   - 必要な場合のみ、既存テストに `VERDICT: approve` 偽造または prompt injection 風コメントの明示ケースを追加する
