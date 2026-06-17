@@ -1,5 +1,7 @@
 # Implementation Notes
 
+## Implementation Notes
+
 ### Task 1
 
 - `po_load_edit_paths` は `author_association` が `OWNER` / `MEMBER` / `COLLABORATOR` のコメントだけを信頼し、その後に jq 内で `edit-paths-json` marker を抽出する方針にした。
