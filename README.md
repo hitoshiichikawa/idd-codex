@@ -2750,14 +2750,14 @@ merged 状態であれば自動でラベルを除去し、ステータスコメ�
 
 - `codex-awaiting-design-review` ラベルが付いている open Issue
 - `codex-failed` / `codex-needs-decisions` ラベルが付いていない（terminal label と排他）
-- リンクされた PR のうち、head branch が `DESIGN_REVIEW_RELEASE_HEAD_PATTERN`
-  （デフォルト `^codex/issue-[0-9]+-design-`）にマッチし、かつ body に
-  `Refs #<issue-number>` を含み、state が `merged` のものが 1 件以上存在する
+- merged PR のうち、head branch が `codex/issue-<issue-number>-design-` prefix で始まるものが
+  1 件以上存在する
 
-設計 PR の検出には GraphQL `closingIssuesReferences` ではなく **REST API + head pattern +
-body Refs** を使います。これは PjM テンプレートが設計 PR 本文に `Refs #N` を採用しており、
+設計 PR の検出には GraphQL `closingIssuesReferences` ではなく **REST API + headRefName の
+strict prefix 判定**を使います。これは PjM テンプレートが設計 PR 本文に `Refs #N` を採用しており、
 `Closes #N` ではないため `closingIssuesReferences` が空集合になるためです（GitHub の auto-close
-キーワード扱い外）。
+キーワード扱い外）。また、GitHub PR search の `in:head` は headRefName を安定して拾わないため、
+merged PR を広めに取得し、watcher 側の jq で `codex/issue-<N>-design-` prefix に絞り込みます。
 
 ### 挙動
 
