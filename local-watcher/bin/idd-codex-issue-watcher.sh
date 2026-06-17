@@ -934,8 +934,8 @@ drr_already_processed() {
   return 0
 }
 
-# 与えられた Issue 番号にリンクされた、head branch が DESIGN_REVIEW_RELEASE_HEAD_PATTERN
-# にマッチし、かつ body に `Refs #<issue_number>` を含む merged PR の番号を返す。
+# 与えられた Issue 番号にリンクされた、head branch が `codex/issue-<N>-design-`
+# prefix で始まる merged PR の番号を返す。
 # 複数件マッチ時は最大番号 = 最新を採用する。
 #   入力: $1 = issue_number
 #   出力: stdout に PR 番号、該当無しなら空文字
@@ -944,17 +944,14 @@ drr_already_processed() {
 drr_find_merged_design_pr() {
   local issue_number="$1"
   local prs_json
-  # head pattern を server-side クエリで一次絞り込み（in:head + 規約 prefix）。
-  # 複数件マッチを許容するため limit=20。
-  # 注意（Issue #80）: GitHub の text search はトークン分解（"codex" / "issue" / "${N}" /
-  # "design" の各語）で他 Issue 用の merged 設計 PR もヒットさせるため、ここでは候補
-  # 取得（noisy）に留め、最終一致判定は後段の jq で issue 番号 fix の strict prefix で行う。
+  # GitHub PR search の `in:head` は headRefName を安定して拾わないため、
+  # merged PR を広めに取得し、最終一致判定は後段の jq で issue 番号 fix の
+  # strict prefix に閉じる。
   if ! prs_json=$(timeout "$DRR_GH_TIMEOUT" gh pr list \
       --repo "$REPO" \
       --state merged \
-      --search "is:pr is:merged codex/issue-${issue_number}-design- in:head" \
       --json number,headRefName,mergedAt \
-      --limit 20 2>/dev/null); then
+      --limit 100 2>/dev/null); then
     return 1
   fi
 
