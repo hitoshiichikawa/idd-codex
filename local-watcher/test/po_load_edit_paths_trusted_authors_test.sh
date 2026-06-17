@@ -135,6 +135,13 @@ marker_comment() {
     '{author_association: $assoc, body: ("before\n<!-- idd-codex:edit-paths-json:" + $payload + " -->\nafter")}'
 }
 
+raw_comment() {
+  local assoc="$1"
+  local body_json="$2"
+  jq -nc --arg assoc "$assoc" --argjson body "$body_json" \
+    '{author_association: $assoc, body: $body}'
+}
+
 comments_array() {
   jq -nc '$ARGS.positional | map(fromjson) | {comments: .}' --args "$@"
 }
@@ -145,6 +152,11 @@ set_comments "$(comments_array \
   "$(marker_comment "OWNER" '["local-watcher/","README.md"]')")"
 run_loader '["local-watcher/","README.md"]' \
   "信頼済み OWNER の marker は採用される"
+
+set_comments "$(comments_array \
+  "$(marker_comment "member" '["lowercase-member/"]')")"
+run_loader '["lowercase-member/"]' \
+  "信頼済み author_association は大文字小文字を正規化して採用される"
 
 set_comments "$(comments_array \
   "$(marker_comment "CONTRIBUTOR" '["evil/"]')" \
@@ -168,6 +180,16 @@ run_loader '[]' \
 set_comments '{"comments":[{"author_association":"OWNER","body":"no marker here"}]}'
 run_loader '[]' \
   "marker 不在時は [] を返す"
+
+set_comments "$(comments_array \
+  "$(raw_comment "OWNER" '42')" \
+  "$(marker_comment "COLLABORATOR" '["after-non-string-body/"]')")"
+run_loader '["after-non-string-body/"]' \
+  "信頼済みコメントでも body が文字列以外なら marker 抽出対象にしない"
+
+set_comments '{"comments":{"author_association":"OWNER","body":"<!-- idd-codex:edit-paths-json:[\"not-array-comments/\"] -->"}}'
+run_loader '[]' \
+  "comments が array 以外なら [] を返す"
 
 set_comments "$(comments_array \
   "$(marker_comment "OWNER" 'not-json')")"

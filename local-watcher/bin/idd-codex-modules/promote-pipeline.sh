@@ -180,14 +180,22 @@ po_load_edit_paths() {
   # JSON 配列として再検証する。未信頼 body は sed 等の shell text filter に渡さない。
   local validated
   validated=$(printf '%s\n' "$comments_json" | jq -c '
+    def safe_comments:
+      (.comments // [])
+      | if type == "array" then . else [] end;
+
     def trusted_author:
       ((.author_association // "") | tostring | ascii_upcase) as $assoc
-      | ($assoc == "OWNER" or $assoc == "MEMBER" or $assoc == "COLLABORATOR");
+      | (["OWNER", "MEMBER", "COLLABORATOR"] | index($assoc)) != null;
+
+    def comment_body:
+      (.body // "")
+      | if type == "string" then . else "" end;
 
     [
-      (.comments // [] | if type == "array" then . else [] end)[]
+      safe_comments[]
       | select(trusted_author)
-      | ((.body // "") | if type == "string" then . else "" end)
+      | comment_body
       | scan("<!-- idd-codex:edit-paths-json:(.*?) -->")
       | .[0]
     ] as $markers
