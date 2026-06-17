@@ -19,3 +19,11 @@
   - Finding 1 / AC 未カバー / Target: 1.1-1.5, 2.1-2.4, 4.1, 4.4, NFR 1.1, NFR 1.2, NFR 3.1 / 変更: `local-watcher/bin/idd-codex-modules/promote-pipeline.sh` / テスト: verify block 全体 / status: closed
   - Finding 2 / missing test / Target: NFR 2.2 / 変更: `local-watcher/test/po_load_edit_paths_trusted_authors_test.sh` / テスト: `bash local-watcher/test/po_load_edit_paths_trusted_authors_test.sh` / status: closed
 - 残存課題: なし。
+
+### Task 2 learning
+
+- 4-A regression は `merge_queue_approval_signal_test.sh` に未信頼 `approve` 偽造が既にあったため、未信頼 `codex-needs-iteration` と `reject` marker の単独ケースを追加し、approval signal だけでなく control signal にもならないことを固定した。
+- 4-B regression は `pi_general_filter_untrusted_authors_test.sh` に prompt injection 風の未信頼一般コメントを追加し、PR Iteration prompt 入力候補から除外されることを明示した。
+- 4-A / 4-B の production code は変更していない。既存 env var、ラベル、exit code、cron / launchd 前提も変更していない。
+- 検証結果: `shellcheck --severity=warning local-watcher/bin/idd-codex-modules/merge-queue.sh local-watcher/bin/idd-codex-modules/pr-iteration.sh local-watcher/test/merge_queue_approval_signal_test.sh local-watcher/test/pi_general_filter_untrusted_authors_test.sh`、`bash local-watcher/test/merge_queue_approval_signal_test.sh`、`bash local-watcher/test/pi_general_filter_untrusted_authors_test.sh` はすべて成功した。
+- 残存課題: なし。
