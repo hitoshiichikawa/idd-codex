@@ -14,7 +14,7 @@
   - insufficient / ambiguous deterministic context では Indexer 起動が最大 1 回だけ許可される shell test を追加する。
   - _Requirements:_ 2.1, 2.2, 2.4, NFR 2.1, NFR 2.2, NFR 3.2, NFR 3.3
 
-- [ ] 3. read-only Indexer runner と metadata sanitizer を実装する
+- [x] 3. read-only Indexer runner と metadata sanitizer を実装する
   - Indexer prompt に実装・レビュー・commit・push・PR 作成禁止、metadata 限定、未信頼入力境界を明示する。
   - 通常 Stage A の writable sandbox を継承しない read-only runner を追加し、実行前後の `git status --porcelain` dirty guard を入れる。
   - Indexer output から候補ファイル、候補テスト、候補 docs、anchors だけを正規化・上限制限して抽出する。
