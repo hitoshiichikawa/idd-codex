@@ -383,7 +383,7 @@ ci_context_needs_indexer() {
     return 0
   fi
 
-  local task_block boundary requirements anchors path_candidates changed_files anchor_tests all_paths target_paths test_paths doc_paths
+  local task_block boundary requirements anchors path_candidates changed_files sufficiency_changed_files anchor_tests all_paths target_paths test_paths doc_paths
   task_block="$(cm_extract_task_block "$tasks_md" "$task_id")"
   if [ -z "$task_block" ]; then
     printf '%s\n' "needed:task-block-missing"
@@ -395,12 +395,16 @@ ci_context_needs_indexer() {
   anchors="$(printf '%s\n' "$task_block" | cm_extract_anchor_candidates_from_text)"
   path_candidates="$(printf '%s\n' "$task_block" | cm_extract_path_candidates_from_text)"
   changed_files="$(cm_collect_changed_files "$range_start" "$range_end")"
+  sufficiency_changed_files=""
+  if [ -n "$range_start" ] && [ -n "$range_end" ]; then
+    sufficiency_changed_files="$changed_files"
+  fi
   anchor_tests="$(cm_collect_tests_for_anchors "$anchors")"
 
   all_paths="$(
     {
       printf '%s\n' "$path_candidates"
-      printf '%s\n' "$changed_files"
+      printf '%s\n' "$sufficiency_changed_files"
       printf '%s\n' "$anchor_tests"
       printf '%s\n' "$SPEC_DIR_REL/requirements.md"
       printf '%s\n' "$SPEC_DIR_REL/design.md"

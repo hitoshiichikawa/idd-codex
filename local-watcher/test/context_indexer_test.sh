@@ -90,6 +90,22 @@ EOF
 
 git -C "$REPO_DIR" add .
 git -C "$REPO_DIR" commit -q -m "base fixture"
+git -C "$REPO_DIR" checkout -q -b feature/prior-task
+
+cat > "$REPO_DIR/local-watcher/bin/prior.sh" <<'EOF'
+#!/usr/bin/env bash
+ci_prior_anchor() {
+  :
+}
+EOF
+
+cat > "$REPO_DIR/local-watcher/test/prior_test.sh" <<'EOF'
+#!/usr/bin/env bash
+ci_prior_anchor
+EOF
+
+git -C "$REPO_DIR" add local-watcher/bin/prior.sh local-watcher/test/prior_test.sh
+git -C "$REPO_DIR" commit -q -m "prior task changes"
 
 CONTEXT_MAP_ENABLED=true
 CONTEXT_INDEXER_ENABLED=true
@@ -147,7 +163,7 @@ assert_eq \
   "skip:sufficient-docs-only"
 
 assert_eq \
-  "ambiguous deterministic context permits indexer" \
+  "ambiguous deterministic context permits indexer despite prior-task diff" \
   "$(ci_context_needs_indexer "1.2" "implementer" "" "")" \
   "needed:anchors-tests-missing"
 
