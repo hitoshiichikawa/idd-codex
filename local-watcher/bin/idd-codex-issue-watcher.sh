@@ -1538,6 +1538,15 @@ stage_checkpoint_resolve_resume_point() {
       local _sc_tasks_md="$REPO_DIR/$SPEC_DIR_REL/tasks.md"
       local _sc_pending=""
       if [ -f "$_sc_tasks_md" ]; then
+        if ! pt_has_watcher_compatible_tasks "$_sc_tasks_md"; then
+          # tasks.md は存在するが per-task が読める marker が 0 件の場合、impl-resume で
+          # Stage B へ silent skip させず Stage A に戻し、run_per_task_loop の startup
+          # diagnostic で operator が直せる failure に倒す。
+          START_STAGE="A"
+          sc_log "decision: START_STAGE=A reason=tasks-md-no-compatible-task-markers path=$_sc_tasks_md" >> "$LOG"
+          sc_log "--- end resolve ---" >> "$LOG"
+          return 0
+        fi
         _sc_pending=$(pt_extract_pending_tasks "$_sc_tasks_md" 2>/dev/null || true)
       fi
       if [ -n "$_sc_pending" ]; then
@@ -2488,9 +2497,10 @@ pt_warn() {
 #
 # tasks.md から未完了 task の numeric 階層 ID を numeric 階層昇順で抽出して stdout に出力。
 #
-# - 抽出対象: 行頭が `- [ ] <numeric_id>(\.)? ` で始まる行（deferrable `- [ ]*` は除外）
+# - 抽出対象: 行頭が以下いずれかで始まる行（deferrable `- [ ]*` は除外）
 #   - 親タスク慣習: `- [ ] 1. <title>`（ID の後ろに `.` + 空白）
 #   - 子タスク慣習: `- [ ] 1.1 <title>`（ID の後ろに空白のみ、末尾 `.` なし）
+#   - 通常 checklist: `- [ ] 1 PR ...` は task `1` として扱わない
 #   - tasks-generation.md の規約と既存 tasks.md の実例（本リポジトリ含む）の双方を満たす
 # - 抽出した ID は親タスク末尾の `.` を除去した numeric 階層 ID（例: `1`, `1.1`, `1.10`）
 # - 出力順序は `sort -V`（version sort）で numeric 階層昇順を保証（`1.2` < `1.10`）
@@ -2504,11 +2514,59 @@ pt_extract_pending_tasks() {
   fi
   # `- [ ] N. <title>` (親タスク) または `- [ ] N.M(.K...) <title>` (子タスク) を抽出。
   # `- [ ]*` (deferrable) は除外（`\[ \]` の直後に空白を要求するため自然に除外される）。
-  # 親タスクの末尾 `.` は sed の置換で剥がして numeric 階層 ID のみ取り出す。
-  grep -E '^- \[ \] [0-9]+(\.[0-9]+)*\.? ' "$tasks_md" \
-    | sed -E 's/^- \[ \] ([0-9]+(\.[0-9]+)*)\.? .*/\1/' \
-    | sort -V
+  # 親タスクの末尾 `.` は awk 内で剥がして numeric 階層 ID のみ取り出す。
+  awk '
+    /^- \[ \] [0-9]+\. / {
+      id = $4
+      sub(/\.$/, "", id)
+      print id
+      next
+    }
+    /^- \[ \] [0-9]+\.[0-9]+(\.[0-9]+)* / {
+      print $4
+    }
+  ' "$tasks_md" | sort -V
   return 0
+}
+
+# ─── pt_has_watcher_compatible_tasks <tasks_md_path> ───
+#
+# tasks.md に watcher-compatible numeric checkbox task marker が 1 件以上あるかを判定する。
+# pending が空の場合に、「全 task 完了」と「heading-based / prose checkbox の malformed tasks.md」
+# を区別するための startup guard として使う。
+#
+# Requirements: 3.1, 3.2, 3.3, 3.4
+pt_has_watcher_compatible_tasks() {
+  local tasks_md="$1"
+  if [ ! -f "$tasks_md" ]; then
+    return 1
+  fi
+
+  grep -qE '^- \[[ x]\] ([0-9]+\.|[0-9]+\.[0-9]+(\.[0-9]+)*) ' "$tasks_md" 2>/dev/null
+}
+
+# ─── pt_fail_no_compatible_tasks <tasks_md_path> ───
+#
+# tasks.md は存在するが watcher-compatible numeric checkbox task marker が 0 件の場合に、
+# silent success へ倒さず operator が修正可能な診断で codex-failed 化する。
+#
+# Requirements: 3.4, 3.5
+pt_fail_no_compatible_tasks() {
+  local tasks_md="$1"
+  local rel_tasks_md="${SPEC_DIR_REL:-<spec-dir>}/tasks.md"
+
+  pt_warn "watcher-compatible numeric checkbox task marker が 0 件です: $tasks_md → codex-failed"
+  pt_log "startup failure reason=no-compatible-task-markers path=${tasks_md}" >> "$LOG"
+
+  mark_issue_failed "per-task-no-compatible-tasks" "per-task ループを開始できません。tasks.md は存在しますが、watcher-compatible numeric checkbox task marker が 0 件です。
+
+- 対象: \`${rel_tasks_md}\`
+- 必須 marker 契約:
+  - 親 task: \`- [ ] N. <title>\` または \`- [x] N. <title>\`
+  - 子 task: \`- [ ] N.M[.K...] <title>\` または \`- [x] N.M[.K...] <title>\`
+- 非対応例: \`## 1. ...\` のような heading-only task、または \`- [ ] 1 PR ...\` のように整数の後ろに \`.\` が無い通常 checkbox
+
+この失敗は「全 task 完了」ではなく、tasks.md の task marker 形式が watcher と互換でないことを示します。上記形式に修正してから再実行してください。"
 }
 
 # ─── pt_check_task_completed <tasks_md_path> <task_id> ───
@@ -2549,13 +2607,17 @@ pt_check_task_completed() {
   # shellcheck disable=SC2016  # sed の置換式は単引用符内で完結（シェル展開は意図的に行わない）
   task_id_re=$(printf '%s' "$task_id" | sed -E 's/[][\\.*^$()+?{|/]/\\&/g')
 
-  # `- [x] <task_id>(\.)? ` で完了済みを優先確認（親 / 子両慣習をカバー）
-  if grep -qE "^- \[x\] ${task_id_re}\.? " "$tasks_md" 2>/dev/null; then
+  local marker_suffix=" "
+  if [[ "$task_id" =~ ^[0-9]+$ ]]; then
+    marker_suffix="\\. "
+  fi
+
+  # 親 task は `N. `、子 task は `N.M[.K...] ` のみを task_id として扱う。
+  if grep -qE "^- \[x\] ${task_id_re}${marker_suffix}" "$tasks_md" 2>/dev/null; then
     return 0
   fi
 
-  # `- [ ] <task_id>(\.)? ` で未完了行の存在を確認（進捗ゼロ判定）
-  if grep -qE "^- \[ \] ${task_id_re}\.? " "$tasks_md" 2>/dev/null; then
+  if grep -qE "^- \[ \] ${task_id_re}${marker_suffix}" "$tasks_md" 2>/dev/null; then
     return 1
   fi
 
@@ -3350,7 +3412,7 @@ pt_resolve_diff_range() {
 #
 # 判定パターン（checkbox enforcement の判定パターンに整合 / .codex/rules/tasks-generation.md）:
 #   - 行頭が `- [ ]` / `- [ ]*` / `- [x]` / `- [x]*` のいずれかで開始
-#   - 続けて `<task_id>.<下位 ID>(<.下位 ID>)* `（末尾 `.` あり / なしを許容）
+#   - 続けて `<task_id>.<下位 ID>(<.下位 ID>)* `
 #   - 例: 親 task_id=`4` に対し `- [ ] 4.1 <title>` / `- [x] 4.2.1 <title>` / `- [ ]* 4.3 <title>`
 #
 # 戻り値:
@@ -3377,7 +3439,7 @@ pt_has_subtasks() {
   # shellcheck disable=SC2016
   task_id_re=$(printf '%s' "$task_id" | sed -E 's/[][\\.*^$()+?{|/]/\\&/g')
   # 子タスク行: `- [ ]` / `- [ ]*` / `- [x]` / `- [x]*` + ` <task_id>.<下位 ID>(...)? `
-  if grep -qE "^- \[[ x]\]\*? ${task_id_re}\.[0-9]+(\.[0-9]+)*\.? " "$tasks_md" 2>/dev/null; then
+  if grep -qE "^- \[[ x]\]\*? ${task_id_re}\.[0-9]+(\.[0-9]+)* " "$tasks_md" 2>/dev/null; then
     return 0
   fi
   return 1
@@ -3398,8 +3460,10 @@ pt_has_subtasks() {
 #      - 0 件 / 2 件以上 → 不成立
 #      - 1 件だがファイル名が tasks.md でない → 不成立
 #   2. `git diff <range> -- <tasks_md>` の hunk 内行を走査し、以下のみで構成されることを確認:
-#      - 削除行 `- ` で始まる中身が `- [ ] <task_id>(\.)? ` で始まる行のみ
-#      - 追加行 `+ ` で始まる中身が `- [x] <task_id>(\.)? ` で始まる行のみ
+#      - 削除行 `- ` で始まる中身が親 task は `- [ ] <task_id>. `、子 task は
+#        `- [ ] <task_id> ` で始まる行のみ
+#      - 追加行 `+ ` で始まる中身が親 task は `- [x] <task_id>. `、子 task は
+#        `- [x] <task_id> ` で始まる行のみ
 #      - diff header / hunk header / context 行は無視
 #   3. 削除行 1 件 + 追加行 1 件で完全に対応する（task_id checkbox flip 1 ペアのみ）こと
 #      - 他 task_id の checkbox flip / `_Requirements:_` 編集 / 新規追加 / 削除のみ等が
@@ -3461,6 +3525,10 @@ pt_is_parent_checkbox_only_diff() {
   local task_id_re
   # shellcheck disable=SC2016
   task_id_re=$(printf '%s' "$task_id" | sed -E 's/[][\\.*^$()+?{|/]/\\&/g')
+  local marker_suffix=" "
+  if [[ "$task_id" =~ ^[0-9]+$ ]]; then
+    marker_suffix="\\. "
+  fi
 
   # hunk 行を分類:
   #   - 削除行: `-` で始まるが `--- a/path` の diff file header ではない行
@@ -3472,10 +3540,9 @@ pt_is_parent_checkbox_only_diff() {
   # 行頭が `--` 2 文字になる。よって `^-[^-]` で diff header を除外する素朴な regex は
   # markdown 削除行を取りこぼす。`^--- ` を file header として明示除外する形に修正する。
   local minus_count plus_count minus_match plus_match
-  # `- [ ] <task_id>(\.)? ` で始まる削除行 = `^-- \[ \] <task_id>(\.)? `
-  minus_match=$(printf '%s\n' "$diff_body" | grep -cE "^-- \[ \] ${task_id_re}\.? " 2>/dev/null || true)
-  # `- [x] <task_id>(\.)? ` で始まる追加行 = `^\+- \[x\] <task_id>(\.)? `
-  plus_match=$(printf '%s\n' "$diff_body" | grep -cE "^\+- \[x\] ${task_id_re}\.? " 2>/dev/null || true)
+  # 親 task は `N. `、子 task は `N.M[.K...] ` のみを task_id として扱う。
+  minus_match=$(printf '%s\n' "$diff_body" | grep -cE "^-- \[ \] ${task_id_re}${marker_suffix}" 2>/dev/null || true)
+  plus_match=$(printf '%s\n' "$diff_body" | grep -cE "^\+- \[x\] ${task_id_re}${marker_suffix}" 2>/dev/null || true)
 
   # 全削除行 / 追加行の総数: 行頭 `-` / `+` を持ち、かつ file header (`--- ` / `+++ `) ではない行。
   # diff header / hunk header / context 行は除外する。
@@ -3606,7 +3673,7 @@ cm_extract_task_block() {
 
   awk -v target="$task_id" '
     function task_id_from_line(line, rest) {
-      if (line !~ /^- \[[ x]\]\*? [0-9]+(\.[0-9]+)*\.? /) {
+      if (line !~ /^- \[[ x]\]\*? ([0-9]+\.|[0-9]+\.[0-9]+(\.[0-9]+)*) /) {
         return ""
       }
       rest = line
@@ -4865,6 +4932,11 @@ run_per_task_loop() {
     return 0
   fi
 
+  if ! pt_has_watcher_compatible_tasks "$tasks_md"; then
+    pt_fail_no_compatible_tasks "$tasks_md"
+    return 1
+  fi
+
   # pending タスク一覧
   local pending
   pending=$(pt_extract_pending_tasks "$tasks_md" || true)
@@ -5893,8 +5965,9 @@ EOF
       progress_block=$(cat <<'EOF'
 ### tasks.md 進捗追跡（IMPL_RESUME_PROGRESS_TRACKING=true）
 
-- 各タスクが完了した時点で `tasks.md` の対応する未完了マーカー行 `- [ ] N.M ...` を
-  `- [x] N.M ...` に書き換えること
+- 各タスクが完了した時点で `tasks.md` の対応する未完了マーカー行
+  （親 task は `- [ ] N. ...`、子 task は `- [ ] N.M[.K...] ...`）を
+  `- [x] ...` に書き換えること
 - 進捗マーカー更新は **専用 commit** として積む:
   - commit メッセージ: `docs(tasks): mark <task-id> as done`（例: `docs(tasks): mark 1.2 as done`）
   - 当該 commit には `tasks.md` 以外のファイルを含めない
