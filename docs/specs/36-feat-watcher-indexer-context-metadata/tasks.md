@@ -7,7 +7,7 @@
   - `CONTEXT_MAP_ENABLED=false` または `CONTEXT_INDEXER_ENABLED!=true` で既存 deterministic map / prompt 注入契約が変わらない regression を更新する。
   - _Requirements:_ 1.1, 1.2, 1.3, 1.4, NFR 1.1, NFR 1.2, NFR 1.3, NFR 3.1
 
-- [ ] 2. deterministic context の十分性判定と最大 1 回 state を実装する
+- [x] 2. deterministic context の十分性判定と最大 1 回 state を実装する
   - `ci_context_needs_indexer` を追加し、task block / requirements / boundary / candidates / tests / docs / anchors / diff range から `needed|skip` と reason を返す。
   - `context-map.md` の hidden marker で task / stage / range / result を記録し、success と fallback の両方を同一処理局面の完了済みとして扱う。
   - sufficient deterministic context では Indexer を起動しない shell test を追加する。
