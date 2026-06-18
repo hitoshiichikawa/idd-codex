@@ -39,6 +39,12 @@ cm_log() {
   fi
 }
 
+ci_log() {
+  if [ -n "${LOG:-}" ]; then
+    echo "[$(date '+%F %T')] context-indexer: $*" >> "$LOG"
+  fi
+}
+
 cm_warn() {
   if [ -n "${LOG:-}" ]; then
     echo "[$(date '+%F %T')] context-map WARN: $*" >> "$LOG"
@@ -218,6 +224,224 @@ cm_filter_context_paths() {
   done | cm_unique_nonempty 30
 }
 
+ci_range_key() {
+  local range_start="${1:-}"
+  local range_end="${2:-}"
+
+  if [ -n "$range_start" ] || [ -n "$range_end" ]; then
+    printf '%s..%s\n' "${range_start:-unknown}" "${range_end:-unknown}"
+  else
+    printf '%s\n' "none"
+  fi
+}
+
+ci_collect_indexer_markers() {
+  local path="$1"
+
+  if [ ! -f "$path" ]; then
+    return 0
+  fi
+
+  awk '/^<!-- context-indexer: / { print }' "$path"
+}
+
+ci_marker_seen() {
+  local task_id="$1"
+  local stage="$2"
+  local range_start="${3:-}"
+  local range_end="${4:-}"
+  local context_path range_key
+
+  context_path="$(cm_context_map_path)"
+  range_key="$(ci_range_key "$range_start" "$range_end")"
+
+  if [ ! -f "$context_path" ]; then
+    return 1
+  fi
+
+  awk -v task="$task_id" -v stage="$stage" -v range="$range_key" '
+    /^<!-- context-indexer: / {
+      if (index($0, " task=" task " ") &&
+          index($0, " stage=" stage " ") &&
+          index($0, " range=" range " ") &&
+          ($0 ~ / result=success / || $0 ~ / result=fallback /)) {
+        found = 1
+        exit
+      }
+    }
+    END {
+      exit(found == 1 ? 0 : 1)
+    }
+  ' "$context_path"
+}
+
+ci_normalize_reason_token() {
+  local reason="${1:-unknown}"
+
+  printf '%s\n' "$reason" |
+    sed -E 's/[^A-Za-z0-9_.-]+/-/g; s/^-+//; s/-+$//' |
+    awk 'NF { print; found = 1 } END { if (found != 1) print "unknown" }'
+}
+
+ci_record_indexer_marker() {
+  local task_id="$1"
+  local stage="$2"
+  local range_start="${3:-}"
+  local range_end="${4:-}"
+  local result="${5:-}"
+  local reason="${6:-unknown}"
+  local context_path range_key reason_token
+
+  case "$result" in
+    success|fallback) ;;
+    *) return 1 ;;
+  esac
+
+  context_path="$(cm_context_map_path)"
+  range_key="$(ci_range_key "$range_start" "$range_end")"
+  reason_token="$(ci_normalize_reason_token "$reason")"
+
+  mkdir -p "$(dirname "$context_path")"
+  if ci_marker_seen "$task_id" "$stage" "$range_start" "$range_end"; then
+    return 0
+  fi
+
+  printf '\n<!-- context-indexer: task=%s stage=%s range=%s result=%s reason=%s -->\n' \
+    "$task_id" "$stage" "$range_key" "$result" "$reason_token" >> "$context_path"
+}
+
+ci_has_non_spec_context_path() {
+  local target_paths="$1"
+  local doc_paths="$2"
+  local path
+
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    return 0
+  done <<<"$target_paths"
+
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    case "$path" in
+      "$SPEC_DIR_REL"/*) ;;
+      *) return 0 ;;
+    esac
+  done <<<"$doc_paths"
+
+  return 1
+}
+
+ci_boundary_docs_only() {
+  local boundary="$1"
+  local doc_paths="$2"
+  local boundary_paths path has_boundary_path=0 has_non_spec_doc=0
+
+  boundary_paths="$(printf '%s\n' "$boundary" | cm_extract_path_candidates_from_text)"
+  if [ -z "$boundary_paths" ]; then
+    return 1
+  fi
+
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    has_boundary_path=1
+    case "$path" in
+      README.md|AGENTS.md|docs/*|.codex/*|repo-template/.codex/*|*requirements.md|*design.md|*tasks.md|*impl-notes.md|*review-notes.md) ;;
+      *) return 1 ;;
+    esac
+  done <<<"$boundary_paths"
+
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    case "$path" in
+      "$SPEC_DIR_REL"/*) ;;
+      *) has_non_spec_doc=1 ;;
+    esac
+  done <<<"$doc_paths"
+
+  [ "$has_boundary_path" -eq 1 ] && [ "$has_non_spec_doc" -eq 1 ]
+}
+
+ci_context_needs_indexer() {
+  local task_id="$1"
+  local stage="${2:-unknown}"
+  local range_start="${3:-}"
+  local range_end="${4:-}"
+
+  if ! ci_context_indexer_enabled; then
+    printf '%s\n' "skip:disabled"
+    return 0
+  fi
+
+  if ci_marker_seen "$task_id" "$stage" "$range_start" "$range_end"; then
+    printf '%s\n' "skip:already-run"
+    return 0
+  fi
+
+  local tasks_md="$REPO_DIR/$SPEC_DIR_REL/tasks.md"
+  if [ ! -f "$tasks_md" ]; then
+    printf '%s\n' "needed:tasks-md-missing"
+    return 0
+  fi
+
+  local task_block boundary requirements anchors path_candidates changed_files anchor_tests all_paths target_paths test_paths doc_paths
+  task_block="$(cm_extract_task_block "$tasks_md" "$task_id")"
+  if [ -z "$task_block" ]; then
+    printf '%s\n' "needed:task-block-missing"
+    return 0
+  fi
+
+  boundary="$(printf '%s\n' "$task_block" | cm_extract_metadata_value "_Boundary:_" 2>/dev/null || true)"
+  requirements="$(printf '%s\n' "$task_block" | cm_extract_metadata_value "_Requirements:_" 2>/dev/null || true)"
+  anchors="$(printf '%s\n' "$task_block" | cm_extract_anchor_candidates_from_text)"
+  path_candidates="$(printf '%s\n' "$task_block" | cm_extract_path_candidates_from_text)"
+  changed_files="$(cm_collect_changed_files "$range_start" "$range_end")"
+  anchor_tests="$(cm_collect_tests_for_anchors "$anchors")"
+
+  all_paths="$(
+    {
+      printf '%s\n' "$path_candidates"
+      printf '%s\n' "$changed_files"
+      printf '%s\n' "$anchor_tests"
+      printf '%s\n' "$SPEC_DIR_REL/requirements.md"
+      printf '%s\n' "$SPEC_DIR_REL/design.md"
+      printf '%s\n' "$SPEC_DIR_REL/tasks.md"
+      if [ -f "$REPO_DIR/$SPEC_DIR_REL/impl-notes.md" ]; then
+        printf '%s\n' "$SPEC_DIR_REL/impl-notes.md"
+      fi
+    } | cm_normalize_path_candidates | cm_unique_nonempty 80
+  )"
+  target_paths="$(printf '%s\n' "$all_paths" | cm_filter_context_paths target)"
+  test_paths="$(printf '%s\n' "$all_paths" | cm_filter_context_paths test)"
+  doc_paths="$(printf '%s\n' "$all_paths" | cm_filter_context_paths doc)"
+
+  if [ -z "$requirements" ]; then
+    printf '%s\n' "needed:requirements-missing"
+    return 0
+  fi
+  if [ -z "$boundary" ] || [ "$boundary" = "(not found)" ]; then
+    printf '%s\n' "needed:boundary-missing"
+    return 0
+  fi
+  if [ "$stage" = "reviewer" ] && { [ -n "$range_start" ] || [ -n "$range_end" ]; } && [ -z "$changed_files" ]; then
+    printf '%s\n' "needed:diff-empty"
+    return 0
+  fi
+  if ! ci_has_non_spec_context_path "$target_paths" "$doc_paths"; then
+    printf '%s\n' "needed:candidates-missing"
+    return 0
+  fi
+  if ci_boundary_docs_only "$boundary" "$doc_paths"; then
+    printf '%s\n' "skip:sufficient-docs-only"
+    return 0
+  fi
+  if [ -z "$anchors" ] && [ -z "$test_paths" ]; then
+    printf '%s\n' "needed:anchors-tests-missing"
+    return 0
+  fi
+
+  printf '%s\n' "skip:sufficient"
+}
+
 cm_print_md_list() {
   local items="$1"
   local item
@@ -251,6 +475,7 @@ cm_write_context_map() {
   fi
 
   local task_block boundary requirements depends anchors path_candidates changed_files anchor_tests all_paths target_paths test_paths doc_paths
+  local existing_indexer_markers indexer_decision
   task_block="$(cm_extract_task_block "$tasks_md" "$task_id")"
   boundary="$(printf '%s\n' "$task_block" | cm_extract_metadata_value "_Boundary:_" 2>/dev/null || true)"
   requirements="$(printf '%s\n' "$task_block" | cm_extract_metadata_value "_Requirements:_" 2>/dev/null || true)"
@@ -276,6 +501,7 @@ cm_write_context_map() {
   target_paths="$(printf '%s\n' "$all_paths" | cm_filter_context_paths target)"
   test_paths="$(printf '%s\n' "$all_paths" | cm_filter_context_paths test)"
   doc_paths="$(printf '%s\n' "$all_paths" | cm_filter_context_paths doc)"
+  existing_indexer_markers="$(ci_collect_indexer_markers "$out_path")"
 
   mkdir -p "$(dirname "$out_path")"
   local tmp_path="${out_path}.tmp"
@@ -331,10 +557,16 @@ cm_write_context_map() {
     printf '%s\n' "- ファイル全体を読む前に、anchor 周辺の小さい範囲を読む。"
     printf '%s\n' "- Reviewer は対象 task の diff range と \`_Requirements:_\` / \`_Boundary:_\` に判定を限定する。"
     printf '%s\n' "- この map は補助情報であり、最終判断は \`tasks.md\` と実際の diff で検証する。"
+    if [ -n "$existing_indexer_markers" ]; then
+      printf '\n'
+      printf '%s\n' "$existing_indexer_markers"
+    fi
   } > "$tmp_path"
   mv "$tmp_path" "$out_path"
 
   cm_log "updated path=${SPEC_DIR_REL}/context-map.md task=${task_id} stage=${stage}"
+  indexer_decision="$(ci_context_needs_indexer "$task_id" "$stage" "$range_start" "$range_end")"
+  ci_log "task=${task_id} stage=${stage} decision=${indexer_decision}"
 }
 
 cm_build_prompt_block() {
