@@ -29,7 +29,7 @@
   - prompt に注入する `context-map.md` は bounded slice に制限し、不足時の targeted search 余地を残す。
   - _Requirements:_ 2.3, 3.1, 3.2, 3.3, 3.4, 3.5, 4.1, 4.2, 4.3, 4.4, 6.4, NFR 3.5
 
-- [ ] 5. Indexer regression test を完成させる
+- [x] 5. Indexer regression test を完成させる
   - `local-watcher/test/context_indexer_test.sh` を追加し、Codex runner を stub して opt-in disabled、sufficient skip、insufficient run once、failure fallback、prompt slice を検証する。
   - `local-watcher/test/context_map_prompt_test.sh` を module 化後の deterministic contract regression として維持する。
   - `shellcheck --severity=warning` で新規 module / 変更 watcher / 関連 tests を clean にする。
