@@ -26,3 +26,16 @@
 | Finding | Target | Category | 対応 | テスト | status |
 |---|---|---|---|---|---|
 | Finding 1 | 2.2, NFR 2.2, NFR 3.3 | AC 未カバー | `ci_context_needs_indexer` の十分性判定から空 range の `BASE_BRANCH..HEAD` changed files を除外し、prior-task diff だけで `skip:sufficient` にならないよう修正 | `shellcheck --severity=warning local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/bin/idd-codex-modules/*.sh local-watcher/test/context_map_prompt_test.sh local-watcher/test/context_indexer_test.sh`; `bash local-watcher/test/context_map_prompt_test.sh`; `bash local-watcher/test/context_indexer_test.sh` | closed |
+
+### Task 3
+- 採用方針: `ci_context_needs_indexer` の `needed:*` 判定後だけ read-only Indexer runner を起動し、sanitizer が採用できない出力は fallback marker に倒す構成にした。
+- 重要な判断: Indexer は `codex exec --sandbox read-only` を直接使い、通常 Stage A の `CODEX_SANDBOX` / `CODEX_UNSAFE_BYPASS` 経路を継承しない。
+- 重要な判断: `CONTEXT_INDEXER_MAX_TURNS` は現行 Codex CLI の実引数に存在しないため、prompt 内の探索上限指示として扱い、実行失敗を避けた。
+- 重要な判断: success marker だけで metadata が消えないよう、task 3 では最小限の sanitized metadata block を hidden boundary 付きで保存・再生成時に保持する。
+- 残存課題: prompt 注入時の Indexer metadata 専用 guidance と `context-map.md` の見出し構成整理は task 4 の範囲として残る。
+
+#### Finding Closure Matrix
+
+| Finding | Target | Category | 対応 | テスト | status |
+|---|---|---|---|---|---|
+| なし | Task 3 | - | 前回 reject notes なし | `shellcheck --severity=warning local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/bin/idd-codex-modules/*.sh local-watcher/test/context_map_prompt_test.sh local-watcher/test/context_indexer_test.sh`; `bash local-watcher/test/context_map_prompt_test.sh`; `bash local-watcher/test/context_indexer_test.sh` | closed |
