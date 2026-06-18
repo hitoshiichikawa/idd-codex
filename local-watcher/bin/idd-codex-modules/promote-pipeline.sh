@@ -176,24 +176,39 @@ po_load_edit_paths() {
     echo '[]'
     return 0
   fi
-  # 全コメントから marker 行を抽出 → JSON 部を取り出して valid array かチェック
-  local extracted
-  extracted=$(echo "$comments_json" \
-    | jq -r '.comments // [] | map(.body) | .[]' 2>/dev/null \
-    | sed -nE 's/.*<!-- idd-codex:edit-paths-json:(.*) -->.*/\1/p' \
-    | tail -1)
-  if [ -z "$extracted" ]; then
-    echo '[]'
-    return 0
-  fi
-  # extracted が valid な JSON 配列であることを jq で再検証してから返す
+  # 信頼済み author のコメントだけに絞ってから marker を抽出し、最後の marker を
+  # JSON 配列として再検証する。未信頼 body は sed 等の shell text filter に渡さない。
   local validated
-  validated=$(echo "$extracted" | jq -c '
-    if type == "array" then
-      map(select(type == "string"))
-    else
-      []
-    end
+  validated=$(printf '%s\n' "$comments_json" | jq -c '
+    def safe_comments:
+      (.comments // [])
+      | if type == "array" then . else [] end;
+
+    def trusted_author:
+      ((.author_association // "") | tostring | ascii_upcase) as $assoc
+      | (["OWNER", "MEMBER", "COLLABORATOR"] | index($assoc)) != null;
+
+    def comment_body:
+      (.body // "")
+      | if type == "string" then . else "" end;
+
+    [
+      safe_comments[]
+      | select(trusted_author)
+      | comment_body
+      | scan("<!-- idd-codex:edit-paths-json:(.*?) -->")
+      | .[0]
+    ] as $markers
+    | if ($markers | length) == 0 then
+        []
+      else
+        ($markers[-1] | fromjson
+          | if type == "array" then
+              map(select(type == "string"))
+            else
+              []
+            end)
+      end
   ' 2>/dev/null || echo '[]')
   echo "$validated"
 }

@@ -1300,11 +1300,15 @@ idd-codex は基本フロー（Triage → 実装 → PR 作成）以外の機能
 >   全 segment 走査・先頭トークン正規化（`env`/`command`/絶対パス/`bash -c` ラッパ）・束ね短 flag
 >   検出・G0 mutator 拡張へ強化。`true; git push --force origin main` 等の自明なバイパスを塞いだ。
 >   guard は opt-in のため未使用環境の挙動は不変。
-> - **#50（High）**: Merge Queue の approval marker / PR Iteration の一般コメント取り込みに
+> - **#50（High）**: Merge Queue の approval marker / PR Iteration の一般コメント取り込み / Phase E
+>   Path Overlap Checker の `edit-paths-json` marker 読み込みに
 >   **コメント著者の `author_association` 検証**を追加（既定 `OWNER` / `MEMBER` / `COLLABORATOR`）。
->   公開 repo で第三者が approve marker を偽造したり、未信頼コメントを codex プロンプトへ注入する
->   経路を遮断。watcher 自身（repo owner トークン投稿）の marker は従来どおり通る。信頼集合は
+>   公開 repo で第三者が approve marker を偽造したり、未信頼コメントを codex プロンプトへ注入したり、
+>   `edit-paths-json` marker で path overlap 判定を上書きする経路を遮断。watcher 自身（repo owner
+>   トークン投稿）の marker は従来どおり通る。Merge Queue / PR Iteration の信頼集合は
 >   `MERGE_QUEUE_TRUSTED_ASSOCIATIONS` / `PR_ITERATION_TRUSTED_ASSOCIATIONS`（空白区切り）で上書き可。
+>   Path Overlap Checker は新規 env var を追加せず、既定信頼集合のコメントからのみ
+>   `edit-paths-json` marker を採用する。
 > - **#52（Medium, 挙動変更あり）**: feature Issue テンプレートの自動付与ラベルを
 >   `codex-auto-dev` → `enhancement` に変更。**公開リポジトリで外部ユーザが Issue 作成だけで
 >   自律エージェントを起動できる経路を塞ぐため**、bug-report テンプレートと同様に「人間が確認後に
@@ -1901,6 +1905,9 @@ top-level path 配列（`edit_paths`）を列挙させ、Dispatcher が slot に
 - Triage Codex が Issue ごとに `edit_paths`（編集見込み top-level path 配列）を出力
 - watcher が Triage 直後に Issue へ sticky comment として永続化（人間可読 md リスト +
   機械可読 hidden JSON marker の 2 段構成）
+- #50 のセキュリティ修正により、hidden `edit-paths-json` marker は信頼済み `author_association`
+  （既定 `OWNER` / `MEMBER` / `COLLABORATOR`）のコメントからのみ採用。未信頼コメントの marker は
+  形式が正しくても無視し、未信頼コメントが最後に投稿されても path overlap 判定を上書きしない
 - Dispatcher の claim 直前 gate が、候補と in-flight 集合の path union 積を計算
 - overlap 非空: `codex-awaiting-slot` ラベル + 説明 sticky comment を付与し dispatch を見送り
 - overlap 空: 既存 `codex-awaiting-slot` を自動除去し通常 dispatch に進む
@@ -2123,6 +2130,11 @@ path-overlap: holder-set context=dispatch excluded=codex-staged-for-release base
 
 - **既存ユーザーへの影響**: `PATH_OVERLAP_CHECK` 未設定 / `off` の watcher 環境では本機能は
   完全に no-op となり、Dispatcher の挙動は本機能導入前と完全一致します（NFR 1.1）
+- **#50 4-C security fix**: `PATH_OVERLAP_CHECK=true` で Phase E が有効な場合でも、
+  `edit-paths-json` marker は信頼済み `author_association` のコメントからのみ採用します。未信頼
+  コメント由来の marker は fallback 入力にも最後勝ち入力にも使いません。この修正で新規 env var は
+  追加せず、`PATH_OVERLAP_CHECK` の厳密 opt-in / off semantics（未設定・`off`・不正値は完全 no-op）
+  は変わりません。
 - **値の解釈**: `=true` を厳密一致で判定するため、`True` / `1` / `enabled` / 空文字 / 未設定
   はすべて off として扱われます（Req 1.3 安全側に倒す設計）
 - **opt-out 戻し**: `PATH_OVERLAP_CHECK` を unset または `=off` に戻すと **次サイクルから
