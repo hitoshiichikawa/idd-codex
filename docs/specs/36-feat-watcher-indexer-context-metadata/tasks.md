@@ -1,6 +1,6 @@
 # Implementation Plan
 
-- [ ] 1. context-map module を切り出し、Indexer opt-in gate を追加する
+- [x] 1. context-map module を切り出し、Indexer opt-in gate を追加する
   - 既存 `cm_*` helper を `local-watcher/bin/idd-codex-modules/context-map.sh` へ移し、公開関数名は維持する。
   - `local-watcher/bin/idd-codex-issue-watcher.sh` の `REQUIRED_MODULES` に `context-map.sh` を追加する。
   - `CONTEXT_INDEXER_ENABLED=false`、`CONTEXT_INDEXER_MODEL="${CONTEXT_INDEXER_MODEL:-$DEV_MODEL}"`、`CONTEXT_INDEXER_MAX_TURNS="${CONTEXT_INDEXER_MAX_TURNS:-10}"` の env default を追加する。
