@@ -141,7 +141,8 @@ Architect は `tasks.md` ドラフトの確定直前、判断レビュー（要�
   閾値に応じて分岐する（後述「Budget overflow check（tasks.md 件数）」節を参照）
 - **tasks.md checkbox enforcement check**: tasks.md のすべてのタスク行が checkbox 形式
   （`- [ ]` または `- [ ]*`）で開始することを機械的に確認する（後述「tasks.md checkbox
-  enforcement check」節を参照）
+  enforcement check」節を参照）。per-task 実行対象では、少なくとも 1 件の
+  watcher-compatible parent checkbox task（`- [ ] N. <title>`）が必要
 - **verify block well-formed check**: tasks.md に構造化 verify ブロック（センチネル
   `<!-- stage-a-verify -->` + 直後 fence）がある場合、それが well-formed か（直後 fence /
   fence 閉じ / 中身非空）を機械的に確認する（後述「verify block well-formed check」節を参照）
@@ -216,25 +217,31 @@ checkbox を進捗の **正本** として読む前提を、Architect 段階で�
 タスク行と認識する POSIX 互換 ERE:
 
 ```
-^- \[[ x]\]\*? [0-9]+(\.[0-9]+)*\.?[[:space:]]
+^- \[[ x]\]\*? ([0-9]+\.|[0-9]+\.[0-9]+(\.[0-9]+)*)[[:space:]]
 ```
 
 意味: 行頭が `- [ ]` / `- [ ]*` / `- [x]` / `- [x]*` のいずれかで、続けて numeric 階層 ID
-（`1` / `1.1` / `2.1.3` 等）+ 半角スペースで始まる行をタスク行と認識する（最上位タスクは
-ID 末尾の `.` あり [`- [ ] 1. <名前>`]、子タスクは末尾の `.` なし [`- [ ] 1.1 <名前>`] が
-既存表記。regex 末尾の `\.?` がこの差を吸収）。checkbox を持たないタスク表現
+で始まる行をタスク行と認識する。最上位タスクは整数 ID 末尾の `.` を必須とし
+（例: `- [ ] 1. <名前>`）、子タスクは階層 ID の直後に半角スペースを置く
+（例: `- [ ] 1.1 <名前>` / `- [ ] 2.1.3 <名前>`）。通常 checklist の
+`- [ ] 1 PR ...` のように整数の後ろに `.` が無い行は、task ID `1` として扱わない。
+checkbox を持たないタスク表現
 （例: `## T-01: タスク名` / `### Task 1` / `#### 1.1 子タスク` 等の markdown header だけで
 タスクを表す行）は本パターンにマッチせず、**違反として報告**されます。
 
 #### 検証手順
 
 1. Architect は `tasks.md` ドラフトの確定直前に、上記判定パターンで全タスク行を抽出する
-2. タスク本体を表す行が **markdown header のみ**（`^#{1,6} ` で始まり、リスト項目になって
+2. per-task 実行対象の `tasks.md` では、親 task 判定パターン
+   `^- \[ \] [0-9]+\.[[:space:]]` に一致する watcher-compatible parent checkbox task が
+   1 件以上あることを確認する。numeric headings（例: `## 1.`）は存在するが parent checkbox
+   task が 0 件の場合、その `tasks.md` は per-task 実行と互換でないため修正する
+3. タスク本体を表す行が **markdown header のみ**（`^#{1,6} ` で始まり、リスト項目になって
    いない行）でタスクを表現している箇所が無いかを目視確認する（例: `## T-01: タスク名` /
    `### 子タスク`）
-3. checkbox 不在のタスク行を 1 件でも検出した場合、該当行を `- [ ] <numeric ID>. <タスク名>`
-   形式（または `- [ ]* <numeric ID> <タスク名>`）に修正してから確定する
-4. [`tasks-generation.md`](./tasks-generation.md) の「Checkbox 形式の必須化」節と整合する
+4. checkbox 不在のタスク行を 1 件でも検出した場合、該当行を `- [ ] N. <親タスク名>` 形式
+   または `- [ ] N.M <子タスク名>` 形式（deferrable は `- [ ]*`）に修正してから確定する
+5. [`tasks-generation.md`](./tasks-generation.md) の「Checkbox 形式の必須化」節と整合する
    ことを確認する（同節と本チェックは同一 checkbox 規約に依拠する）
 
 #### Budget overflow check との関係
@@ -244,8 +251,9 @@ ID 末尾の `.` あり [`- [ ] 1. <名前>`]、子タスクは末尾の `.` な
 
 - Budget overflow check の count 抽出 regex `^- \[ \]\*? [0-9]+\. ` は **最上位 numeric ID
   タスク**のみを数える狭い判定（ID 末尾の `.` を必須化）
-- checkbox enforcement check の判定パターン `^- \[[ x]\]\*? [0-9]+(\.[0-9]+)*\.? ` は
-  **親タスク・子タスク・完了済みタスク** を含む広い判定（ID 末尾の `.` をオプショナル化）
+- checkbox enforcement check の判定パターン `^- \[[ x]\]\*? ([0-9]+\.|[0-9]+\.[0-9]+(\.[0-9]+)*) ` は
+  **親タスク・子タスク・完了済みタスク** を含む広い判定（親は ID 末尾の `.` 必須、子は階層 ID
+  の直後に空白）
 - 両者は同じ「タスク行 = リスト項目 + checkbox + numeric ID」という規約を共有しており、
   本機能導入により Budget overflow check の判定境界（10 / 11 / 13 / 14 件）は **変化しません**
   （`docs/specs/131-feat-architect-tasks-md-budget-overflow/test-fixtures/` の 4 fixture が
