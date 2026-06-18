@@ -35,7 +35,7 @@
   - `shellcheck --severity=warning` で新規 module / 変更 watcher / 関連 tests を clean にする。
   - _Requirements:_ NFR 3.1, NFR 3.2, NFR 3.3, NFR 3.4, NFR 3.5
 
-- [ ] 6. README に Indexer の運用条件を追記する
+- [x] 6. README に Indexer の運用条件を追記する
   - 環境変数表へ `CONTEXT_INDEXER_ENABLED`、`CONTEXT_INDEXER_MODEL`、`CONTEXT_INDEXER_MAX_TURNS` を追記する。
   - deterministic map が第一手段で、不足または曖昧な場合だけ Indexer が補助することを説明する。
   - 保存形式は `context-map.md`、失敗時は deterministic fallback、prompt は短い slice 注入であることを説明する。
