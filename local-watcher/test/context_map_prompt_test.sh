@@ -230,6 +230,9 @@ cm_write_context_map "1.1" "implementer" "" ""
 assert_file_exists "flag on writes context-map.md" "$CONTEXT_MAP_PATH"
 map_body="$(sed -n '1,220p' "$CONTEXT_MAP_PATH")"
 assert_contains "context map records target task" "$map_body" "- Task: \`1.1\`"
+assert_contains "context map separates deterministic section" "$map_body" "## Deterministic Metadata"
+assert_contains "context map records skipped indexer status" "$map_body" "## Indexer Status"
+assert_contains "context map records disabled indexer reason" "$map_body" "- Reason: \`disabled\`"
 assert_contains "context map records boundary file" "$map_body" "local-watcher/bin/idd-codex-issue-watcher.sh"
 assert_contains "context map records anchor" "$map_body" "cm_existing_anchor"
 assert_contains "context map records anchor-derived test" "$map_body" "local-watcher/test/context_map_existing_test.sh"
@@ -238,6 +241,8 @@ assert_contains "context map records constraints" "$map_body" "repo-wide \`rg --
 prompt_on="$(build_per_task_implementer_prompt "1.1")"
 assert_contains "flag on implementer prompt injects context map block" "$prompt_on" "## Context Map"
 assert_contains "implementer prompt includes context-map path" "$prompt_on" "$SPEC_DIR_REL/context-map.md"
+assert_contains "implementer prompt asks to read candidate context first" "$prompt_on" "Developer はまず Candidate Files / Anchors / Candidate Tests"
+assert_contains "implementer prompt declares bounded context-map slice" "$prompt_on" "Slice: bounded first 180 lines"
 assert_contains "implementer prompt includes candidate file" "$prompt_on" "local-watcher/bin/idd-codex-issue-watcher.sh"
 
 CONTEXT_INDEXER_ENABLED=true
@@ -260,6 +265,8 @@ assert_contains "reviewer context map includes changed file" "$reviewer_map" "lo
 
 reviewer_prompt="$(build_per_task_reviewer_prompt "1.1" "$RANGE_START" "$RANGE_END" "1" "(none)")"
 assert_contains "reviewer prompt injects context map block" "$reviewer_prompt" "## Context Map"
+assert_contains "reviewer prompt asks to read diff and candidates first" "$reviewer_prompt" "Reviewer はまず diff range / Candidate Files / Anchors / Candidate Tests"
+assert_contains "reviewer prompt keeps final judgment boundary" "$reviewer_prompt" "最終判断は tasks.md、要件、実際の diff"
 assert_contains "reviewer prompt keeps bounded review instruction" "$reviewer_prompt" "本 range のみ"
 
 if [ "$FAIL_COUNT" -ne 0 ]; then

@@ -39,3 +39,15 @@
 | Finding | Target | Category | 対応 | テスト | status |
 |---|---|---|---|---|---|
 | なし | Task 3 | - | 前回 reject notes なし | `shellcheck --severity=warning local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/bin/idd-codex-modules/*.sh local-watcher/test/context_map_prompt_test.sh local-watcher/test/context_indexer_test.sh`; `bash local-watcher/test/context_map_prompt_test.sh`; `bash local-watcher/test/context_indexer_test.sh` | closed |
+
+### Task 4
+- 採用方針: `context-map.md` を deterministic / Indexer Status / Indexer Metadata の見出しで分離し、prompt 側は stage 別 guidance と bounded slice 明記に寄せた。
+- 重要な判断: 初回 Indexer 実行時は実行前の `pending` status を map に残さず、runner 後の `success` / `fallback` status と metadata だけを後続 prompt に見せる構成にした。
+- 重要な判断: Reviewer prompt では diff range / candidate files / anchors / candidate tests を先に確認し、最終判断は `tasks.md`、要件、実際の diff に戻すことを明示した。
+- 残存課題: Task 5 の包括 regression 整理と Task 6 の README 運用条件追記は未着手。
+
+#### Finding Closure Matrix
+
+| Finding | Target | Category | 対応 | テスト | status |
+|---|---|---|---|---|---|
+| なし | Task 4 | - | 前回 reject notes なし | `shellcheck --severity=warning local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/bin/idd-codex-modules/*.sh local-watcher/test/context_map_prompt_test.sh local-watcher/test/context_indexer_test.sh`; `bash local-watcher/test/context_map_prompt_test.sh`; `bash local-watcher/test/context_indexer_test.sh` | closed |

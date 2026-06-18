@@ -322,6 +322,18 @@ assert_contains \
   "$indexer_map" \
   "context-indexer: task=1.4 stage=implementer range=none result=success reason=anchors-tests-missing"
 assert_contains \
+  "runner success stores separated deterministic section" \
+  "$indexer_map" \
+  "## Deterministic Metadata"
+assert_contains \
+  "runner success stores visible indexer status" \
+  "$indexer_map" \
+  "## Indexer Status"
+assert_contains \
+  "runner success status records indexer metadata source" \
+  "$indexer_map" \
+  "- Metadata: \`indexer\`"
+assert_contains \
   "runner success appends sanitized metadata" \
   "$indexer_map" \
   "## Indexer Metadata"
@@ -364,6 +376,10 @@ assert_contains \
   "invalid output records fallback marker" \
   "$invalid_map" \
   "context-indexer: task=1.5 stage=implementer range=none result=fallback reason=invalid-output"
+assert_contains \
+  "invalid output records deterministic fallback status" \
+  "$invalid_map" \
+  "- Metadata: \`deterministic-fallback\`"
 
 printf 'dirty\n' > "$CODEX_MODE_FILE"
 cm_write_context_map "1.6" "implementer" "" ""
