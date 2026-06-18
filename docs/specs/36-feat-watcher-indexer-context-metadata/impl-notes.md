@@ -63,3 +63,15 @@
 | Finding | Target | Category | 対応 | テスト | status |
 |---|---|---|---|---|---|
 | なし | Task 5 | - | 前回 reject notes は Task 4 approve で Finding なし。Task 5 の reject Finding は存在しない | `shellcheck --severity=warning local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/bin/idd-codex-modules/*.sh local-watcher/test/context_map_prompt_test.sh local-watcher/test/context_indexer_test.sh`; `bash local-watcher/test/context_map_prompt_test.sh`; `bash local-watcher/test/context_indexer_test.sh` | closed |
+
+### Task 6
+- 採用方針: README の opt-in 一覧、per-task 環境変数表、context-map 節に Indexer の運用条件と tradeoff を追記する doc-only 対応にした。
+- 重要な判断: `CONTEXT_MAP_ENABLED=true` の deterministic map を第一手段として明記し、`CONTEXT_INDEXER_ENABLED=true` は不足または曖昧な task だけ read-only Indexer を最大 1 回起動する補助 gate として説明した。
+- 重要な判断: 保存形式は `context-map.md`、失敗時は deterministic fallback、prompt へは短い slice 注入、Indexer は実装・レビュー・commit・push・PR 作成をしない境界を README に集約した。
+- 残存課題: なし。
+
+#### Finding Closure Matrix
+
+| Finding | Target | Category | 対応 | テスト | status |
+|---|---|---|---|---|---|
+| なし | Task 6 | - | 前回 review-notes は Task 5 approve で Finding なし。Task 6 は README 運用条件追記のみ | `shellcheck --severity=warning local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/bin/idd-codex-modules/*.sh local-watcher/test/context_map_prompt_test.sh local-watcher/test/context_indexer_test.sh`; `bash local-watcher/test/context_map_prompt_test.sh`; `bash local-watcher/test/context_indexer_test.sh` | closed |

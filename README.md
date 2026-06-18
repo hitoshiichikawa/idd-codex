@@ -1348,6 +1348,7 @@ idd-codex は基本フロー（Triage → 実装 → PR 作成）以外の機能
 | **Phase E: Path Overlap Checker**（Triage で推定した編集見込み path を in-flight Issue 集合と突合し、重複時は `codex-awaiting-slot` で dispatch を見送り） | `PATH_OVERLAP_CHECK` | `off` | `=true` 厳密一致のみ有効。それ以外（未設定 / `off` / `on` / `1` / `True` / 大文字小文字違い / typo）はすべて OFF に正規化 | 連動: `MECHANICAL_PATHS`（Phase D と共有。Phase E では top-level path 突合の補助知識として参照） | [Path Overlap Checker (Phase E)](#path-overlap-checker-phase-e) | #18 |
 | **Dependency Auto-Unblock Processor**（`codex-blocked` Issue の依存を cycle 冒頭で再評価し、全依存 resolved なら `codex-blocked` を自動解除） | `DEPENDENCY_AUTO_UNBLOCK_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `on` / `True` / `1` / typo）はすべて OFF | 推奨: `DEPENDENCY_AUTO_UNBLOCK_LIMIT`（既定 `20`。1 cycle で再評価する `codex-blocked` Issue 数上限） | [`codex-blocked` 依存自動解除](#codex-blocked-依存自動解除dependency-auto-unblock-56) | #56 |
 | **Phase 2: Per-task TDD Implementation Loop**（tasks.md の task 1 件ごとに fresh Implementer + fresh Reviewer を起動し、`### Task <id>` learnings を後続 task に前方伝播） | `PER_TASK_LOOP_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて `false` 等価 | 推奨: `PER_TASK_MAX_TASKS`（暴走防止 knob。既定 `0` = 無制限。正の整数で task 件数上限を設定すると上限超過時に `codex-failed` で停止） | [Per-task TDD Implementation Loop (#21)](#per-task-tdd-implementation-loop-21) | #21 |
+| **Context Indexer Metadata**（deterministic `context-map.md` が不足または曖昧な per-task で read-only Indexer を最大 1 回起動し、候補ファイル / tests / docs / anchors を補完） | `CONTEXT_INDEXER_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて OFF | 必須前提: `CONTEXT_MAP_ENABLED=true` と `PER_TASK_LOOP_ENABLED=true`。任意: `CONTEXT_INDEXER_MODEL`（既定 `$DEV_MODEL`）、`CONTEXT_INDEXER_MAX_TURNS`（既定 `10`、Indexer prompt 内の探索上限） | [context-map による探索 read 削減（試験機能 / #34）](#context-map-による探索-read-削減試験機能--34) | #36 |
 | **Phase 3: Debugger Subagent**（Reviewer Round 2 reject 直前 / Developer BLOCKED 宣言時に fresh Debugger を web search 権限付きで起動し、Fix Plan markdown を後続 Developer 再起動 prompt に注入） | `DEBUGGER_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて `false` 等価 | 任意: `DEBUGGER_MODEL`（既定 `gpt-5.5`）、`DEBUGGER_MAX_TURNS`（既定 `40`） | [Debugger Subagent (Phase 3, #22)](#debugger-subagent-phase-3-22) | #22 |
 | **Codex Guard Hook**（Codex PreToolUse hook で base branch push / 無条件 force push / hook 自己改変を事前 deny） | `IDD_CODEX_HOOKS_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて OFF。ON かつ preflight 失敗時は watcher が fail-closed 停止 | 任意: `IDD_CODEX_HOOKS_DIR`（既定 `$HOME/.idd-codex/hooks`）、`IDD_CODEX_HOOKS_PROFILE_NAME`（既定 `idd-codex-guard`）、`IDD_CODEX_HOOKS_MIN_VERSION`（既定 `0.0.0`）、`CODEX_HOME`（profile config 配置先） | [Codex Guard Hook (#294)](#codex-guard-hook-294) | #294 |
 | **PR Reviewer Processor**（外部 AI レビューツール `codex` / `antigravity`（バイナリ `agy`）に open PR を自動レビューさせ、結果を PR コメント投稿 + 修正要求の `VERDICT` 検出時に `codex-needs-iteration` 付与で PR Iteration Processor #26 へ接続） | `PR_REVIEWER_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / 空文字 / `True` / `1` / typo）はすべて OFF | **必須**: `PR_REVIEWER_TOOL`（`codex` / `antigravity`。または alias `PR_REVIEWER_CODEX_ENABLED` / `PR_REVIEWER_ANTIGRAVITY_ENABLED` のいずれか一方。両方有効化は排他エラー）。**前提**: 当該ツールが watcher 実行環境に**インストール・認証済み**であること（セットアップ自動化はスコープ外）。推奨: `PR_REVIEWER_MAX_PRS`（既定 `5`）、`PR_REVIEWER_HEAD_PATTERN`（既定 `^codex/`）、`PR_REVIEWER_EXEC_TIMEOUT`（既定 `600`） | [PR Reviewer Processor (#261)](#pr-reviewer-processor-261) | #261 |
@@ -4684,6 +4685,9 @@ cron / launchd の `REPO=... REPO_DIR=...` に `PER_TASK_LOOP_ENABLED=true` を 
 | `PER_TASK_LOOP_ENABLED` | `false` | 試運転時のみ `true` | per-task ループの opt-in gate。`=true` 厳密一致のみ有効（`True` / `1` / typo 等は `false` 等価） |
 | `PER_TASK_MAX_TASKS` | `0`（無制限） | 異常検知時のみ正の整数 | 1 ループで処理する task 件数の上限（暴走防止用安全装置）。`0` / 空 / 未設定で無制限 |
 | `CONTEXT_MAP_ENABLED` | `false` | token 消費調査時のみ `true` | per-task Implementer / Reviewer 起動前に `docs/specs/<N>-<slug>/context-map.md` を生成し、prompt に短い探索地図として注入する opt-in gate。`=true` 厳密一致のみ有効 |
+| `CONTEXT_INDEXER_ENABLED` | `false` | deterministic map が不足しがちな repo でのみ `true` | `CONTEXT_MAP_ENABLED=true` 時の補助 Indexer opt-in gate。deterministic map が不足または曖昧な task だけ、per-task Implementer 起動前に read-only Indexer を最大 1 回起動する。`=true` 厳密一致のみ有効 |
+| `CONTEXT_INDEXER_MODEL` | `$DEV_MODEL` | 通常は未設定 | Indexer サブエージェントのモデル ID。`DEV_MODEL` 確定後の値を既定にし、モデル ID を固定値で焼き込まない |
+| `CONTEXT_INDEXER_MAX_TURNS` | `10` | token 消費を見ながら小さく調整 | Indexer prompt 内で示す探索上限。実装 agent の turn 予算や reasoning effort default は変更しない |
 
 既存 env var（`DEV_MODEL` / `REVIEWER_MODEL` / `DEV_MAX_TURNS` / `REVIEWER_MAX_TURNS` /
 `IMPL_RESUME_*` / `STAGE_CHECKPOINT_*` / `QUOTA_AWARE_*` 等）の名前・既定値・意味は
@@ -4783,7 +4787,18 @@ per-task Implementer / Reviewer 起動前に `docs/specs/<N>-<slug>/context-map.
 更新します。これは reasoning effort や model default を下げずに、fresh context ごとの広域探索
 read を減らすための短い handoff metadata です。
 
-生成される内容:
+既定では deterministic な watcher 生成が第一手段です。`tasks.md` の対象 task block、
+`_Boundary:_`、diff range、既存 anchor の `git grep` だけで十分な候補を示せる場合、
+LLM scout / Indexer は起動しません。`CONTEXT_INDEXER_ENABLED=true` を追加で opt-in した場合のみ、
+deterministic map が不足または曖昧な task で read-only Indexer サブエージェントを最大 1 回起動し、
+候補ファイル、候補テスト、候補 docs、anchors を `context-map.md` に補完します。
+
+保存形式は常に `docs/specs/<N>-<slug>/context-map.md` です。Indexer 成功時は deterministic section と
+Indexer Metadata section を分けて保存し、後続 prompt には保存済み metadata の短い slice だけを
+inline 注入します。Indexer が失敗した場合や出力を採用できない場合は deterministic map に
+フォールバックして処理を継続し、Indexer 失敗だけを理由に Issue を即 `codex-failed` へは遷移させません。
+
+deterministic map で生成される内容:
 
 - 対象 task ID、対象 task block、`_Requirements:_`、`_Boundary:_`、`_Depends:_`
 - `_Boundary:_` や task block から抽出した candidate files
@@ -4793,9 +4808,21 @@ read を減らすための短い handoff metadata です。
 - 「まず候補ファイル / anchors を確認し、repo-wide `rg --files` や README 全体読みは不足時のみ」
   という探索制約
 
+Indexer opt-in 時に補完される内容:
+
+- sanitized candidate files / candidate tests / candidate docs
+- identifier anchors
+- Indexer の起動結果、skip / fallback 理由、同一 task / stage / range での最大 1 回実行 marker
+- 「Indexer metadata は補助情報であり、最終判断は `tasks.md`、要件、実際の diff で検証する」
+  という探索制約
+
 注意点:
 
-- 本機能は deterministic な watcher 生成のみで、LLM scout agent は起動しません
+- `CONTEXT_INDEXER_ENABLED=true` 以外では LLM scout / Indexer agent は起動しません
+- Indexer は `codex exec --sandbox read-only` で起動され、実装、レビュー、commit、push、PR 作成、
+  `_Boundary:_` や `tasks.md` の自動変更を行いません
+- Indexer opt-in は Codex CLI 起動を追加するため token 消費が増える可能性があります。狙いは、
+  曖昧な task で後続 Developer / Reviewer が repo 全体を読み直す回数を減らすことです
 - `CONTEXT_MAP_ENABLED=true` 以外では `context-map.md` の生成も prompt 注入も行いません
 - `context-map.md` は補助情報であり、最終判断は `tasks.md` と実際の diff を正とします
 - 生成物は spec ディレクトリ配下に置かれますが、Implementer は参照専用として扱い、
