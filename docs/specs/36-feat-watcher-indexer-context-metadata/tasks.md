@@ -21,7 +21,7 @@
   - runner failure / invalid output / dirty guard failure を fallback として扱い、Issue を `codex-failed` にしない shell test を追加する。
   - _Requirements:_ 3.2, 3.3, 5.1, 5.2, 5.3, 5.4, 6.1, 6.2, 6.3, NFR 2.1, NFR 2.3, NFR 3.4
 
-- [ ] 4. context-map.md 保存形式と prompt 注入を Indexer metadata 対応に更新する
+- [x] 4. context-map.md 保存形式と prompt 注入を Indexer metadata 対応に更新する
   - `context-map.md` に deterministic section、Indexer Status、Indexer Metadata を分離して保存する。
   - Indexer 成功時も fallback 時も保存先を `docs/specs/番号-slug/context-map.md` に固定し、`context-map.json` を要求しない。
   - Implementer prompt では candidate files / anchors / candidate tests を repo-wide 探索より先に参照する案内を追加する。
