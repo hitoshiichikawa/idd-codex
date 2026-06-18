@@ -30,3 +30,9 @@
 ## 確認事項
 
 - なし。
+
+## Reviewer reject 是正
+
+- `local-watcher/test/stage_checkpoint_pending_tasks_test.sh` に impl-resume checkpoint の直接 regression を追加した。
+- heading-only / prose checkbox のみで watcher-compatible marker が 0 件の `tasks.md` fixture を使い、`stage_checkpoint_resolve_resume_point` が `START_STAGE=A` を選ぶことを確認した。
+- 同 fixture で `reason=tasks-md-no-compatible-task-markers` が記録され、Stage B silent skip 側へ進まないことを固定した。
