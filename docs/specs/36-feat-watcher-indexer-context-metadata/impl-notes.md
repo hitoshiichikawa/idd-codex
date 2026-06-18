@@ -51,3 +51,15 @@
 | Finding | Target | Category | 対応 | テスト | status |
 |---|---|---|---|---|---|
 | なし | Task 4 | - | 前回 reject notes なし | `shellcheck --severity=warning local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/bin/idd-codex-modules/*.sh local-watcher/test/context_map_prompt_test.sh local-watcher/test/context_indexer_test.sh`; `bash local-watcher/test/context_map_prompt_test.sh`; `bash local-watcher/test/context_indexer_test.sh` | closed |
+
+### Task 5
+- 採用方針: 既存 `context_indexer_test.sh` を包括 regression として拡張し、writer 経由の opt-in disabled と prompt slice 注入を直接検証する assertion を追加した。
+- 重要な判断: 実装本体は既に task 3 / 4 で対象機能を満たしていたため、task 5 では production code を変更せず NFR 3.1〜3.5 のテスト証跡強化に限定した。
+- 重要な判断: `context_map_prompt_test.sh` は deterministic contract regression として維持し、Indexer runner stub を伴う検証は `context_indexer_test.sh` に集約した。
+- 残存課題: Task 6 の README 運用条件追記は未着手。
+
+#### Finding Closure Matrix
+
+| Finding | Target | Category | 対応 | テスト | status |
+|---|---|---|---|---|---|
+| なし | Task 5 | - | 前回 reject notes は Task 4 approve で Finding なし。Task 5 の reject Finding は存在しない | `shellcheck --severity=warning local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/bin/idd-codex-modules/*.sh local-watcher/test/context_map_prompt_test.sh local-watcher/test/context_indexer_test.sh`; `bash local-watcher/test/context_map_prompt_test.sh`; `bash local-watcher/test/context_indexer_test.sh` | closed |

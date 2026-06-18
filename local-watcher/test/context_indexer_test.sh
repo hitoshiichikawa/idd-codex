@@ -23,7 +23,8 @@ for fn in \
   ci_run_indexer \
   ci_sanitize_indexer_metadata \
   ci_record_indexer_marker \
-  cm_write_context_map; do
+  cm_write_context_map \
+  cm_build_prompt_block; do
   if ! declare -F "$fn" >/dev/null; then
     echo "ERROR: $fn not loaded" >&2
     exit 2
@@ -232,6 +233,16 @@ assert_eq \
   "disabled gate always skips indexer" \
   "$(ci_context_needs_indexer "1.2" "implementer" "" "")" \
   "skip:disabled"
+cm_write_context_map "1.2" "implementer" "" ""
+assert_eq \
+  "disabled gate prevents runner invocation through context map writer" \
+  "$(cat "$CODEX_CALLS_FILE")" \
+  "0"
+disabled_map="$(sed -n '1,260p' "$REPO_DIR/$SPEC_DIR_REL/context-map.md")"
+assert_contains \
+  "disabled writer path records skipped indexer status" \
+  "$disabled_map" \
+  "- Reason: \`disabled\`"
 
 CONTEXT_INDEXER_ENABLED=true
 export CONTEXT_INDEXER_ENABLED
@@ -340,6 +351,23 @@ assert_contains \
 assert_contains \
   "runner success stores sanitized candidate test" \
   "$indexer_map" \
+  "local-watcher/test/context_indexer_test.sh"
+prompt_slice="$(cm_build_prompt_block)"
+assert_contains \
+  "prompt slice includes context map block after indexer success" \
+  "$prompt_slice" \
+  "## Context Map"
+assert_contains \
+  "prompt slice includes bounded slice declaration" \
+  "$prompt_slice" \
+  "Slice: bounded first 180 lines"
+assert_contains \
+  "prompt slice includes indexer metadata section" \
+  "$prompt_slice" \
+  "## Indexer Metadata"
+assert_contains \
+  "prompt slice includes sanitized indexer candidate test" \
+  "$prompt_slice" \
   "local-watcher/test/context_indexer_test.sh"
 assert_not_contains \
   "runner success does not store unsafe freeform token" \
