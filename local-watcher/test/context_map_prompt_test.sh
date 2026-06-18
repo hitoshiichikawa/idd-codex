@@ -9,9 +9,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WATCHER_SH="$SCRIPT_DIR/../bin/idd-codex-issue-watcher.sh"
+MODULE_SH="$SCRIPT_DIR/../bin/idd-codex-modules/context-map.sh"
 
 if [ ! -f "$WATCHER_SH" ]; then
   echo "ERROR: cannot find watcher at $WATCHER_SH" >&2
+  exit 2
+fi
+if [ ! -f "$MODULE_SH" ]; then
+  echo "ERROR: cannot find context-map module at $MODULE_SH" >&2
   exit 2
 fi
 
@@ -26,22 +31,6 @@ extract_function() {
 }
 
 for fn in \
-  cm_context_map_enabled \
-  cm_log \
-  cm_warn \
-  cm_context_map_path \
-  cm_unique_nonempty \
-  cm_normalize_path_candidates \
-  cm_extract_task_block \
-  cm_extract_metadata_value \
-  cm_extract_path_candidates_from_text \
-  cm_extract_anchor_candidates_from_text \
-  cm_collect_changed_files \
-  cm_collect_tests_for_anchors \
-  cm_filter_context_paths \
-  cm_print_md_list \
-  cm_write_context_map \
-  cm_build_prompt_block \
   build_issue_context_block \
   pt_extract_learnings \
   build_per_task_implementer_prompt \
@@ -50,7 +39,10 @@ for fn in \
   eval "$(extract_function "$WATCHER_SH" "$fn")"
 done
 
-for fn in cm_write_context_map cm_build_prompt_block build_per_task_implementer_prompt build_per_task_reviewer_prompt; do
+# shellcheck source=../bin/idd-codex-modules/context-map.sh
+. "$MODULE_SH"
+
+for fn in ci_context_indexer_enabled cm_write_context_map cm_build_prompt_block build_per_task_implementer_prompt build_per_task_reviewer_prompt; do
   if ! declare -F "$fn" >/dev/null; then
     echo "ERROR: $fn not loaded" >&2
     exit 2
@@ -204,15 +196,36 @@ assert_file_not_exists() {
 }
 
 CONTEXT_MAP_ENABLED=false
+CONTEXT_INDEXER_ENABLED=false
 export CONTEXT_MAP_ENABLED
+export CONTEXT_INDEXER_ENABLED
 rm -f "$CONTEXT_MAP_PATH"
 cm_write_context_map "1.1" "implementer" "" ""
 assert_file_not_exists "flag off does not write context-map.md" "$CONTEXT_MAP_PATH"
 prompt_off="$(build_per_task_implementer_prompt "1.1")"
 assert_not_contains "flag off implementer prompt has no context map block" "$prompt_off" "## Context Map"
+if ci_context_indexer_enabled; then
+  echo "FAIL: indexer gate rejects false"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+else
+  echo "PASS: indexer gate rejects false"
+  PASS_COUNT=$((PASS_COUNT + 1))
+fi
 
 CONTEXT_MAP_ENABLED=true
+CONTEXT_INDEXER_ENABLED=True
 export CONTEXT_MAP_ENABLED
+export CONTEXT_INDEXER_ENABLED
+if ci_context_indexer_enabled; then
+  echo "FAIL: indexer gate rejects non-strict true"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+else
+  echo "PASS: indexer gate rejects non-strict true"
+  PASS_COUNT=$((PASS_COUNT + 1))
+fi
+
+CONTEXT_INDEXER_ENABLED=false
+export CONTEXT_INDEXER_ENABLED
 cm_write_context_map "1.1" "implementer" "" ""
 assert_file_exists "flag on writes context-map.md" "$CONTEXT_MAP_PATH"
 map_body="$(sed -n '1,220p' "$CONTEXT_MAP_PATH")"
@@ -226,6 +239,19 @@ prompt_on="$(build_per_task_implementer_prompt "1.1")"
 assert_contains "flag on implementer prompt injects context map block" "$prompt_on" "## Context Map"
 assert_contains "implementer prompt includes context-map path" "$prompt_on" "$SPEC_DIR_REL/context-map.md"
 assert_contains "implementer prompt includes candidate file" "$prompt_on" "local-watcher/bin/idd-codex-issue-watcher.sh"
+
+CONTEXT_INDEXER_ENABLED=true
+export CONTEXT_INDEXER_ENABLED
+if ci_context_indexer_enabled; then
+  echo "PASS: indexer gate accepts strict true"
+  PASS_COUNT=$((PASS_COUNT + 1))
+else
+  echo "FAIL: indexer gate accepts strict true"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+fi
+cm_write_context_map "1.1" "implementer" "" ""
+map_with_indexer_gate="$(sed -n '1,220p' "$CONTEXT_MAP_PATH")"
+assert_contains "indexer opt-in does not change deterministic map before runner task" "$map_with_indexer_gate" "local-watcher/bin/idd-codex-issue-watcher.sh"
 
 cm_write_context_map "1.1" "reviewer" "$RANGE_START" "$RANGE_END"
 reviewer_map="$(sed -n '1,220p' "$CONTEXT_MAP_PATH")"
