@@ -814,6 +814,13 @@ codex_exec_prompt() {
 ${prompt}"
   fi
 
+  # guard hook（#80 G3）へ当該 stage の role を渡す。reviewer/debugger role のとき hook が
+  # 許可 notes 以外への repo 書き込みを deny する（hook 無効時は無害な env 設定にすぎない）。
+  # 複数 role を返す stage（StageA=PM+Developer 等）は文字列がそのまま渡り、read-only-writer
+  # role 名（reviewer/debugger）と完全一致しないため制限対象外になる（＝後方互換）。
+  export IDD_HOOK_ROLE
+  IDD_HOOK_ROLE="$(codex_agent_roles_for_stage "$stage_label")"
+
   local -a args codex_global_args
   args=(exec -C "$REPO_DIR" -m "$model" --json --output-last-message "$last_message_file" -c "model_reasoning_effort=\"$effort\"")
   codex_global_args=()
