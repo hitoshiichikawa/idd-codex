@@ -13,6 +13,9 @@
 #   - ar_fetch_candidates / ar_build_prompt / ar_run_codex_rebase / ar_classify_diff
 #   - ar_apply_mechanical / ar_dismiss_all_approvals / ar_apply_semantic
 #   - ar_escalate_to_failed / ar_handle_pr / process_auto_rebase
+#   semantic 自動解決（#103 / D-12, `AUTO_REBASE_SEMANTIC=on` + `FULL_AUTO_ENABLED` 配下）:
+#   - ar_semantic_auto_enabled / ar_count_semantic_attempts / ar_semantic_budget_available
+#   - ar_escalate_to_needs_decisions / ar_apply_semantic_auto
 #
 # 配置先:
 #   $HOME/bin/idd-codex-modules/auto-rebase.sh（install.sh が local-watcher/bin/idd-codex-modules/ から配置する）
@@ -22,8 +25,9 @@
 #   - `set -euo pipefail` は本体側で宣言済みのため、本モジュールでは宣言せず関数定義のみを持つ。
 #   - ロガー（ar_log / ar_warn / ar_error）は core_utils.sh にあるため再定義しない。
 #   - グローバル変数（$AUTO_REBASE_MODE / $AUTO_REBASE_GIT_TIMEOUT / allowlist 設定 /
-#     $LABEL_NEEDS_REBASE / $LABEL_FAILED / $BASE_BRANCH 等）は本体冒頭の Config ブロックで
-#     定義済み。bash の遅延束縛により呼び出し時に解決される。
+#     $LABEL_NEEDS_REBASE / $LABEL_FAILED / $LABEL_NEEDS_DECISIONS / $BASE_BRANCH /
+#     $AUTO_REBASE_SEMANTIC / $AUTO_REBASE_SEMANTIC_MAX / full_auto_enabled()(#97) 等）は
+#     本体冒頭の Config ブロックで定義済み。bash の遅延束縛により呼び出し時に解決される。
 #   - 外部 CLI: gh / git / codex / jq。
 #
 # セットアップ参照先:
@@ -632,6 +636,219 @@ EOF
   return 0
 }
 
+# ═════════════════════════════════════════════════════════════════════════════
+# Issue #103 / D-12: semantic conflict 自動解決（二重ゲート再発火 + needs-decisions
+#   フォールバック）。`AUTO_REBASE_SEMANTIC=on` かつ `FULL_AUTO_ENABLED=true` のときのみ
+#   semantic 判定の disposition を「人間待ち（ar_apply_semantic）」から「自動続行
+#   （ar_apply_semantic_auto）」に切り替える。OFF（既定）では一切の挙動変化なし。
+# ═════════════════════════════════════════════════════════════════════════════
+
+# semantic auto-resolution 用 audit marker（budget カウントに用いる。汎用 auto-rebase
+# marker `idd-codex:auto-rebase` とは別 namespace にして自動解決回数だけを数える）。
+AR_SEMANTIC_MARKER="idd-codex:auto-rebase-semantic"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ar_semantic_auto_enabled: semantic 自動解決が有効か（純粋判定 / 副作用なし）
+#   戻り値: 0 = AUTO_REBASE_SEMANTIC=on かつ full_auto_enabled / 1 = それ以外
+# ─────────────────────────────────────────────────────────────────────────────
+ar_semantic_auto_enabled() {
+  [ "${AUTO_REBASE_SEMANTIC:-off}" = "on" ] || return 1
+  full_auto_enabled || return 1
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ar_count_semantic_attempts: 同一 PR の過去 semantic 自動解決回数を marker から数える
+#   入力: $1=pr_number
+#   出力: stdout に整数。gh 取得失敗時は AUTO_REBASE_SEMANTIC_MAX を返し budget 枯渇へ倒す
+#         （数えられない → 安全側で自動続行しない）。
+# ─────────────────────────────────────────────────────────────────────────────
+ar_count_semantic_attempts() {
+  local pr_number="$1"
+  local comments_json
+  if ! comments_json=$(timeout "$AUTO_REBASE_GIT_TIMEOUT" gh pr view "$pr_number" \
+      --repo "$REPO" --json comments 2>/dev/null); then
+    ar_warn "PR #${pr_number}: 過去コメント取得に失敗（budget 枯渇扱い＝自動続行しない）"
+    printf '%s' "$AUTO_REBASE_SEMANTIC_MAX"
+    return 0
+  fi
+  local count
+  count=$(printf '%s' "$comments_json" | jq -r --arg m "$AR_SEMANTIC_MARKER" --arg n "$pr_number" '
+    [ (.comments // [])[] | select((.body // "") | contains($m + " pr=" + $n)) ] | length
+  ' 2>/dev/null || echo "")
+  [[ "$count" =~ ^[0-9]+$ ]] || count=0
+  printf '%s' "$count"
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ar_semantic_budget_available: 無限解決ループ防止（自動解決回数 < MAX か）
+#   入力: $1=pr_number
+#   戻り値: 0 = まだ自動解決可（prior < MAX）/ 1 = budget 枯渇（needs-decisions へ）
+# ─────────────────────────────────────────────────────────────────────────────
+ar_semantic_budget_available() {
+  local pr_number="$1"
+  local prior
+  prior=$(ar_count_semantic_attempts "$pr_number")
+  [[ "$prior" =~ ^[0-9]+$ ]] || prior="$AUTO_REBASE_SEMANTIC_MAX"
+  [ "$prior" -lt "$AUTO_REBASE_SEMANTIC_MAX" ] || return 1
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ar_escalate_to_needs_decisions: 解決不能 semantic を人間へフォールバック（D-12）
+#   入力: $1=pr_number, $2=reason ∈ { conflict-unresolved, budget-exhausted,
+#         dismissal-failed, unknown }
+#   `codex-needs-rebase` を除去（rebase 候補から外す）+ `codex-needs-decisions` 付与 +
+#   原因と復旧手順のコメント 1 件。`codex-failed` は付与しない（D-12: 人間判断待ち）。
+#   戻り値: 0=成功 / 1=失敗（WARN）
+# ─────────────────────────────────────────────────────────────────────────────
+ar_escalate_to_needs_decisions() {
+  local pr_number="$1"
+  local reason="$2"
+
+  local reason_desc recovery
+  case "$reason" in
+    conflict-unresolved)
+      reason_desc="Codex が semantic conflict を自動解決できませんでした（working tree が dirty 残置 / rebase 不成立）"
+      recovery="手動で \`gh pr checkout ${pr_number} && git rebase origin/${BASE_BRANCH}\` を実施し conflict を解消するか、設計判断が必要なら本 Issue/PR で方針を決定してください" ;;
+    budget-exhausted)
+      reason_desc="同一 PR への semantic 自動解決が通算上限（${AUTO_REBASE_SEMANTIC_MAX} 回）に到達しました（無限解決ループ防止）"
+      recovery="自動解決を繰り返しても merge に至っていません。conflict の根本原因（設計のズレ等）を人間が判断してください" ;;
+    dismissal-failed)
+      reason_desc="semantic 自動解決後に approving review の dismissal API が失敗しました"
+      recovery="GitHub の Reviews UI から手動で approve を取り消し、再レビューしてください。watcher token の dismissal 権限も確認してください" ;;
+    *)
+      reason_desc="semantic 自動解決の未知の失敗: ${reason}"
+      recovery="watcher log（\`auto-rebase:\` prefix）を確認し、手動で復旧してください" ;;
+  esac
+
+  local label_rc=0
+  if ! timeout "$AUTO_REBASE_GIT_TIMEOUT" \
+      gh pr edit "$pr_number" --repo "$REPO" \
+      --remove-label "$LABEL_NEEDS_REBASE" \
+      --add-label "$LABEL_NEEDS_DECISIONS" >/dev/null 2>&1; then
+    ar_warn "PR #${pr_number}: codex-needs-decisions フォールバックのラベル操作に失敗（理由: ${reason}）"
+    label_rc=1
+  fi
+
+  local comment_body
+  read -r -d '' comment_body <<EOF || true
+## Phase D: semantic conflict を人間判断へフォールバック（#103 / D-12）
+
+watcher (Auto Rebase Processor / semantic 自動解決) が本 PR の semantic conflict を
+自動解決できなかったため、\`codex-needs-decisions\` を付与して人間判断にエスカレーションします。
+
+### 失敗種別
+
+\`${reason}\`
+
+### 詳細
+
+${reason_desc}
+
+### 推奨対応
+
+${recovery}
+
+---
+
+_本コメントは Auto Rebase Processor (semantic 自動解決 / #103) が自動投稿しました。
+\`codex-needs-decisions\` を外すと watcher が再評価します。semantic 自動解決を止めたい
+場合は \`AUTO_REBASE_SEMANTIC=off\` に切り替えてください。_
+
+<!-- ${AR_SEMANTIC_MARKER} pr=${pr_number} reason=${reason} -->
+EOF
+
+  local comment_rc=0
+  if ! timeout "$AUTO_REBASE_GIT_TIMEOUT" \
+      gh pr comment "$pr_number" --repo "$REPO" --body "$comment_body" >/dev/null 2>&1; then
+    ar_warn "PR #${pr_number}: needs-decisions フォールバックのコメント投稿に失敗"
+    comment_rc=1
+  fi
+
+  if [ "$label_rc" -ne 0 ] || [ "$comment_rc" -ne 0 ]; then
+    return 1
+  fi
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ar_apply_semantic_auto: semantic 自動解決の disposition（二重ゲート再発火経路）
+#   入力: $1=pr_number $2=pr_url $3=before_sha $4=after_sha $5=first_unmatched（空可）
+#   1. approving review を全件 dismiss（無検証 merge を防ぐ / 安全策）
+#   2. codex-needs-rebase 除去 + codex-ready-for-review 付与（pr-reviewer / auto-merge が
+#      新 SHA を再評価＝Issue 02 二重ゲート再発火）
+#   3. audit コメント（marker 付き = budget カウント源）を投稿
+#   戻り値: 0=成功 / 1=dismissal 失敗（呼び出し側で needs-decisions フォールバック）/
+#           2=label/comment 部分失敗（dismissal 成功のため semantic 扱い継続）
+#   ※ codex 解決 commit は ar_run_codex_rebase が push 済み。本関数は push しない。
+# ─────────────────────────────────────────────────────────────────────────────
+ar_apply_semantic_auto() {
+  local pr_number="$1"
+  local pr_url="$2"
+  local before_sha="$3"
+  local after_sha="$4"
+  local first_unmatched="${5:-}"
+
+  # 1. approve を全件 dismiss（無検証 merge を防ぐ＝二重ゲートが新 SHA で再判定する）
+  if ! ar_dismiss_all_approvals "$pr_number"; then
+    return 1
+  fi
+
+  local partial_fail=0
+  # 2. codex-needs-rebase 除去 + codex-ready-for-review 付与
+  if ! timeout "$AUTO_REBASE_GIT_TIMEOUT" \
+      gh pr edit "$pr_number" --repo "$REPO" \
+      --remove-label "$LABEL_NEEDS_REBASE" \
+      --add-label "$LABEL_READY" >/dev/null 2>&1; then
+    ar_warn "PR #${pr_number}: semantic 自動解決のラベル操作に失敗"
+    partial_fail=1
+  fi
+
+  # 3. audit コメント（marker = budget カウント源）
+  local unmatched_line=""
+  if [ -n "$first_unmatched" ]; then
+    unmatched_line="- 最初に検出された allowlist 外パス: \`${first_unmatched}\`"
+  fi
+  local comment_body
+  read -r -d '' comment_body <<EOF || true
+## Phase D: semantic conflict を自動解決し再レビューへ（#103 / D-12）
+
+watcher が本 PR の semantic conflict を Codex で解決し（新規 commit を push）、
+既存 approve を dismiss しました。**無検証では merge しません**: 解決 diff は
+Issue 02 の二重ゲート（\`codex-review\`（+2nd gate \`claude-review\`））が新 SHA で
+再発火し、再レビュー approve + CI green + mergeable に到達した時点で auto-merge されます。
+
+### 実施内容
+
+- rebase 前 head SHA: \`${before_sha}\`
+- rebase 後 head SHA: \`${after_sha}\`
+${unmatched_line}
+- 既存 approving review を dismissal API で全件取り消し（再レビュー必須化）
+- \`codex-needs-rebase\` を除去し \`codex-ready-for-review\` を付与
+
+---
+
+_本コメントは Auto Rebase Processor (semantic 自動解決 / #103) が自動投稿しました。
+解決を繰り返しても merge に至らない場合は通算 ${AUTO_REBASE_SEMANTIC_MAX} 回で
+\`codex-needs-decisions\` へフォールバックします。止めたい場合は \`AUTO_REBASE_SEMANTIC=off\`。_
+
+<!-- ${AR_SEMANTIC_MARKER} pr=${pr_number} -->
+EOF
+
+  if ! timeout "$AUTO_REBASE_GIT_TIMEOUT" \
+      gh pr comment "$pr_number" --repo "$REPO" --body "$comment_body" >/dev/null 2>&1; then
+    ar_warn "PR #${pr_number}: semantic 自動解決の audit コメント投稿に失敗（${pr_url}）"
+    partial_fail=1
+  fi
+
+  if [ "$partial_fail" -eq 1 ]; then
+    return 2
+  fi
+  return 0
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # ar_handle_pr: 1 PR の Phase D 処理を実行
 #   （rebase 試行 → 分類 → mechanical/semantic 後処理 / 失敗時 escalate）
@@ -669,8 +886,15 @@ ar_handle_pr() {
       return 10
       ;;
     1)
-      ar_escalate_to_failed "$pr_number" "conflict-unresolved" || true
-      ar_log "PR #${pr_number}: classification=failed reason=conflict-unresolved action=escalate url=${pr_url}"
+      # 解決不能（codex が conflict を解消できず dirty 残置）。semantic 自動解決 ON 時は
+      # codex-failed ではなく codex-needs-decisions へフォールバック（D-12）。
+      if ar_semantic_auto_enabled; then
+        ar_escalate_to_needs_decisions "$pr_number" "conflict-unresolved" || true
+        ar_log "PR #${pr_number}: classification=needs-decisions reason=conflict-unresolved action=escalate url=${pr_url}"
+      else
+        ar_escalate_to_failed "$pr_number" "conflict-unresolved" || true
+        ar_log "PR #${pr_number}: classification=failed reason=conflict-unresolved action=escalate url=${pr_url}"
+      fi
       return 2
       ;;
     2)
@@ -729,6 +953,39 @@ ar_handle_pr() {
   fi
 
   # semantic（または `git diff` 失敗時の保守的 semantic）
+  # #103 / D-12: semantic 自動解決が有効なら、人間待ち（ar_apply_semantic）ではなく
+  # 二重ゲート再発火経路（ar_apply_semantic_auto）へ切り替える。budget 超過 / dismissal
+  # 失敗は codex-needs-decisions フォールバック。OFF（既定）では従来経路で完全に等価。
+  if ar_semantic_auto_enabled; then
+    if ! ar_semantic_budget_available "$pr_number"; then
+      ar_escalate_to_needs_decisions "$pr_number" "budget-exhausted" || true
+      ar_log "PR #${pr_number}: classification=needs-decisions reason=budget-exhausted before=${before_sha} after=${after_sha} action=escalate url=${pr_url}"
+      return 2
+    fi
+    local sauto_rc=0
+    ar_apply_semantic_auto "$pr_number" "$pr_url" "$before_sha" "$after_sha" "$first_unmatched" || sauto_rc=$?
+    case "$sauto_rc" in
+      0)
+        ar_log "PR #${pr_number}: classification=semantic-auto before=${before_sha} after=${after_sha} unmatch=${first_unmatched:-(unknown)} action=auto-resolve+rereview url=${pr_url}"
+        return 1
+        ;;
+      1)
+        ar_escalate_to_needs_decisions "$pr_number" "dismissal-failed" || true
+        ar_log "PR #${pr_number}: classification=needs-decisions reason=dismissal-failed before=${before_sha} after=${after_sha} action=escalate url=${pr_url}"
+        return 2
+        ;;
+      2)
+        ar_log "PR #${pr_number}: classification=semantic-auto before=${before_sha} after=${after_sha} action=auto-resolve+partial-fail url=${pr_url}"
+        return 1
+        ;;
+      *)
+        ar_escalate_to_needs_decisions "$pr_number" "unknown" || true
+        ar_log "PR #${pr_number}: classification=needs-decisions reason=unknown-semantic-auto(rc=${sauto_rc}) action=escalate url=${pr_url}"
+        return 2
+        ;;
+    esac
+  fi
+
   local semantic_rc=0
   ar_apply_semantic "$pr_number" "$pr_url" "$before_sha" "$after_sha" "$first_unmatched" || semantic_rc=$?
   case "$semantic_rc" in
