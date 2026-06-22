@@ -73,6 +73,7 @@ LOGGER_FUNCS=(
   drr_log drr_warn drr_error
   qa_log qa_warn qa_error
   fr_log fr_warn fr_error
+  nda_log nda_warn nda_error
 )
 
 for fn in "${LOGGER_FUNCS[@]}"; do
@@ -229,6 +230,17 @@ assert_contains "Req 1.6 fr_warn: prefix 維持" \
 OUT=$(fr_error "unexpected" 2>&1)
 assert_contains "Req 1.6 fr_error: prefix 維持" \
   "[owner/test-repo] failed-recovery: ERROR: unexpected" "$OUT"
+
+# Req 1.7: nda_log（#102 needs-decisions-auto）
+OUT=$(nda_log "auto-continue" 2>&1)
+assert_contains "Req 1.7 nda_log: [owner/test-repo] needs-decisions-auto:" \
+  "[owner/test-repo] needs-decisions-auto: auto-continue" "$OUT"
+OUT=$(nda_warn "comment failed" 2>&1)
+assert_contains "Req 1.7 nda_warn: prefix 維持" \
+  "[owner/test-repo] needs-decisions-auto: WARN: comment failed" "$OUT"
+OUT=$(nda_error "unexpected" 2>&1)
+assert_contains "Req 1.7 nda_error: prefix 維持" \
+  "[owner/test-repo] needs-decisions-auto: ERROR: unexpected" "$OUT"
 
 # Req 1.8: REPO がデフォルト値 (owner/your-repo) のままでもそのまま出力される
 REPO_BACKUP="$REPO"
