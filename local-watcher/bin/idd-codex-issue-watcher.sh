@@ -345,12 +345,16 @@ STAGE_CHECKPOINT_ENABLED="${STAGE_CHECKPOINT_ENABLED:-true}"
 #                              切り出し）。
 #   - STAGE_A_VERIFY_TIMEOUT:  verify 再実行の最大経過秒数。既定 600。大規模 repo は
 #                              env で延長可能（NFR 3.3）。
-#   - STAGE_A_VERIFY_COMMAND:  escape hatch。非空ならば tasks.md 解析を bypass して
-#                              本 env 値を最優先で実行コマンドとする（Req 4.4 /
-#                              NFR 2.2）。未対応言語向け。
+#   - STAGE_A_VERIFY_COMMAND:  escape hatch。構造化 verify ブロックが無い場合に
+#                              operator 明示コマンドとして扱う。未対応言語向け。
+#   - STAGE_A_VERIFY_SANDBOX_PROFILE:
+#                              tasks.md 由来 verify を `codex sandbox` で実行する際の
+#                              permission profile。既定 `:workspace`。`:danger-full-access`
+#                              は repository 由来 verify では拒否する（#51）。
 STAGE_A_VERIFY_ENABLED="${STAGE_A_VERIFY_ENABLED:-true}"
 STAGE_A_VERIFY_TIMEOUT="${STAGE_A_VERIFY_TIMEOUT:-600}"
 STAGE_A_VERIFY_COMMAND="${STAGE_A_VERIFY_COMMAND:-}"
+STAGE_A_VERIFY_SANDBOX_PROFILE="${STAGE_A_VERIFY_SANDBOX_PROFILE:-:workspace}"
 
 # ─── Scaffolding Health Gate 設定 (#238) ───
 # worktree reset ＋ `.codex` 注入（#237）完了直後・最初の agent stage 起動前に、worktree 内の
