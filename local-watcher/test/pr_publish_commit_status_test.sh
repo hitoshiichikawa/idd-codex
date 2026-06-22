@@ -8,6 +8,9 @@
 # 依存:   bash 4+, awk, grep, mktemp
 # 実行:   bash local-watcher/test/pr_publish_commit_status_test.sh
 # 前提:   pr-reviewer.sh から 3 関数だけを awk で切り出して eval。トップレベル副作用は回避。
+#
+# SC2034: eval で抽出した関数が参照する stub 変数を shellcheck は追跡できない。
+# shellcheck disable=SC2034
 
 set -euo pipefail
 

@@ -7602,7 +7602,7 @@ run_impl_pipeline() {
           *)  return 1 ;; # 不正 status: mark_issue_failed 実行済
         esac
       else
-        echo "--- Stage A 実行（$MODE）---" >> "$LOG"
+        echo "--- Stage A 実行（${MODE}）---" >> "$LOG"
         # #82: impl mode は既定で PM 要件定義と Developer 実装を別 codex exec に分離する
         # （context 分離。PM の文脈が Developer に bleed せず requirements.md が独立 cold input になる）。
         # STAGE_A_PM_SPLIT_ENABLED=false で従来の単一 exec（PM+Developer 同居）に戻る（ロールバック）。
