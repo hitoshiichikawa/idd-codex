@@ -267,6 +267,6 @@ adapt したものです。
 
 ## 参考資料
 
-- 各サブエージェントの詳細定義: `.codex/agents/*.md`
+- 各サブエージェントの詳細定義: `.codex/agents/*.md`（**Codex CLI には Claude Code の subagent 起動機構が無い**ため、これらは別 context へ spawn されるのではなく、各 stage で **watcher が役割定義として prompt 先頭へ注入**する。prompt 中の「〜サブエージェントを起動」は「あなた自身がそのロールとして振る舞う」と読み替える。`CODEX_INJECT_ROLE_DEFS` で制御 / #74）
 - Triage プロンプト: `~/bin/idd-codex-triage-prompt.tmpl`
 - ワークフロー全体像: `README.md`（または idd-codex テンプレート）

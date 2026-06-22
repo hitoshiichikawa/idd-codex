@@ -449,6 +449,23 @@ Reviewer reject 後または Debugger guidance 後の再実行では、修正し
   明記する（先行 learning の改変はしない）
 - learnings が空（先行 task なし）の場合は本節を skip して通常通り実装する
 
+## 人間判断待ちの宣言（NEEDS_DECISION / per-task ループ）
+
+対象 task が「人間が決めるべき値・方針（既定値・採用する release tag/SHA・運用ポリシー等）」を前提と
+しており、その決定が **未決** で、推測で実装すべきでないと判断した場合は:
+
+- 確認事項を `impl-notes.md` の「確認事項」に列挙したうえで、`impl-notes.md` に **行頭固定で次の 1 行**を
+  出力すること: `NEEDS_DECISION: <必要な人間判断を 1 行で要約>`
+- 対象 task の `- [ ]` → `- [x]` 遷移は **行わない**（実装していないため）
+- watcher は本 marker を検出すると、当該 Issue を `codex-failed` ではなく **`codex-needs-decisions`**
+  （人間判断待ち）へルートする。人間が判断して `codex-needs-decisions` を外すと、次サイクルで当該 task の
+  実装が再開される（#90）
+
+技術的に詰まった場合の `BLOCKED:` 宣言（次節 / 原因究明不能 → Debugger 起動）とは **用途が異なる**。
+`NEEDS_DECISION:` は **製品 / 運用の人間判断**待ち、`BLOCKED:` は **技術ブロッカー**向けで、両者を混同
+しないこと。`NEEDS_DECISION:` marker を出さずに `- [x]` 遷移もしないまま rc=0 で抜けると、watcher は
+進捗ゼロとして `codex-failed` 化するため、人間判断待ちのときは必ず本 marker を出すこと。
+
 # BLOCKED 宣言の規約（DEBUGGER_ENABLED=true 適用時のみ意味を持つ）
 
 実装中に「自身の context では原因究明不可能」と判断した場合、`impl-notes.md` の行頭に
