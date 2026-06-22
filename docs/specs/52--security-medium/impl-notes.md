@@ -29,6 +29,15 @@
 | boundary:Task 1 implementation range | boundary 逸脱 | `AGENTS.md`、`local-watcher/bin/idd-codex-issue-watcher.sh`、`local-watcher/test/per_task_needs_decision_test.sh` の endpoint 差分を task 1 range から除外する | `5ef9183 fix(codex): restore task 1 review boundary` | `bash local-watcher/test/per_task_needs_decision_test.sh`; `git diff --name-status main..HEAD` | pass; endpoint diff は `setup.sh` / docs / task 1 test / impl-notes / marker のみに限定 | 復元対象は task 1 実装ではなく、前回 range 混入の打ち消し。`shellcheck` を復元 test まで広げると main baseline の SC2034 が出るため、機能 regression は bash test で確認した。 |
 | boundary:docs/specs/52--security-medium/tasks.md | boundary 逸脱 | 非 marker commit で混入した task 本文変更を戻し、endpoint 差分を task 1 checkbox のみに限定する | `5ef9183 fix(codex): restore task 1 review boundary` + final `docs(tasks): mark 1 as done` marker | `git diff main -- docs/specs/52--security-medium/tasks.md` | pass; task 1 の `- [ ]` → `- [x]` 以外の endpoint 差分なし | history rewrite は禁止のため corrective commit で本文差分を打ち消し、attempt 末尾に canonical marker を置き直す。 |
 
+### Task 2
+
+- 採用方針: `install.sh --local` のうちユーザー編集対象である watcher 本体と macOS launchd plist だけに `.bak` once-only の safe overwrite helper を適用した。
+- 重要な判断:
+  - `copy_template_file` の既存挙動は repo-template / module / prompt 配布向けに維持し、local runtime 専用 helper を分けて後方互換性の影響範囲を限定した。
+  - 既存 `.bak` がある場合は無断で recovery file を上書きせず、`--force` 時も `.bak` を温存したまま target だけ明示上書きする。
+  - Darwin 依存の launchd plist 経路は fake `uname` を使う shell test で production branch 経由の動作を検証した。
+- 残存課題: なし（task 3 の Guard profile renderer は本 task scope 外）。
+
 ## 確認事項
 
 （task 1 の人間判断は確定済み。残存する確認事項なし）
@@ -42,14 +51,25 @@
 | 1.3 | `setup.sh`: env default expansion and checkout helper | `IDD_CODEX_BRANCH` / `IDD_CODEX_REPO_URL` override flow | `security_medium_bootstrap_docs_test.sh`: override names maintained / mutable branch override checkout | `bash local-watcher/test/security_medium_bootstrap_docs_test.sh` pass | env var 名は変更なし |
 | 1.4 | `README.md`, `QUICK-HOWTO.md` override note | Operator が mutable branch override を選ぶ docs flow | `security_medium_bootstrap_docs_test.sh`: README documents `IDD_CODEX_BRANCH=main` override | `bash local-watcher/test/security_medium_bootstrap_docs_test.sh` pass | mutable branch は明示 override として許容 |
 | 1.5 | `README.md`, `QUICK-HOWTO.md` checksum verification note | Operator が release artifact を手動検証する docs flow | `security_medium_bootstrap_docs_test.sh`: checksum verification path in README / QUICK-HOWTO | `bash local-watcher/test/security_medium_bootstrap_docs_test.sh` pass | checksum artifact 生成は本 task scope 外 |
+| 2.1 | `install.sh`: `copy_local_runtime_file`, `copy_local_watcher_scripts` | `install.sh --local` / `--all` が `$HOME/bin/idd-codex-issue-watcher.sh` を配置する flow | `security_medium_install_test.sh`: changed watcher is backed up before overwrite / target refreshed / existing recovery skip-force cases | `bash local-watcher/test/security_medium_install_test.sh` pass | 差分あり watcher の silent discard を防ぎ、recovery file を残す |
+| 2.2 | `install.sh`: `copy_local_runtime_file` in Darwin launchd branch | macOS の `install.sh --local` / `--all` が LaunchAgents plist を配置する flow | `security_medium_install_test.sh`: fake `uname=Darwin` launchd plist backup / overwrite assertions | `bash local-watcher/test/security_medium_install_test.sh` pass | Linux 上でも Darwin branch を production path として実行 |
+| 2.3 | `install.sh`: `log_action BACKUP`, `.bak` recovery path | Operator が install log を確認して previous contents を復元する flow | `security_medium_install_test.sh`: watcher / plist backup path is operator-visible | `bash local-watcher/test/security_medium_install_test.sh` pass | recovery は `<target>.bak` |
+| 2.4 | `install.sh`: existing `.bak` branch in `copy_local_runtime_file` | Reinstall 時に既存 recovery file がある local runtime overwrite flow | `security_medium_install_test.sh`: existing recovery prevents overwrite without force / force preserves `.bak` | `bash local-watcher/test/security_medium_install_test.sh` pass | `--force` は target overwrite の opt-in。既存 `.bak` は温存 |
+| 2.5 | `install.sh`: dry-run-aware `copy_local_runtime_file` logging | `install.sh --dry-run --local` / `--dry-run --all` の action preview flow | `security_medium_install_test.sh`: dry-run reports BACKUP and OVERWRITE without modifying files | `bash local-watcher/test/security_medium_install_test.sh` pass | `--local` 経路で検証。`--all` でも同じ `INSTALL_LOCAL` branch を通る |
 | NFR 1.1 | `setup.sh`, `README.md` env var table | Existing bootstrap env override flow | `security_medium_bootstrap_docs_test.sh`: env var names maintained | `bash local-watcher/test/security_medium_bootstrap_docs_test.sh` pass | `IDD_CODEX_BRANCH` default 値のみ変更 |
+| NFR 1.3 | `install.sh`: watcher target path and launchd target path unchanged | Existing cron / launchd command path flow | `security_medium_install_test.sh`: watcher installed at `$HOME/bin/idd-codex-issue-watcher.sh`; plist installed at `$HOME/Library/LaunchAgents/com.local.idd-codex-issue-watcher.plist` | `bash local-watcher/test/security_medium_install_test.sh` pass | command path は変更なし |
+| NFR 1.4 | `install.sh`: safe overwrite idempotency branches | Repeated `install.sh --local` / `--all` reinstall flow | `security_medium_install_test.sh`: identical skip, existing recovery skip, force overwrite with recovery preserved; `install_local_namespace_test.sh`: repeated install regression | both tests pass | repo install path は変更なし |
 | NFR 2.1 | `README.md`, `QUICK-HOWTO.md`, `setup.sh` comments | Operator-visible bootstrap docs | `security_medium_bootstrap_docs_test.sh`: pinned URL / override / checksum docs assertions | `bash local-watcher/test/security_medium_bootstrap_docs_test.sh` pass | 変更した operator-visible behavior を docs に記載 |
+| NFR 2.3 | `local-watcher/test/security_medium_install_test.sh` | Task 2 の regression suite | Normal create / unwanted existing recovery / boundary dry-run and Darwin plist assertions | `bash local-watcher/test/security_medium_install_test.sh` pass | 正常系・異常系・境界値を含む |
 
 ## Verification
 
 - `bash local-watcher/test/security_medium_bootstrap_docs_test.sh` — pass
 - `bash local-watcher/test/per_task_needs_decision_test.sh` — pass
+- `bash local-watcher/test/security_medium_install_test.sh` — pass
+- `bash local-watcher/test/install_local_namespace_test.sh` — pass
 - `shellcheck setup.sh local-watcher/test/security_medium_bootstrap_docs_test.sh` — pass
+- `shellcheck install.sh local-watcher/test/security_medium_install_test.sh local-watcher/test/install_local_namespace_test.sh` — pass
 - `git fetch --depth 1 origin 9f8e9cea7df960f5be14849edcbac03dea55162e` against `https://github.com/hitoshiichikawa/idd-codex.git` — pass
 
 STATUS: complete
