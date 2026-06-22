@@ -122,12 +122,19 @@ assert_not_contains() {
 }
 
 # ─── 1. codex_agent_roles_for_stage マッピング ───
+# StageA の PM+Developer 同居注入は STAGE_A_PM_SPLIT_ENABLED=false（#82 ロールバック経路）で検証する。
+# split 既定 on（StageA→developer のみ / PM は StageA-PM 別 exec）は stagea_pm_split_test.sh で検証。
+STAGE_A_PM_SPLIT_ENABLED=false
 MODE="impl"
-assert_eq "roles StageA impl (PM+Dev 同居 exec)" "product-manager developer" "$(codex_agent_roles_for_stage "StageA")"
+assert_eq "roles StageA impl split-off (PM+Dev 同居 exec)" "product-manager developer" "$(codex_agent_roles_for_stage "StageA")"
+STAGE_A_PM_SPLIT_ENABLED=true
+assert_eq "roles StageA impl split-on → developer のみ（PM は別 exec / #82）" "developer" "$(codex_agent_roles_for_stage "StageA")"
 MODE="impl-resume"
 assert_eq "roles StageA impl-resume → developer のみ（設計確定済み）" "developer" "$(codex_agent_roles_for_stage "StageA")"
 unset MODE
-assert_eq "roles StageA MODE 未設定 → PM+Dev（catch-all）" "product-manager developer" "$(codex_agent_roles_for_stage "StageA")"
+STAGE_A_PM_SPLIT_ENABLED=false
+assert_eq "roles StageA MODE 未設定 split-off → PM+Dev（catch-all）" "product-manager developer" "$(codex_agent_roles_for_stage "StageA")"
+unset STAGE_A_PM_SPLIT_ENABLED
 assert_eq "roles StageA-redo → developer"   "developer"   "$(codex_agent_roles_for_stage "StageA-redo")"
 assert_eq "roles StageA-prime-blocked → developer（effort 群と別軸）" "developer" "$(codex_agent_roles_for_stage "StageA-prime-blocked")"
 assert_eq "roles StageA-pp → developer"     "developer"   "$(codex_agent_roles_for_stage "StageA-pp")"
@@ -163,10 +170,12 @@ assert_contains "preamble に developer role 名" "$preamble_dev" "ROLE DEFINITI
 assert_contains "preamble に developer body" "$preamble_dev" "Red→Green→Refactor"
 assert_not_contains "preamble に frontmatter が漏れない" "$preamble_dev" "tools: Read"
 
-# 3b. StageA は PM + Developer 両方を注入
+# 3b. StageA（split-off / #82 ロールバック経路）は PM + Developer 両方を注入
+STAGE_A_PM_SPLIT_ENABLED=false
 preamble_sa="$(codex_build_role_preamble "StageA")"
-assert_contains "StageA preamble に product-manager block" "$preamble_sa" "— product-manager"
-assert_contains "StageA preamble に developer block" "$preamble_sa" "— developer"
+assert_contains "StageA(split-off) preamble に product-manager block" "$preamble_sa" "— product-manager"
+assert_contains "StageA(split-off) preamble に developer block" "$preamble_sa" "— developer"
+unset STAGE_A_PM_SPLIT_ENABLED
 
 # 3c. CODEX_INJECT_ROLE_DEFS=false → 空（後方互換エスケープハッチ）
 CODEX_INJECT_ROLE_DEFS=false

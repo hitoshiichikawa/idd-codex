@@ -430,6 +430,12 @@ PATH_OVERLAP_BUSY_WAIT_THRESHOLD="${PATH_OVERLAP_BUSY_WAIT_THRESHOLD:-5}"
 #                          codex-failed + Issue コメントで通知して停止する。
 PER_TASK_LOOP_ENABLED="${PER_TASK_LOOP_ENABLED:-false}"
 PER_TASK_MAX_TASKS="${PER_TASK_MAX_TASKS:-0}"
+# #82: impl mode の Stage A で PM 要件定義と Developer 実装を **別々の codex exec** に分離する。
+# Codex には Claude の subagent 機構が無く、従来 impl mode は 1 exec で PM→Developer を兼任して
+# いたため、PM の文脈が Developer に bleed し requirements.md が独立 cold input にならなかった。
+# 既定 true（分離）。`=false` で従来の単一 exec（PM+Developer 同居）に戻せる（ロールバック用 escape
+# hatch）。impl-resume / per-task ループには影響しない（既に Developer 単独 / task 単位で分離済み）。
+STAGE_A_PM_SPLIT_ENABLED="${STAGE_A_PM_SPLIT_ENABLED:-true}"
 
 # ─── Per-task Context Map 設定 (#34) ───
 # 新規 opt-in 機能。明示的に `=true` を指定したときだけ、per-task Implementer /
@@ -702,15 +708,21 @@ codex_agent_roles_for_stage() {
     StageC|stageC|PjM*)
       printf '%s\n' "project-manager" ;;
     StageA)
-      # 標準 impl path は 1 回の codex exec で PM→Developer を担うため両ロールを注入する。
-      # ただし impl-resume（設計 PR merge 済み = requirements/design/tasks 確定済み）では PM
-      # 役割は不要（むしろ「requirements を書け」という矛盾ノイズになる）ため Developer のみ。
+      # impl-resume（設計 PR merge 済み = requirements/design/tasks 確定済み）は Developer のみ。
+      # impl path は既定で PM を別 exec（StageA-PM）へ分離する（#82 context 分離）ため、StageA の
+      # 本体 exec は Developer のみになる。STAGE_A_PM_SPLIT_ENABLED=false（ロールバック）時のみ、
+      # 従来どおり 1 exec で PM+Developer を兼任するため両ロールを注入する。
       if [ "${MODE:-}" = "impl-resume" ]; then
+        printf '%s\n' "developer"
+      elif [ "${STAGE_A_PM_SPLIT_ENABLED:-true}" = "true" ]; then
         printf '%s\n' "developer"
       else
         printf '%s\n' "product-manager developer"
       fi
       ;;
+    StageA-PM)
+      # #82: impl mode の PM 分離 exec（要件定義のみ）。
+      printf '%s\n' "product-manager" ;;
     PerTask-Impl-*|StageA-*|AutoRebase-*|PR-iteration-impl-*)
       printf '%s\n' "developer" ;;
     Triage|triage)
@@ -5795,6 +5807,34 @@ Developer 完了後、独立 context の Reviewer サブエージェントが起
 独立レビューします。本ステージのゴールは impl-notes.md の保存までです。後段の Reviewer / PjM 起動・PR 作成は watcher が別ステージで行うため、本ステージでは一切起動・実行しないでください。
 EOF
       ;;
+    impl-pm)
+      # #82: impl mode の PM 分離 exec（要件定義のみ。Developer は後続の独立 stage）。
+      flow_label="PM 要件定義のみ（Developer は後続の独立 stage / #82）"
+      read -r -d '' steps <<EOF || true
+1. product-manager として要件定義を \`${SPEC_DIR_REL}/requirements.md\` に保存する
+   - Issue 本文と既存コメント（\`gh issue view ${NUMBER} --comments\`）を必ず読む
+   - 人間がコメントで回答済みの決定事項は requirements に反映する
+
+**重要**: 本ステージは **要件定義のみ**。実装・テスト・commit は **行わないこと**。
+Developer は後続の独立 context の stage で起動され、本 \`requirements.md\` を cold input として
+読み込みます。本ステージのゴールは \`${SPEC_DIR_REL}/requirements.md\` の保存までです。
+EOF
+      ;;
+    impl-dev)
+      # #82: impl mode の Developer 分離 exec（要件定義は前段 PM stage で確定済み）。
+      flow_label="Developer 実装（要件定義は前段の独立 stage で確定済み / #82）"
+      read -r -d '' steps <<EOF || true
+1. developer として実装＋テスト＋コミットする
+   - 入力: \`${SPEC_DIR_REL}/requirements.md\`（直前の **独立 PM stage** が確定済み。**fresh に読むこと**）
+   - 規約は AGENTS.md に従う
+   - 実装ノートを \`${SPEC_DIR_REL}/impl-notes.md\` に保存
+
+**重要**: 本ステージでは PR 作成（project-manager サブエージェント）を行わないこと。
+Developer 完了後、独立 context の Reviewer サブエージェントが起動して AC / test / boundary を
+独立レビューします。\`requirements.md\` は前段 PM stage の成果物として尊重し、矛盾があれば
+impl-notes.md の「確認事項」に記載するに留めてください（書き換えは Reviewer ゲート前のため避ける）。
+EOF
+      ;;
   esac
 
   # Issue #67: impl-resume + IMPL_RESUME_PRESERVE_COMMITS=true 時のみ追加注入する
@@ -5859,8 +5899,8 @@ EOF
   fi
 
   cat <<EOF
-あなたは Stage A（PM + Developer）担当のサブオーケストレーターです。本ステージの責務は PM 要件定義と Developer 実装・コミットに限定されます。
-以下の Issue を ${flow_label} のフローで進めてください。
+あなたは Stage A（${flow_label}）担当のサブオーケストレーターです。本ステージの責務は下記「進め方」に記載した範囲に限定されます。
+以下の Issue を進めてください。
 
 $(build_issue_context_block true false)
 
@@ -7417,8 +7457,47 @@ run_impl_pipeline() {
           *)  return 1 ;; # 不正 status: mark_issue_failed 実行済
         esac
       else
-        echo "--- Stage A 実行（$MODE / PM + Developer）---" >> "$LOG"
-        prompt_a=$(build_dev_prompt_a "$MODE")
+        echo "--- Stage A 実行（$MODE）---" >> "$LOG"
+        # #82: impl mode は既定で PM 要件定義と Developer 実装を別 codex exec に分離する
+        # （context 分離。PM の文脈が Developer に bleed せず requirements.md が独立 cold input になる）。
+        # STAGE_A_PM_SPLIT_ENABLED=false で従来の単一 exec（PM+Developer 同居）に戻る（ロールバック）。
+        if [ "$MODE" = "impl" ] && [ "$STAGE_A_PM_SPLIT_ENABLED" = "true" ]; then
+          echo "--- Stage A-PM 実行（impl / PM 要件定義のみ）---" >> "$LOG"
+          local _pm_prompt _qa_reset_file_pm _qa_rc_pm=0 _qa_ts_pm
+          _pm_prompt=$(build_dev_prompt_a "impl-pm")
+          _qa_ts_pm=$(date +%Y%m%d-%H%M%S)
+          _qa_reset_file_pm="/tmp/qa-reset-${REPO_SLUG}-${NUMBER}-stageA-pm-${_qa_ts_pm}"
+          qa_run_codex_stage "StageA-PM" "$_qa_reset_file_pm" -- \
+            codex_exec_prompt "StageA-PM" "$DEV_MODEL" "$_pm_prompt" \
+            >> "$LOG" 2>&1 || _qa_rc_pm=$?
+          case "$_qa_rc_pm" in
+            0)
+              rm -f "$_qa_reset_file_pm"
+              if [ ! -f "$REPO_DIR/$SPEC_DIR_REL/requirements.md" ]; then
+                mark_issue_failed "stageA-pm-no-requirements" "Stage A-PM（impl / PM 分離 exec）が \`${SPEC_DIR_REL}/requirements.md\` を生成しませんでした。\`$LOG\` を確認してください。"
+                return 1
+              fi
+              echo "✅ #$NUMBER: Stage A-PM 完了（requirements.md 生成）" >> "$LOG"
+              ;;
+            99)
+              local _qa_epoch_pm
+              _qa_epoch_pm=$(cat "$_qa_reset_file_pm")
+              qa_handle_quota_exceeded "$NUMBER" "StageA-PM" "$_qa_epoch_pm"
+              rm -f "$_qa_reset_file_pm"
+              echo "⏸️ #$NUMBER: Stage A-PM で quota 超過検出 → codex-needs-quota-wait" | tee -a "$LOG"
+              return 0
+              ;;
+            *)
+              rm -f "$_qa_reset_file_pm"
+              mark_issue_failed "stageA-pm" "Stage A-PM（impl / PM 分離 exec）が codex 非 0 exit で失敗しました（rc=${_qa_rc_pm}）。\`$LOG\` を確認してください。"
+              return 1
+              ;;
+          esac
+          # Developer exec は requirements.md を fresh に読む Developer 単独 prompt を使う。
+          prompt_a=$(build_dev_prompt_a "impl-dev")
+        else
+          prompt_a=$(build_dev_prompt_a "$MODE")
+        fi
         # Issue #66: Quota-Aware Watcher 経由で codex を起動（Req 1.1, 1.2, 2.1）
         local _qa_reset_file_a _qa_rc_a=0 _qa_ts_a
         _qa_ts_a=$(date +%Y%m%d-%H%M%S)
