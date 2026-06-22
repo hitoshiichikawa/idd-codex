@@ -493,6 +493,14 @@ CODEX_UNSAFE_BYPASS="${CODEX_UNSAFE_BYPASS:-true}"
 CODEX_EPHEMERAL="${CODEX_EPHEMERAL:-true}"
 CODEX_LAST_MESSAGE_DIR="${CODEX_LAST_MESSAGE_DIR:-$LOG_DIR/codex-last-messages}"
 
+# ─── 暴走ループ / ハング上限 (#16 runaway bound) ───
+# Claude Code 版の `--max-turns` に相当する上限は Codex CLI に無く、移植で全 `*_MAX_TURNS` が
+# 死んでいた（ログ文字列にのみ残存）。turn 上限の代替として、各 codex exec に wall-clock の
+# **既定 timeout** を課す。これが無いと stuck/loop した codex が flock 保持のまま無制限に
+# watcher サイクルを塞ぐ。`CODEX_EXEC_TIMEOUT_SEC`（呼び出し側が明示する per-call 上限、
+# 既存の auto-rebase 用）が優先され、未指定時に本既定が適用される。`0` で無効化（従来挙動）。
+CODEX_DEFAULT_TIMEOUT_SEC="${CODEX_DEFAULT_TIMEOUT_SEC:-1800}"
+
 # ─── 役割定義（.codex/agents/*.md）の prompt 注入 (#15 harness fix) ───
 # Claude Code 版は `.claude/agents/<role>.md` を Task サブエージェントの system prompt として
 # **ネイティブにロード**するが、Codex CLI には subagent 機構が無く `.codex/agents/*.md` を
@@ -746,6 +754,21 @@ EOF
   [ "$emitted" = "1" ] || return 0
 }
 
+# ─── 当該 exec に適用する実効 timeout 秒を stdout に返す（空 = timeout なし）───
+# 優先順位: 呼び出し側が明示した CODEX_EXEC_TIMEOUT_SEC（per-call / auto-rebase 用）→
+# 既定 CODEX_DEFAULT_TIMEOUT_SEC。いずれも `0` / 空なら timeout なし（従来挙動）。
+codex_effective_timeout_sec() {
+  local explicit="${CODEX_EXEC_TIMEOUT_SEC:-}"
+  if [ -n "$explicit" ] && [ "$explicit" != "0" ]; then
+    printf '%s\n' "$explicit"
+    return 0
+  fi
+  local def="${CODEX_DEFAULT_TIMEOUT_SEC:-0}"
+  if [ -n "$def" ] && [ "$def" != "0" ]; then
+    printf '%s\n' "$def"
+  fi
+}
+
 codex_exec_prompt() {
   local stage_label="$1"
   local model="$2"
@@ -788,8 +811,10 @@ ${prompt}"
     cmd=("$CODEX_BIN" "${codex_global_args[@]}" --ask-for-approval "$CODEX_APPROVAL_POLICY" "${args[@]}" "-")
   fi
 
-  if [ -n "${CODEX_EXEC_TIMEOUT_SEC:-}" ] && [ "${CODEX_EXEC_TIMEOUT_SEC:-0}" != "0" ]; then
-    printf '%s' "$prompt" | timeout "$CODEX_EXEC_TIMEOUT_SEC" "${cmd[@]}"
+  local _eff_timeout
+  _eff_timeout="$(codex_effective_timeout_sec)"
+  if [ -n "$_eff_timeout" ]; then
+    printf '%s' "$prompt" | timeout "$_eff_timeout" "${cmd[@]}"
   else
     printf '%s' "$prompt" | "${cmd[@]}"
   fi
