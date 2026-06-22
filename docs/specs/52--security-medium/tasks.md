@@ -24,7 +24,7 @@
   - _Requirements:_ 3.1, 3.2, 3.3, 3.4, NFR 2.2, NFR 2.3
   - _Depends:_ 2
 
-- [ ] 4. secure tempfile helper を `core_utils.sh` に追加し watcher 本体の predictable temp path を置換する (P)
+- [x] 4. secure tempfile helper を `core_utils.sh` に追加し watcher 本体の predictable temp path を置換する (P)
   - `core_utils.sh` に owner-only temp directory と non-predictable file を作る `idd_secure_mktemp` helper を追加する。
   - `idd-codex-issue-watcher.sh` の triage JSON、quota reset handoff、command stderr temp、diagnostic temp の predictable `/tmp` path / fallback を helper に置き換える。
   - helper failure は current operation を fail-visible にし、timestamp / PID / issue number / repo slug だけの fallback を使わない。
