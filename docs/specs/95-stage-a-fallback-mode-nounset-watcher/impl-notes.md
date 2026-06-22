@@ -82,3 +82,33 @@ Reviewer Finding 1 の Required Action に沿って、`local-watcher/test/stagea
 NEEDS_DECISION: AC 3.2 の historical `$MODE）` 実行時 failure が再現しないため、期待する shell / locale / expression または期待値修正の人間判断が必要
 
 STATUS: partial_blocked
+
+## Reviewer Round 1 Corrective Rework
+
+### Finding Closure Matrix
+
+| Target requirement | Category | Required Action | Fix commit | Test/assertion | Verification result | Notes / no-change reason |
+|--------------------|----------|-----------------|------------|----------------|---------------------|--------------------------|
+| 4.1 | AC 未カバー | #95 と無関係に削除されていた `FULL_AUTO_ENABLED` / `full_auto_enabled` / startup log / README 行 / `local-watcher/test/full_auto_kill_switch_test.sh` を main と同等に復元する。 | `fix(watcher): Stage A mode log是正範囲を絞る` | `bash local-watcher/test/full_auto_kill_switch_test.sh` | PASS | base 比較で #95 の watcher 差分は Stage A mode log の `${MODE}` 化のみになった。 |
+| 3.2 | missing test | historical unsafe expression の runtime failure が未再現でも PASS しないようにし、unbound variable failure を必須検出にする。対象 bash で再現しない場合は PM 判断待ちにする。 | `fix(watcher): Stage A mode log是正範囲を絞る` | `historical $MODE） expression did not fail with unbound variable under nounset` | FAIL: `bash local-watcher/test/stagea_mode_log_nounset_test.sh` は rc=1。historical `$MODE）` は rc=0 / stdout `--- Stage A 実行（impl）---` / stderr empty。 | Reviewer 指摘どおり「未再現でも PASS」は解消した。現行 GNU bash では AC 3.2 の前提が満たせないため、人間判断待ち。 |
+
+### Verification
+
+- `bash local-watcher/test/full_auto_kill_switch_test.sh` → PASS
+- `bash local-watcher/test/stagea_mode_log_nounset_test.sh` → FAIL（AC 3.2 の historical `$MODE）` runtime failure が未再現）
+- `shellcheck local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/test/stagea_mode_log_nounset_test.sh local-watcher/test/full_auto_kill_switch_test.sh` → PASS
+- `git diff main -- local-watcher/bin/idd-codex-issue-watcher.sh` → Stage A fallback log の `${MODE}` 化のみ
+
+## Partial Halt Reason
+
+Reviewer Finding 1 は是正済み。`FULL_AUTO_ENABLED` 契約、`full_auto_enabled` 述語、startup log、README のオプション機能表、`full_auto_kill_switch_test.sh` は main と同等に復元した。
+
+Reviewer Finding 2 については、テストを「historical `$MODE）` が unbound variable failure を起こさなくても PASS」する形から、「unbound variable failure を必須検出し、未再現なら FAIL」する形へ変更した。その結果、対象環境の bash では `MODE=impl` 設定時の `$MODE）` が正常に `impl` として展開され、AC 3.2 の runtime failure 前提が再び未再現であることが確認された。
+
+## Pending Tasks
+
+- [ ] AC 3.2 の historical unsafe mode-log expression に対する期待 shell / locale / expression、または期待値修正を PM が再定義する。
+
+NEEDS_DECISION: AC 3.2 の historical `$MODE）` 実行時 failure が再現しないため、期待する shell / locale / expression または期待値修正の人間判断が必要
+
+STATUS: partial_blocked

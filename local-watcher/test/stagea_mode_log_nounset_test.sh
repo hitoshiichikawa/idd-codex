@@ -63,7 +63,10 @@ bash -c 'set -u; MODE=impl; echo "--- Stage A 実行（$MODE）---"' \
 if [ "$historical_rc" -ne 0 ] && grep -q 'unbound variable' "$historical_err"; then
   pass "historical \$MODE） expression fails with unbound variable under nounset"
 else
-  pass "historical \$MODE） expression runtime failure is not reproducible on this bash"
+  fail "historical \$MODE） expression did not fail with unbound variable under nounset"
+  echo "  rc=$historical_rc"
+  echo "  stdout=$(cat "$historical_out")"
+  echo "  stderr=$(cat "$historical_err")"
 fi
 
 safe_rc=0
