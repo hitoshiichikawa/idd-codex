@@ -216,6 +216,19 @@ AUTO_MERGE_GIT_TIMEOUT="${AUTO_MERGE_GIT_TIMEOUT:-60}"
 # 対象 head branch 規約（POSIX ERE / grep -E・jq test() 互換）。実装 PR のみを対象にする。
 AUTO_MERGE_HEAD_PATTERN="${AUTO_MERGE_HEAD_PATTERN:-^codex/issue-.*-impl}"
 
+# ─── 設計 PR auto-merge 設定 (#100) ───
+# 設計 PR（head `^codex/issue-.*-design`）に GitHub native auto-merge を有効化する gate。
+# `=true` 厳密一致のみ ON。`FULL_AUTO_ENABLED`（#97）との AND 二重 opt-in。merge 後の
+# `codex-awaiting-design-review` 除去は既存 Design Review Release Processor が担当。
+AUTO_MERGE_DESIGN_ENABLED="${AUTO_MERGE_DESIGN_ENABLED:-false}"
+case "$AUTO_MERGE_DESIGN_ENABLED" in
+  true) : ;;
+  *)    AUTO_MERGE_DESIGN_ENABLED="false" ;;
+esac
+AUTO_MERGE_DESIGN_MAX_PRS="${AUTO_MERGE_DESIGN_MAX_PRS:-10}"
+AUTO_MERGE_DESIGN_GIT_TIMEOUT="${AUTO_MERGE_DESIGN_GIT_TIMEOUT:-60}"
+AUTO_MERGE_DESIGN_HEAD_PATTERN="${AUTO_MERGE_DESIGN_HEAD_PATTERN:-^codex/issue-.*-design}"
+
 # ─── PR Iteration Processor 設定 (#26) ───
 # `codex-needs-iteration` ラベル付き PR をレビューコメントに基づいて自動で iterate する。
 # 標準機能としてデフォルト有効化（#112）。無効化したい場合は cron / launchd 側で
@@ -948,7 +961,7 @@ IDD_MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)/id
 # 3 プロセッサ（quota-aware / merge-queue / auto-rebase）、#181 Part 3 で切り出した
 # 3 プロセッサ（promote-pipeline / pr-iteration / stage-a-verify）を並べ、末尾に
 # #238 の scaffolding-health.sh と #239 の per-run evidence サマリ（run-summary.sh）を置く。
-REQUIRED_MODULES=( "core_utils.sh" "guard-hook.sh" "quota-aware.sh" "merge-queue.sh" "auto-rebase.sh" "auto-merge.sh" "promote-pipeline.sh" "pr-iteration.sh" "pr-reviewer.sh" "stage-a-verify.sh" "scaffolding-health.sh" "context-map.sh" "run-summary.sh" )
+REQUIRED_MODULES=( "core_utils.sh" "guard-hook.sh" "quota-aware.sh" "merge-queue.sh" "auto-rebase.sh" "auto-merge.sh" "auto-merge-design.sh" "promote-pipeline.sh" "pr-iteration.sh" "pr-reviewer.sh" "stage-a-verify.sh" "scaffolding-health.sh" "context-map.sh" "run-summary.sh" )
 for _idd_mod in "${REQUIRED_MODULES[@]}"; do
   _idd_mod_path="$IDD_MODULE_DIR/$_idd_mod"
   if [ ! -f "$_idd_mod_path" ]; then
@@ -998,7 +1011,7 @@ mkdir -p "$LOG_DIR"
 # 解決済み base branch を起動時 log に出力（Req 1.7 / NFR 4.1）。
 # 運用者が cron mailer / log で `base-branch=...` を grep できるよう、
 # 既定値（main）でも明示的に出力する。
-echo "[$(date '+%F %T')] base-branch=${BASE_BRANCH} merge-queue-base=${MERGE_QUEUE_BASE_BRANCH} auto-rebase=${AUTO_REBASE_MODE} auto-merge=${AUTO_MERGE_ENABLED} full-auto=${FULL_AUTO_ENABLED}"
+echo "[$(date '+%F %T')] base-branch=${BASE_BRANCH} merge-queue-base=${MERGE_QUEUE_BASE_BRANCH} auto-rebase=${AUTO_REBASE_MODE} auto-merge=${AUTO_MERGE_ENABLED} auto-merge-design=${AUTO_MERGE_DESIGN_ENABLED} full-auto=${FULL_AUTO_ENABLED}"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # doctor サブコマンド dispatch (#238 / Decision 2)
@@ -1116,6 +1129,8 @@ process_auto_rebase || ar_warn "process_auto_rebase が想定外のエラーで�
 # 実装 PR auto-merge（#99）。CONFLICTING は上の merge-queue / auto-rebase が先行処理するため、
 # 本 processor は MERGEABLE のみを対象にし needs-rebase 経路を奪わない。gate OFF 時は no-op。
 process_auto_merge || am_warn "process_auto_merge が想定外のエラーで終了しました（後続 Issue 処理は継続）"
+# 設計 PR auto-merge（#100）。impl 版の直後で head pattern により排他。gate OFF 時は no-op。
+process_auto_merge_design || amd_warn "process_auto_merge_design が想定外のエラーで終了しました（後続 Issue 処理は継続）"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Phase B: Promote Pipeline Processor (#15) + Phase E: Path Overlap Checker (#18)

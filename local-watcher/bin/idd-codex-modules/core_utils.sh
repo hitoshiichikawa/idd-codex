@@ -96,6 +96,17 @@ am_error() {
   echo "[$(date '+%F %T')] [$REPO] auto-merge: ERROR: $*" >&2
 }
 
+# design auto-merge 専用ロガー（#100 / `am_log` と同一書式）。
+amd_log() {
+  echo "[$(date '+%F %T')] [$REPO] auto-merge-design: $*"
+}
+amd_warn() {
+  echo "[$(date '+%F %T')] [$REPO] auto-merge-design: WARN: $*" >&2
+}
+amd_error() {
+  echo "[$(date '+%F %T')] [$REPO] auto-merge-design: ERROR: $*" >&2
+}
+
 # promote-pipeline 専用ロガー（Phase A `mq_log` と同一の書式：
 # `[YYYY-MM-DD HH:MM:SS] [$REPO] promote-pipeline:` prefix。Req 5.1.1, 5.1.5）。
 pp_log() {
