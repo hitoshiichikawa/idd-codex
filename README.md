@@ -140,7 +140,7 @@ Codex 版では GitHub Actions workflow を配布していません。公式・�
 **対話モード**（推奨、ターミナル直実行）:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/9f8e9cea7df960f5be14849edcbac03dea55162e/setup.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/1d10df99da68712dbe2e26e124f15f8e726db072/setup.sh)
 ```
 
 **非対話モード**（引数で一気に配置）:
@@ -148,19 +148,19 @@ bash <(curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/9f
 ```bash
 # 対象ディレクトリに cd してからワンライナー実行（--repo 省略時はカレント = ./）
 cd /path/to/your-project
-curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/9f8e9cea7df960f5be14849edcbac03dea55162e/setup.sh \
+curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/1d10df99da68712dbe2e26e124f15f8e726db072/setup.sh \
   | bash -s -- --all
 
 # あるいはパス明示
-curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/9f8e9cea7df960f5be14849edcbac03dea55162e/setup.sh \
+curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/1d10df99da68712dbe2e26e124f15f8e726db072/setup.sh \
   | bash -s -- --all --repo /path/to/your-project
 
 # 対象リポジトリへの配置のみ（カレントディレクトリ）
-curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/9f8e9cea7df960f5be14849edcbac03dea55162e/setup.sh \
+curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/1d10df99da68712dbe2e26e124f15f8e726db072/setup.sh \
   | bash -s -- --repo
 
 # ローカル watcher のみ
-curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/9f8e9cea7df960f5be14849edcbac03dea55162e/setup.sh \
+curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/1d10df99da68712dbe2e26e124f15f8e726db072/setup.sh \
   | bash -s -- --local
 ```
 
@@ -262,7 +262,7 @@ fork から始める場合は本機能の警告を確認してからクリーン
 | 変数 | デフォルト | 用途 |
 |---|---|---|
 | `IDD_CODEX_REPO_URL` | `https://github.com/hitoshiichikawa/idd-codex.git` | クローン元。fork を使う場合に上書き |
-| `IDD_CODEX_BRANCH` | `9f8e9cea7df960f5be14849edcbac03dea55162e` | チェックアウトするブランチ／タグ／commit SHA。既定は監査可能な pinned commit |
+| `IDD_CODEX_BRANCH` | `1d10df99da68712dbe2e26e124f15f8e726db072` | チェックアウトするブランチ／タグ／commit SHA。既定は監査可能な pinned commit |
 | `IDD_CODEX_DIR` | `$HOME/.idd-codex` | クローン先 |
 
 > **セキュリティ**: `curl \| bash` は実行前の監査が難しいため、信頼できる接続先でのみ利用してください。
@@ -442,7 +442,7 @@ $ ./install.sh --repo /path/to/your-project --dry-run --force-codex-md
 `--dry-run` は `setup.sh` 経由（`curl | bash`）でも透過されます:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/9f8e9cea7df960f5be14849edcbac03dea55162e/setup.sh \
+curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/1d10df99da68712dbe2e26e124f15f8e726db072/setup.sh \
   | bash -s -- --all --dry-run
 ```
 

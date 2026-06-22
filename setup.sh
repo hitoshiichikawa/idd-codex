@@ -8,14 +8,14 @@
 # 使い方（すべて推奨順）:
 #
 # 1) 対話モード（ターミナル直実行）:
-#      bash <(curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/9f8e9cea7df960f5be14849edcbac03dea55162e/setup.sh)
+#      bash <(curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/1d10df99da68712dbe2e26e124f15f8e726db072/setup.sh)
 #
 # 2) curl パイプ + 引数指定（非対話）:
-#      curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/9f8e9cea7df960f5be14849edcbac03dea55162e/setup.sh \
+#      curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/1d10df99da68712dbe2e26e124f15f8e726db072/setup.sh \
 #        | bash -s -- --repo /path/to/your-project --local
 #
 # 3) curl パイプ（対話、対応可能なシェル限定）:
-#      curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/9f8e9cea7df960f5be14849edcbac03dea55162e/setup.sh | bash
+#      curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/1d10df99da68712dbe2e26e124f15f8e726db072/setup.sh | bash
 #      → stdin を /dev/tty に再接続して install.sh の対話プロンプトに入る
 #
 # オプション（install.sh に転送される）:
@@ -40,7 +40,7 @@ set -euo pipefail
 
 IDD_CODEX_REPO_URL="${IDD_CODEX_REPO_URL:-https://github.com/hitoshiichikawa/idd-codex.git}"
 # Maintainer note: release ごとに README / QUICK-HOWTO の raw URL と同時に bump する。
-IDD_CODEX_PINNED_REF="9f8e9cea7df960f5be14849edcbac03dea55162e"
+IDD_CODEX_PINNED_REF="1d10df99da68712dbe2e26e124f15f8e726db072"
 IDD_CODEX_BRANCH="${IDD_CODEX_BRANCH:-$IDD_CODEX_PINNED_REF}"
 IDD_CODEX_DIR="${IDD_CODEX_DIR:-$HOME/.idd-codex}"
 
@@ -83,11 +83,11 @@ Error: curl | bash で引数なし実行されました。install.sh が対話�
 次のいずれかで再実行してください:
 
   # 1) 引数を付けて非対話実行（カレントディレクトリに配置 + watcher）
-  curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/9f8e9cea7df960f5be14849edcbac03dea55162e/setup.sh \
+  curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/1d10df99da68712dbe2e26e124f15f8e726db072/setup.sh \
     | bash -s -- --all
 
   # 2) プロセス置換でターミナル stdin を保持したまま対話実行
-  bash <(curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/9f8e9cea7df960f5be14849edcbac03dea55162e/setup.sh)
+  bash <(curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/1d10df99da68712dbe2e26e124f15f8e726db072/setup.sh)
 
   # 3) 手動インストール（最も確実）
   git clone --depth 1 https://github.com/hitoshiichikawa/idd-codex.git ~/.idd-codex
