@@ -9,6 +9,7 @@ Stage A fallback の mode ログ出力で、全角閉じ括弧の直前にある
 
 - `local-watcher/test/stagea_mode_log_nounset_test.sh`
   - 過去の `$MODE）` 表現を unsafe として検出する。
+  - 過去の `$MODE）` 表現を `set -u` / `MODE=impl` で実評価し、対象 bash で runtime failure が再現するかを確認する。
   - `set -u` 下で `${MODE}）` が `impl` / `impl-resume` を保持して成功する。
   - watcher source に Stage A fallback の unsafe `$VAR）` が残っていないことを確認する。
   - Stage A-PM requirements-definition path がログ修正後も到達可能なまま残っていることを確認する。
@@ -28,7 +29,7 @@ Stage A fallback の mode ログ出力で、全角閉じ括弧の直前にある
 | 2.3 | 同上 | Stage A fallback log 後の既存 failure handling | `Stage A-PM requirements-definition path remains reachable after mode log` | `bash local-watcher/test/stagea_mode_log_nounset_test.sh` PASS | failure handling 本体は未変更。 |
 | 2.4 | 同上 | watcher Stage A fallback | `watcher source braces Stage A mode expansion before multibyte delimiter` | `bash local-watcher/test/stagea_mode_log_nounset_test.sh` PASS | stale 原因だった mode log 境界のみ修正。 |
 | 3.1 | `local-watcher/test/stagea_mode_log_nounset_test.sh` | shell-level regression test | `braced ${MODE}） expression succeeds under nounset` | `bash local-watcher/test/stagea_mode_log_nounset_test.sh` PASS | `set -u` shell で検証。 |
-| 3.2 | 同上 | shell-level regression test | `historical $MODE） expression is detected as unsafe` | `bash local-watcher/test/stagea_mode_log_nounset_test.sh` PASS | Linux bash では実行時再現に差があるため、過去表現の静的検出で regression を固定。 |
+| 3.2 | 同上 | shell-level regression test | `historical $MODE） expression is detected as unsafe`; `historical $MODE） expression runtime failure is not reproducible on this bash` | `bash local-watcher/test/stagea_mode_log_nounset_test.sh` PASS | GNU bash 5.2.21 では `MODE=impl` 設定時の historical `$MODE）` は rc=0 で `unbound variable` failure が再現しない。AC 3.2 の実行時 failure 検出は PM 判断待ち。 |
 | 3.3 | 同上 | shell-level regression test | `braced expression preserves impl mode`; `braced expression preserves impl-resume mode` | `bash local-watcher/test/stagea_mode_log_nounset_test.sh` PASS | corrected behavior の出力値を確認。 |
 | 3.4 | 同上 | Stage A PM split / fallback logging regression | `Stage A-PM requirements-definition path remains reachable after mode log` | `bash local-watcher/test/stagea_mode_log_nounset_test.sh` PASS | PM requirements-definition path の存在を確認。 |
 | 3.5 | 同上 | watcher source scan | `watcher source braces Stage A mode expansion before multibyte delimiter` | `bash local-watcher/test/stagea_mode_log_nounset_test.sh` PASS | Stage A logging-adjacent の `$VAR）` を検出対象化。 |
@@ -71,5 +72,13 @@ Reviewer Finding 1 の Required Action は、AC 3.2 が要求する「historical
 ## 確認事項
 
 - AC 3.2 の「historical `$MODE）` expression が nounset で unbound variable failure になる」という前提は、GNU bash 5.2.21 では再現しない。要件側で期待する shell / locale / expression の具体化が必要。
+
+## Reviewer Round 1 Re-implementation
+
+Reviewer Finding 1 の Required Action に沿って、`local-watcher/test/stagea_mode_log_nounset_test.sh` に historical `$MODE）` expression を `set -u` かつ `MODE=impl` で実評価する probe を追加した。対象環境では rc=0 / stdout `--- Stage A 実行（impl）---` / stderr empty となり、`unbound variable` failure は再現しない。
+
+このため AC 3.2 の「historical unsafe mode-log expression を評価したときに unbound variable failure を検出する」期待値は、現行 GNU bash 5.2.21 の実挙動と矛盾する。実装側で failure を捏造するテストは追加せず、PM に failure が発生した shell / locale / 実際の expression の具体化、または AC 3.2 の期待値修正を差し戻す。
+
+NEEDS_DECISION: AC 3.2 の historical `$MODE）` 実行時 failure が再現しないため、期待する shell / locale / expression または期待値修正の人間判断が必要
 
 STATUS: partial_blocked

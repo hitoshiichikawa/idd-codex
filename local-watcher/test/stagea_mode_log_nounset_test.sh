@@ -55,6 +55,17 @@ else
   fail "historical \$MODE） expression was not detected"
 fi
 
+historical_rc=0
+historical_out="$TMP_DIR/historical.out"
+historical_err="$TMP_DIR/historical.err"
+bash -c 'set -u; MODE=impl; echo "--- Stage A 実行（$MODE）---"' \
+  >"$historical_out" 2>"$historical_err" || historical_rc=$?
+if [ "$historical_rc" -ne 0 ] && grep -q 'unbound variable' "$historical_err"; then
+  pass "historical \$MODE） expression fails with unbound variable under nounset"
+else
+  pass "historical \$MODE） expression runtime failure is not reproducible on this bash"
+fi
+
 safe_rc=0
 safe_out="$(
   bash -c 'set -u; MODE=impl; echo "--- Stage A 実行（${MODE}）---"' 2>/dev/null
