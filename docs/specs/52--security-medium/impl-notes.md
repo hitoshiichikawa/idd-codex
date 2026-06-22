@@ -61,6 +61,15 @@
 |--------------------|----------|-----------------|------------|----------------|---------------------|--------------------------|
 | 3.2, 3.3 | AC 未カバー | hook path を `awk -v replacement=...` で渡さず、literal backslash sequence の exact preservation と real newline の fail-closed regression を追加する | `18d2f24 fix(install): preserve guard path backslashes literally` | `security_medium_install_test.sh`: guard profile keeps literal backslash n/t sequences in hook path; guard renderer fails closed before writing real newline paths | `bash local-watcher/test/security_medium_install_test.sh` pass; `shellcheck install.sh local-watcher/test/security_medium_install_test.sh` pass | Reviewer 指摘どおり hook path は `ENVIRON` 経由で読み、`awk -v` の escape 解釈対象から外した。 |
 
+### Task 4
+
+- 採用方針: `core_utils.sh` に `idd_secure_mktemp` を追加し、watcher 本体と core utility の prompt / JSON / stderr / quota reset handoff 用一時ファイルを `LOG_DIR/tmp` 配下の owner-only private root へ集約した。
+- 重要な判断:
+  - `mktemp` が失敗した場合は `/tmp/...-$$` や timestamp 由来 path に fallback せず、operator-visible error を出して current operation を fail closed する。
+  - `LOCK_FILE` の既定 `/tmp` は design の Non-Goals どおり機密 payload ではないため変更せず、task 4 の対象を triage JSON、quota reset handoff、stderr / diagnostic temp に限定した。
+  - `IDD_CODEX_TMP_DIR` は既存 env var を壊さない追加 override として扱い、指定先も 0700 にできない場合は使用しない。
+- 残存課題: processor modules 側の temp file 統一は task 5 scope。
+
 ## 確認事項
 
 （task 1 の人間判断は確定済み。残存する確認事項なし）
@@ -89,6 +98,13 @@
 | NFR 2.1 | `README.md`, `QUICK-HOWTO.md`, `setup.sh` comments | Operator-visible bootstrap docs | `security_medium_bootstrap_docs_test.sh`: pinned URL / override / checksum docs assertions | `bash local-watcher/test/security_medium_bootstrap_docs_test.sh` pass | 変更した operator-visible behavior を docs に記載 |
 | NFR 2.2 | `install.sh`: Guard renderer failure messages | Guard profile hardening check が input / template を reject する flow | `security_medium_install_test.sh`: guard renderer failure is operator-visible | `bash local-watcher/test/security_medium_install_test.sh` pass | affected feature と reason category を stderr に出す |
 | NFR 2.3 | `local-watcher/test/security_medium_install_test.sh` | install hardening regression suite | Normal create / unwanted existing recovery / Guard malformed template / boundary dry-run and Darwin plist assertions | `bash local-watcher/test/security_medium_install_test.sh` pass | task 2 / task 3 とも正常系・異常系・境界値を含む |
+| 5.1 | `core_utils.sh`: `idd_secure_mktemp`; `idd-codex-issue-watcher.sh` secure temp call-sites | Triage / Stage A / Reviewer / Debugger / Stage C / resume push / failed recovery / worktree reset / slot hook stderr flows | `security_medium_tempfiles_test.sh`: helper creates distinct mktemp paths; watcher regression rejects `/tmp/triage-`, `/tmp/qa-reset-`, and old `mktemp ... || echo ""` fallbacks | `bash local-watcher/test/security_medium_tempfiles_test.sh` pass | processor modules beyond core utility remain task 5 scope |
+| 5.2 | `core_utils.sh`: `idd_secure_mktemp` private root creation and `umask 077` file creation | Any watcher flow requesting prompt / JSON / stderr / reset-state tempfile | `security_medium_tempfiles_test.sh`: private tmp directory is `700`; temporary file mode is owner-only | `bash local-watcher/test/security_medium_tempfiles_test.sh` pass | default root is `$LOG_DIR/tmp`; `IDD_CODEX_TMP_DIR` override must also be owner-only |
+| 5.3 | `core_utils.sh`: fail-closed branches in `idd_secure_mktemp`; watcher call-sites using `|| return` or explicit mark-failed path | Secure tempfile creation failure in current watcher operation | `security_medium_tempfiles_test.sh`: uncreatable tmp root returns non-zero and emits `secure-tempfile: ERROR:`; no predictable fallback path is created | `bash local-watcher/test/security_medium_tempfiles_test.sh` pass | push verify / resume push call-sites additionally route through existing failure paths |
+| 5.4 | `core_utils.sh`: symlink / mode validation for temp root | Tempfile root setup before writing operational diagnostics | `security_medium_tempfiles_test.sh`: helper uses private `$LOG_DIR/tmp` root and rejects uncreatable override | `bash local-watcher/test/security_medium_tempfiles_test.sh` pass | `$TMPDIR` is only used as parent when `LOG_DIR` is unavailable; file creation itself is through private root + `mktemp` |
+| 5.5 | `idd-codex-issue-watcher.sh`, `core_utils.sh`: existing `rm -f` cleanup retained after secure path creation | Completion / failure cleanup for triage reset file, stage reset file, stderr temp, worktree reset, slot hook | `security_medium_tempfiles_test.sh`: call-site regression verifies old predictable paths removed while existing cleanup branches remain in production code | `bash local-watcher/test/security_medium_tempfiles_test.sh` pass | diagnostic artifacts intentionally retained by later PR Reviewer task are task 6 scope |
+| NFR 2.2 | `core_utils.sh`: `secure-tempfile: ERROR:` messages; watcher explicit failure paths | Tempfile hardening check rejects unsafe / unavailable temp root | `security_medium_tempfiles_test.sh`: failure is operator-visible | `bash local-watcher/test/security_medium_tempfiles_test.sh` pass | reason category is emitted locally; public PR comment behavior is task 6 scope |
+| NFR 2.3 | `local-watcher/test/security_medium_tempfiles_test.sh` | secure tempfile regression suite | helper normal / unwanted failure / boundary label and watcher call-site string regression | `bash local-watcher/test/security_medium_tempfiles_test.sh` pass; `shellcheck local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/bin/idd-codex-modules/core_utils.sh local-watcher/test/security_medium_tempfiles_test.sh` pass | task 4 の正常系・異常系・境界値を含む |
 
 ## Verification
 
@@ -102,5 +118,8 @@
 - `bash local-watcher/test/security_medium_install_test.sh` — pass (Reviewer Round 1 closure: literal `\n` / `\t` path preservation and real newline fail-closed regression)
 - `shellcheck install.sh local-watcher/test/security_medium_install_test.sh` — pass (Reviewer Round 1 closure)
 - `git fetch --depth 1 origin 9f8e9cea7df960f5be14849edcbac03dea55162e` against `https://github.com/hitoshiichikawa/idd-codex.git` — pass
+- `bash local-watcher/test/security_medium_tempfiles_test.sh` — pass
+- `shellcheck local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/bin/idd-codex-modules/core_utils.sh local-watcher/test/security_medium_tempfiles_test.sh` — pass
+- `git diff --check` — pass
 
 STATUS: complete
