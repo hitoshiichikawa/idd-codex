@@ -49,8 +49,27 @@ Stage A fallback の mode ログ出力で、全角閉じ括弧の直前にある
 - `shellcheck local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/test/stagea_mode_log_nounset_test.sh` → PASS
 - `git diff --check` → PASS
 
+## Reviewer Round 1 Corrective Analysis
+
+### Finding Closure Matrix
+
+| Target requirement | Category | Required Action | Fix commit | Test/assertion | Verification result | Notes / no-change reason |
+|--------------------|----------|-----------------|------------|----------------|---------------------|--------------------------|
+| 3.2 | missing test / requirements contradiction | historical unsafe expression を nounset shell で実行し、unbound variable failure を非 0 exit / stderr で assert する。対象 bash で `$MODE）` が実際には failure にならない場合は AC 3.2 の前提を PM に差し戻す。 | N/A | N/A | `bash -c 'set -u; MODE=impl; echo "--- Stage A 実行（$MODE）---"'` は rc=0 / stdout `--- Stage A 実行（impl）---` / stderr empty。`LC_ALL=C` でも rc=0。比較として `$MODE_suffix` は rc=127 / `MODE_suffix: unbound variable`。 | GNU bash 5.2.21 では全角閉じ括弧 `）` は shell 変数名の一部として扱われず、`$MODE）` は `MODE` の正常展開になる。Reviewer Required Action の前提が実行環境と矛盾するため、失敗を assert する回帰テストを追加すると虚偽のテストになる。 |
+
+## Partial Halt Reason
+
+Reviewer Finding 1 の Required Action は、AC 3.2 が要求する「historical `$MODE）` expression が nounset で unbound variable failure になる」ことを実行時テストで立証する内容だが、対象環境の GNU bash 5.2.21 では `MODE=impl` 設定時の `$MODE）` は rc=0 で正常に `impl` を出力する。`LC_ALL=C` にしても同じ結果であり、全角閉じ括弧は変数名に含まれない。
+
+一方、`$MODE_suffix` のように ASCII の変数名継続文字が隣接する場合は rc=127 で `MODE_suffix: unbound variable` が発生するため、nounset の境界問題そのものは確認できる。今回の AC 3.2 は「全角区切りの historical expression が unbound variable failure を起こす」という前提が bash の実挙動と矛盾しており、Developer が要件を変更せずに満たせない。PM に AC 3.2 の期待値を「静的検出」または「ASCII 隣接での nounset failure 検出」へ修正するか、実際に failure した shell / locale / expression を特定してもらう必要がある。
+
+## Pending Tasks
+
+- [ ] AC 3.2 の historical unsafe mode-log expression に対する期待結果を PM が再定義する。
+- [ ] 再定義された AC 3.2 に対応する shell-level regression test を追加または更新する。
+
 ## 確認事項
 
-- なし。
+- AC 3.2 の「historical `$MODE）` expression が nounset で unbound variable failure になる」という前提は、GNU bash 5.2.21 では再現しない。要件側で期待する shell / locale / expression の具体化が必要。
 
-STATUS: complete
+STATUS: partial_blocked
