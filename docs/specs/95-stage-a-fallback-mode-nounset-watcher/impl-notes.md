@@ -72,4 +72,20 @@ Issue 本文の AC は、人間判断により「historical `$MODE）` が全 ba
 macOS `/bin/bash` 3.2.57 + `LC_ALL=C.UTF-8` では runtime failure が再現するが、GNU bash 5.2 系では `$MODE）` が正常展開される環境差がある。
 このため本 branch では `$MODE）` の静的 unsafe 検出と watcher source の `${MODE}）` 化を portable な完了条件とした。
 
+## Reviewer Round 2 Corrective Rework
+
+### Finding Closure Matrix
+
+| Target requirement | Category | Required Action | Fix commit | Test/assertion | Verification result | Notes / no-change reason |
+|--------------------|----------|-----------------|------------|----------------|---------------------|--------------------------|
+| 4.1 | AC 未カバー | #95 と無関係に削除されていた `PR_REVIEWER_STATUS_CHECK_ENABLED` config、`pr_status_check_enabled` / `pr_publish_commit_status` / `pr_publish_codex_status`、`pr_run_review_for_pr` からの publish 呼び出し、`local-watcher/test/pr_publish_commit_status_test.sh`、README のオプション機能一覧行を復元する。 | `fix(watcher): PR reviewer status publish契約を復元` | `bash local-watcher/test/pr_publish_commit_status_test.sh`; `bash local-watcher/test/stagea_mode_log_nounset_test.sh`; `bash local-watcher/test/stagea_pm_split_test.sh` | PASS | status publish 復元後、`git diff main -- local-watcher/bin/idd-codex-issue-watcher.sh` は Stage A fallback log の `${MODE}` 化のみ。復元テストは eval 抽出関数が参照する stub 変数の SC2034 false-positive だけを抑止し、挙動は main 相当を維持。 |
+
+### Verification
+
+- `bash local-watcher/test/stagea_mode_log_nounset_test.sh` → PASS
+- `bash local-watcher/test/stagea_pm_split_test.sh` → PASS
+- `bash local-watcher/test/pr_publish_commit_status_test.sh` → PASS
+- `shellcheck local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/bin/idd-codex-modules/pr-reviewer.sh local-watcher/test/stagea_mode_log_nounset_test.sh local-watcher/test/pr_publish_commit_status_test.sh` → PASS
+- `git diff --check` → PASS
+
 STATUS: complete

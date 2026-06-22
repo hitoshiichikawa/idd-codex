@@ -306,6 +306,15 @@ PR_REVIEWER_MAX_PRS="${PR_REVIEWER_MAX_PRS:-5}"
 PR_REVIEWER_GIT_TIMEOUT="${PR_REVIEWER_GIT_TIMEOUT:-120}"
 # レビュー実行コマンドの最大経過秒数。
 PR_REVIEWER_EXEC_TIMEOUT="${PR_REVIEWER_EXEC_TIMEOUT:-600}"
+# Issue #98: codex Reviewer の verdict を commit status `codex-review` として publish する gate。
+# `=true` 厳密一致のみ ON。`FULL_AUTO_ENABLED`（#97 kill switch）との AND 二重 opt-in で動き、
+# OFF（既定）では従来どおりコメントのみ（status publish せず）。auto-merge(#99) の required
+# status check の source になる。それ以外（未設定 / 空 / `True` / `1` / typo）は安全側 OFF。
+PR_REVIEWER_STATUS_CHECK_ENABLED="${PR_REVIEWER_STATUS_CHECK_ENABLED:-false}"
+case "$PR_REVIEWER_STATUS_CHECK_ENABLED" in
+  true) : ;;
+  *)    PR_REVIEWER_STATUS_CHECK_ENABLED="false" ;;
+esac
 
 # ─── Design Review Release Processor 設定 (#40) ───
 # 設計 PR が merge された Issue から `codex-awaiting-design-review` ラベルを自動除去し、
