@@ -9,6 +9,7 @@
 #   以降の Quota Resume Processor が reset+grace 経過した Issue からラベルを除去して
 #   通常 pickup ループに戻す。
 #   - qa_detect_rate_limit  : stream-json を fold して quota 枯渇イベントを検出
+#   - qa_detect_rate_limit_rollout : session rollout の rate_limits から quota reached を検出（#79 / codex 本筋）
 #   - qa_detect_collab_spawn_failures : collab subagent spawn failure を検出
 #   - qa_run_codex_stage   : Stage 実行 wrapper（tee + 検出 + exit 99 sentinel）
 #   - qa_persist_reset_time : reset 時刻の永続化（Issue 番号 keyed JSON）
@@ -394,6 +395,64 @@ qa_detect_collab_spawn_failures() {
   return 0
 }
 
+# session rollout (rollout-*.jsonl) の `token_count.rate_limits` を解析し、quota reached の
+# ときだけ binding window の reset epoch を stdout に返す（reached でなければ空 / #79）。
+#
+# 背景: `codex exec --json` の stdout には rate_limit 情報が一切出ない（thread.started /
+# turn.started / item.completed / turn.completed のみ。turn.completed は usage token のみ）。
+# rate_limits snapshot は CODEX_HOME/sessions 配下の session rollout に
+# `{"type":"event_msg","payload":{"type":"token_count","rate_limits":{...}}}` として出る。
+# そのため stdout 解析（qa_detect_rate_limit の rate_limit_event 経路）は実 codex では発火せず、
+# rollout 解析が codex における構造化検出の本筋となる（usage_limit_fatal のテキスト検出は別経路で併存）。
+#
+# rate_limits の実スキーマ（codex-cli 0.139.0 実機）:
+#   {"primary":{"used_percent":N,"window_minutes":300,"resets_at":<epoch>},
+#    "secondary":{"used_percent":N,"window_minutes":10080,"resets_at":<epoch>},
+#    "rate_limit_reached_type":null|<str>, "plan_type":..., "credits":...}
+#   primary=5h ローリング窓 / secondary=weekly 窓。未到達時 reached_type=null。
+#
+# 検出条件: `rate_limit_reached_type != null` もしくは いずれかの window の used_percent>=100。
+# reset epoch: used_percent が高い側（binding window）の resets_at を採用する。
+#
+# Args: $1 = この exec の stdout を保存したファイル（thread.started から thread_id を取得）
+# Stdout: reset epoch (integer) if reached, else empty
+# Return: 0 always（検出なし / 解析失敗は空出力でフォールバック）
+qa_detect_rate_limit_rollout() {
+  local exec_out="$1"
+  [ -n "${exec_out:-}" ] && [ -f "$exec_out" ] || return 0
+  local codex_home="${CODEX_HOME:-$HOME/.codex}"
+  [ -d "$codex_home/sessions" ] || return 0
+
+  # この exec の thread_id を stdout の thread.started から取得（rollout 特定キー）。
+  local thread_id
+  thread_id=$(jq -r 'select(.type? == "thread.started") | .thread_id? // empty' "$exec_out" 2>/dev/null | head -1)
+  [ -n "$thread_id" ] || return 0
+
+  # thread_id を含む rollout ファイルを特定（同一 CODEX_HOME に全 repo の rollout が集約される
+  # ため thread_id で曖昧性を排除する）。
+  local rollout
+  rollout=$(find "$codex_home/sessions" -type f -name "rollout-*-${thread_id}.jsonl" 2>/dev/null | head -1)
+  [ -n "$rollout" ] && [ -f "$rollout" ] || return 0
+
+  # 最新の rate_limits snapshot を取り、reached のときだけ binding window の resets_at を返す。
+  # 1 段目は -c（compact）で各 rate_limits を 1 行に畳む（-r だと object が複数行 pretty 出力に
+  # なり tail -1 が壊れる）。tail -1 で最新 snapshot を採用し、2 段目で reached 判定する。
+  jq -c '
+    select(.type? == "event_msg"
+           and (.payload?.type? == "token_count")
+           and (.payload?.rate_limits? != null))
+    | .payload.rate_limits
+  ' "$rollout" 2>/dev/null | tail -1 | jq -r '
+    (.primary?.used_percent? // 0) as $pp
+    | (.secondary?.used_percent? // 0) as $sp
+    | if (.rate_limit_reached_type? != null) or ($pp >= 100) or ($sp >= 100) then
+        (if $sp >= $pp then (.secondary?.resets_at? // .primary?.resets_at?)
+         else (.primary?.resets_at? // .secondary?.resets_at?) end)
+      else empty end
+    | numbers | floor | tostring
+  ' 2>/dev/null
+}
+
 # 既存 6 stage の codex 呼び出しを横断ラップする Stage Wrapper（Req 1.1, 1.2,
 # 2.1, NFR 2.1）。
 #
@@ -533,6 +592,20 @@ qa_run_codex_stage() {
     qa_warn "stage detected without reset label=$stage_label path=${_path} (既存フローに委譲 / codex_rc=$codex_rc)"
     : > "$reset_file"
   fi
+
+  # stdout / usage-limit いずれの経路でも reset epoch が得られなかった場合、session rollout の
+  # rate_limits snapshot を参照して quota reached を構造的に検出する（#79）。codex の rate_limit は
+  # stdout に出ず rollout にのみ出るため、これが codex における第一の rate_limit 検出経路になる。
+  # reached でない（=空）ときは副作用なしで codex_rc を透過する（純粋に追加的・後方互換）。
+  local _rollout_epoch
+  _rollout_epoch=$(qa_detect_rate_limit_rollout "$stream_file")
+  if [[ "${_rollout_epoch:-}" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$_rollout_epoch" > "$reset_file"
+    qa_log "stage detected exceeded label=$stage_label path=rate_limits_rollout reset_epoch=$_rollout_epoch"
+    rm -f "$detect_file" "$stream_file"
+    return 99
+  fi
+
   rm -f "$detect_file" "$stream_file"
   return "$codex_rc"
 }
