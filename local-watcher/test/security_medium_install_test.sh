@@ -67,6 +67,19 @@ assert_file_not_contains() {
   fi
 }
 
+assert_file_not_line() {
+  local label="$1" path="$2" line="$3"
+  if [ -f "$path" ] && ! grep -Fxq -- "$line" "$path"; then
+    echo "PASS: $label"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    echo "FAIL: $label"
+    echo "  path: $path"
+    echo "  unexpected line: $line"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  fi
+}
+
 assert_command_fails() {
   local label="$1"
   shift
@@ -223,6 +236,19 @@ assert_file_contains "guard profile keeps #, &, backslash, and spaces in hook pa
 assert_file_not_contains "guard profile special path leaves no placeholder behind (Req 3.2)" \
   "$guard_profile_special" "__IDD_CODEX_GUARD_HOOK_PATH__"
 
+# Guard profile: literal backslash sequences are path data, not awk escape sequences.
+home_guard_escape="$TMPROOT/home-guard-escape"
+escape_hooks_dir="$TMPROOT/path\\nname\\tdir"
+guard_profile_escape="$home_guard_escape/.codex/idd-codex-guard.config.toml"
+guard_hook_escape="$escape_hooks_dir/idd-codex-guard.sh"
+mkdir -p "$home_guard_escape"
+HOME="$home_guard_escape" IDD_CODEX_HOOKS_INSTALL_DIR="$escape_hooks_dir" \
+  "$INSTALL_SH" --local >"$TMPROOT/guard-escape.log"
+assert_file_contains "guard profile keeps literal backslash n/t sequences in hook path (Req 3.2)" \
+  "$guard_profile_escape" "command = '$guard_hook_escape'"
+assert_file_not_line "guard profile literal backslash path is not converted to a newline (Req 3.2)" \
+  "$guard_profile_escape" "command = '$TMPROOT/path"
+
 # Guard profile: render failures are visible and do not produce malformed output.
 malformed_template="$TMPROOT/malformed-guard.config.toml"
 malformed_output="$TMPROOT/malformed-rendered.toml"
@@ -237,6 +263,22 @@ assert_true "guard renderer does not emit malformed profile content on failure (
   test ! -s "$malformed_output"
 assert_file_contains "guard renderer failure is operator-visible (Req 3.3 / NFR 2.2)" \
   "$malformed_error" "missing __IDD_CODEX_GUARD_HOOK_PATH__"
+
+# Guard profile: real newlines cannot be represented in the single-line TOML literal string.
+newline_template="$TMPROOT/newline-guard.config.toml"
+newline_output="$TMPROOT/newline-rendered.toml"
+newline_error="$TMPROOT/newline-render.err"
+newline_hook_path="$TMPROOT/line"$'\n'"break/idd-codex-guard.sh"
+printf "command = '__IDD_CODEX_GUARD_HOOK_PATH__'\n" >"$newline_template"
+run_newline_guard_render() {
+  render_guard_profile_config "$newline_template" "$newline_hook_path" >"$newline_output" 2>"$newline_error"
+}
+assert_command_fails "guard renderer fails closed before writing real newline paths (Req 3.3)" \
+  run_newline_guard_render
+assert_true "guard renderer emits no profile content for real newline paths (Req 3.3)" \
+  test ! -s "$newline_output"
+assert_file_contains "guard renderer newline rejection is operator-visible (Req 3.3 / NFR 2.2)" \
+  "$newline_error" "unsupported by TOML literal string"
 
 # Guard profile: dry-run reports the generated profile action but does not write it.
 home_guard_dry="$TMPROOT/home-guard-dry"

@@ -332,7 +332,7 @@ render_guard_profile_config() {
   fi
 
   case "$hook_path" in
-    *"'"*|*$'\n'*)
+    *"'"*|*$'\n'*|*$'\r'*)
       echo "Error: guard hook path contains characters unsupported by TOML literal string" >&2
       return 1
       ;;
@@ -349,7 +349,10 @@ render_guard_profile_config() {
     return 1
   fi
 
-  awk -v placeholder="$placeholder" -v replacement="$hook_path" '
+  IDD_CODEX_GUARD_HOOK_PATH_REPLACEMENT="$hook_path" awk -v placeholder="$placeholder" '
+    BEGIN {
+      replacement = ENVIRON["IDD_CODEX_GUARD_HOOK_PATH_REPLACEMENT"]
+    }
     {
       line = $0
       rendered = ""
