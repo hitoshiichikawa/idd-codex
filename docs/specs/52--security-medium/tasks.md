@@ -7,7 +7,7 @@
   - `security_medium_bootstrap_docs_test.sh` を追加し、`setup.sh` default と README / QUICK-HOWTO の推奨 URL が同じ pinned reference を参照し、`IDD_CODEX_BRANCH` / `IDD_CODEX_REPO_URL` override 名が維持されることを検証する。
   - _Requirements:_ 1.1, 1.2, 1.3, 1.4, 1.5, NFR 1.1, NFR 2.1
 
-- [ ] 2. `install.sh --local` の local runtime safe overwrite を実装する (P)
+- [x] 2. `install.sh --local` の local runtime safe overwrite を実装する (P)
   - `$HOME/bin/idd-codex-issue-watcher.sh` と macOS launchd plist にだけ適用する local runtime copy helper を追加し、差分あり既存ファイルを silent overwrite しない。
   - recovery file を operator-visible に作成し、既存 recovery file を無断で上書きしない。`--force` 時も recovery file 保護をログに出す。
   - `--dry-run --local` / `--dry-run --all` で create / skip / backup / overwrite の予定 action を表示する。
