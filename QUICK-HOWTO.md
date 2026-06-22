@@ -32,12 +32,14 @@ GitHub にある既存のリポジトリに idd-codex のワークフローを�
 ```bash
 cd /path/to/your-existing-repo
 
-curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/main/setup.sh \
+curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/9f8e9cea7df960f5be14849edcbac03dea55162e/setup.sh \
   | bash -s -- --all
 ```
 
 `--all` は **対象 repo へのテンプレート配置 + ローカル watcher のインストール**を一気に行います。
 途中で対話プロンプトが出る場合は Enter で進めて構いません。
+上記 URL は mutable `main` ではなく commit SHA 固定です。`IDD_CODEX_BRANCH=main` や任意ブランチを
+指定する場合は、pinned default を明示的に上書きする運用として扱ってください。
 
 実行後の状態:
 
@@ -52,8 +54,10 @@ curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/main/setu
 
 > **`curl | bash` を信用したくない場合**: スクリプトを先に読んでから実行できます。
 > ```bash
-> curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/main/setup.sh -o /tmp/setup.sh
+> curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/9f8e9cea7df960f5be14849edcbac03dea55162e/setup.sh -o /tmp/setup.sh
 > less /tmp/setup.sh    # 内容確認
+> # release の SHA256SUMS が提供されている場合:
+> # sha256sum -c SHA256SUMS      # macOS: shasum -a 256 -c SHA256SUMS
 > bash /tmp/setup.sh --all
 > ```
 
@@ -224,7 +228,7 @@ idd-codex 専用に新規 repo（fork ではなく `git init` から始めたも
 ```bash
 ./install.sh --repo /path/to/your-project --dry-run
 # あるいは curl 経由（setup.sh は --dry-run を install.sh に透過する）
-curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/main/setup.sh \
+curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/9f8e9cea7df960f5be14849edcbac03dea55162e/setup.sh \
   | bash -s -- --repo /path/to/your-project --dry-run
 ```
 
