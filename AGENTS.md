@@ -320,7 +320,7 @@ Issue 本文に実値が含まれた場合、PM エージェントは実装を�
 
 ## 参考資料
 
-- サブエージェント定義: `.codex/agents/*.md`
+- サブエージェント定義: `.codex/agents/*.md`（**Codex CLI には Claude Code の subagent 起動機構が無い**ため、これらは別 context へ spawn されるのではなく、各 stage で **watcher が役割定義として prompt 先頭へ注入**する。prompt 中の「〜サブエージェントを起動」は「あなた自身がそのロールとして振る舞う」と読み替える。`CODEX_INJECT_ROLE_DEFS` で制御 / #74）
 - Triage プロンプト: `local-watcher/bin/idd-codex-triage-prompt.tmpl`（配置先: `~/bin/idd-codex-triage-prompt.tmpl`）
 - Watcher 実装: `local-watcher/bin/idd-codex-issue-watcher.sh`（配置先: `~/bin/idd-codex-issue-watcher.sh`）
 - ワークフロー全体像・セットアップ手順: `README.md`
