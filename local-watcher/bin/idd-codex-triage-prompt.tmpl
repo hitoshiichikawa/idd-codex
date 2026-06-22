@@ -40,6 +40,24 @@ Issue の取得は次の順で行ってください。
 変数名・テストライブラリ・命名規約など、Codex が自律判断できる技術的詳細は含めない。
 迷ったら包括的に並べず、**重要度で最大 3 件**まで。
 
+## 分類タグ（classification）の判定基準（D-09 / 自動続行の安全境界）
+
+抽出した各 decision には、自動続行の可否を決める `classification` を **必ず** 付与します。
+これは完全自動化モード（`NEEDS_DECISIONS_MODE`）下で「推奨デフォルトで自動続行してよいか／
+人間据え置きにすべきか」を判定する **安全境界**です。
+
+- `"safe"`: 安全な曖昧さ。推奨デフォルトで進めても **不可逆な損害・外部影響・機密漏洩が
+  起き得ない**論点（命名・軽微な UX 選択・複数解釈だが工数差が小さい等）。
+- `"human-only"`: 以下のいずれかに該当する論点。**自動続行してはならない**:
+  1. 機密情報 / API key / OAuth token / 個人情報 / 認証情報に関わる
+  2. コンプライアンス / 法務 / 契約 / ライセンスに関わる
+  3. 不可逆な変更（schema migration / データ削除 / branch protection 緩和 / 公開済み API の
+     互換性破壊）
+  4. 外部影響（本番環境 / 課金 / 外部サービスへの新規依存）
+
+**判定に確信が持てない場合は必ず `"human-only"` を選択してください**（安全側に倒す）。
+`"safe"` を選んでよいのは、上記 4 区分のいずれにも該当しないと確信できる場合のみです。
+
 ## 「Architect を挟むべき」と判定する基準（needs_architect 判定）
 
 `needs_architect: true` と判定された Issue は **設計 PR ゲート**（cc-sdd 風の 2 PR フロー）を
@@ -101,7 +119,8 @@ Dependency Resolver Preflight に列挙されていない `Depends on:` 参照�
         "Option B: 選択肢 B の説明"
       ],
       "impact": "この決定が実装・運用に与える影響",
-      "recommendation": "Codex の推奨とその理由"
+      "recommendation": "Codex の推奨とその理由",
+      "classification": "safe" | "human-only"
     }
   ],
   "edit_paths": [
@@ -112,6 +131,8 @@ Dependency Resolver Preflight に列挙されていない `Depends on:` 参照�
 ```
 
 - `status` が `ready` の場合、`decisions` は空配列にすること
+- `decisions` を出す場合、各要素に `classification`（`"safe"` または `"human-only"`）を
+  **必ず**含めること。欠落・不明値・混在は安全側（人間据え置き）に扱われる
 - `needs_architect` が `false` の場合でも `architect_reason` には「軽微な修正のため不要」など根拠を残すこと
 - JSON 以外の文字列を出力しないこと（シェル側で jq パースに失敗します）
 - `{{FILE}}` への書き込みは Write ツールを使うこと

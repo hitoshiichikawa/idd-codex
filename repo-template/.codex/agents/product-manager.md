@@ -123,3 +123,9 @@ PM agent は Issue を起票・分割・要件化する際、依存・親子関�
 Triage フェーズでは `idd-codex-triage-prompt.tmpl` の指示に従い、
 「実装着手前に人間判断が必要な決定事項があるか」および「Architect を挟むべきか」を判定し、
 JSON を書き出すだけに留めてください。このモードでは requirements ファイルの生成は不要です。
+
+各 decision には `classification`（`"safe"` / `"human-only"`）を必ず付与します。これは
+完全自動化モード（`NEEDS_DECISIONS_MODE`）下で「推奨デフォルトで自動続行してよいか」を
+決める安全境界です。機密・コンプラ・不可逆・外部影響に関わる論点は `"human-only"`、
+判定に確信が持てない場合も `"human-only"` を選びます（安全側に倒す）。`"safe"` は推奨
+デフォルトで進めても不可逆な損害・外部影響・機密漏洩が起き得ないと確信できる場合のみです。

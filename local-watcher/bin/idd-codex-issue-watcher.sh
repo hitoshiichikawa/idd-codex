@@ -256,6 +256,28 @@ FAILED_RECOVERY_DEV_MODEL="${FAILED_RECOVERY_DEV_MODEL:-${DEV_MODEL:-gpt-5.5}}"
 # 通算 attempt budget / no-progress baseline を work-unit 単位で永続化する state dir。
 FAILED_RECOVERY_STATE_DIR="${FAILED_RECOVERY_STATE_DIR:-$HOME/.idd-codex/failed-recovery/$REPO_SLUG}"
 
+# ─── needs-decisions 自動続行 設定 (#102 / D-08・D-09) ───
+# Triage が `codex-needs-decisions` 判定した Issue を、`safe` 分類に限り PM 第一推奨で
+# 自動続行するモード切替。`FULL_AUTO_ENABLED`（#97）との AND 二重 opt-in。
+#   all-human（既定）= 全件 人間据え置き（導入前と等価）
+#   classified       = safe → 自動続行 / human-only → 据え置き
+#   all-auto         = safe のみ自動続行（human-only は all-auto でも自動続行しない）
+# 不正値 / 未設定 / 空 / typo はすべて安全側 all-human に正規化する。
+NEEDS_DECISIONS_MODE="${NEEDS_DECISIONS_MODE:-all-human}"
+case "$NEEDS_DECISIONS_MODE" in
+  all-human|classified|all-auto) : ;;
+  *)                             NEEDS_DECISIONS_MODE="all-human" ;;
+esac
+# 無限続行ガード: 同一 Issue を自動続行できる通算回数の上限（audit marker 数でカウント）。
+# failed-recovery の通算 budget と同じ単一カウンタ思想（掛け算しない）。非整数 / 0 以下は 4。
+NEEDS_DECISIONS_AUTO_MAX="${NEEDS_DECISIONS_AUTO_MAX:-4}"
+case "$NEEDS_DECISIONS_AUTO_MAX" in
+  ''|*[!0-9]*) NEEDS_DECISIONS_AUTO_MAX=4 ;;
+  *) [ "$NEEDS_DECISIONS_AUTO_MAX" -le 0 ] && NEEDS_DECISIONS_AUTO_MAX=4 ;;
+esac
+# 自動続行時の gh 操作の個別タイムアウト（秒）。
+NEEDS_DECISIONS_GIT_TIMEOUT="${NEEDS_DECISIONS_GIT_TIMEOUT:-60}"
+
 # ─── PR Iteration Processor 設定 (#26) ───
 # `codex-needs-iteration` ラベル付き PR をレビューコメントに基づいて自動で iterate する。
 # 標準機能としてデフォルト有効化（#112）。無効化したい場合は cron / launchd 側で
@@ -988,7 +1010,7 @@ IDD_MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)/id
 # 3 プロセッサ（quota-aware / merge-queue / auto-rebase）、#181 Part 3 で切り出した
 # 3 プロセッサ（promote-pipeline / pr-iteration / stage-a-verify）を並べ、末尾に
 # #238 の scaffolding-health.sh と #239 の per-run evidence サマリ（run-summary.sh）を置く。
-REQUIRED_MODULES=( "core_utils.sh" "guard-hook.sh" "quota-aware.sh" "merge-queue.sh" "auto-rebase.sh" "auto-merge.sh" "auto-merge-design.sh" "failed-recovery.sh" "promote-pipeline.sh" "pr-iteration.sh" "pr-reviewer.sh" "stage-a-verify.sh" "scaffolding-health.sh" "context-map.sh" "run-summary.sh" )
+REQUIRED_MODULES=( "core_utils.sh" "guard-hook.sh" "quota-aware.sh" "merge-queue.sh" "auto-rebase.sh" "auto-merge.sh" "auto-merge-design.sh" "failed-recovery.sh" "needs-decisions-auto.sh" "promote-pipeline.sh" "pr-iteration.sh" "pr-reviewer.sh" "stage-a-verify.sh" "scaffolding-health.sh" "context-map.sh" "run-summary.sh" )
 for _idd_mod in "${REQUIRED_MODULES[@]}"; do
   _idd_mod_path="$IDD_MODULE_DIR/$_idd_mod"
   if [ ! -f "$_idd_mod_path" ]; then
@@ -1038,7 +1060,7 @@ mkdir -p "$LOG_DIR"
 # 解決済み base branch を起動時 log に出力（Req 1.7 / NFR 4.1）。
 # 運用者が cron mailer / log で `base-branch=...` を grep できるよう、
 # 既定値（main）でも明示的に出力する。
-echo "[$(date '+%F %T')] base-branch=${BASE_BRANCH} merge-queue-base=${MERGE_QUEUE_BASE_BRANCH} auto-rebase=${AUTO_REBASE_MODE} auto-merge=${AUTO_MERGE_ENABLED} auto-merge-design=${AUTO_MERGE_DESIGN_ENABLED} failed-recovery=${FAILED_RECOVERY_ENABLED} full-auto=${FULL_AUTO_ENABLED}"
+echo "[$(date '+%F %T')] base-branch=${BASE_BRANCH} merge-queue-base=${MERGE_QUEUE_BASE_BRANCH} auto-rebase=${AUTO_REBASE_MODE} auto-merge=${AUTO_MERGE_ENABLED} auto-merge-design=${AUTO_MERGE_DESIGN_ENABLED} failed-recovery=${FAILED_RECOVERY_ENABLED} needs-decisions-mode=${NEEDS_DECISIONS_MODE} full-auto=${FULL_AUTO_ENABLED}"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # doctor サブコマンド dispatch (#238 / Decision 2)
@@ -10675,6 +10697,19 @@ _slot_run_issue() {
     fi
 
     if [ "$STATUS" = "codex-needs-decisions" ] && [ "$DECISION_COUNT" -gt 0 ]; then
+      # ── Issue #102: needs-decisions 自動続行（D-08 / D-09） ──
+      # AND 二重 opt-in（FULL_AUTO_ENABLED=true AND NEEDS_DECISIONS_MODE in classified/all-auto）
+      # 配下で、Triage が `safe` 分類した論点を PM 第一推奨で自動続行する。
+      # rc=0 = 自動続行実行済（audit コメント + codex-claimed 除去・codex-needs-decisions 不付与）
+      #   → 以降の起票コメント + ラベル付与 + return 0 をすべて skip して即 return 0。
+      #     次サイクルで dispatcher が再 pickup する。
+      # rc=1 = halt → 既存の据え置き経路（codex-needs-decisions 付与 + コメント）へそのまま流す
+      #   （導入前と完全等価。human-only / budget 枯渇 / gate OFF はここで halt）。
+      if nda_evaluate_auto_continue "$TRIAGE_FILE"; then
+        echo "🤖 #$NUMBER: needs-decisions 自動続行（#102・codex-claimed 除去済・次サイクル再 pickup 待機）" | tee -a "$LOG"
+        slot_log "Triage 結果: codex-needs-decisions → auto-continue（#102）"
+        return 0
+      fi
       local COMMENT
       COMMENT=$(jq -r '
         "## 🤔 実装着手前に確認が必要な事項\n\n" +
