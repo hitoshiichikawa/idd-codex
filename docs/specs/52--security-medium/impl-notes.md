@@ -70,6 +70,21 @@
   - `IDD_CODEX_TMP_DIR` は既存 env var を壊さない追加 override として扱い、指定先も 0700 にできない場合は使用しない。
 - 残存課題: processor modules 側の temp file 統一は task 5 scope。
 
+#### Reviewer Round 1 Closure
+
+- 採用方針: triage JSON は secure tempfile 作成直後に `RETURN` cleanup trap を登録し、通常 path では parse 完了直後に明示削除して trap を解除する。
+- 重要な判断:
+  - quota 超過、Triage 実行失敗、JSON 未生成、needs-decisions の早期 return は trap で cleanup し、通常の impl / design 分岐へ進む path は `rm -f "$TRIAGE_FILE"` で即時削除する。
+  - regression は triage block を抽出し、failure return 用 trap と normal path の明示削除 / trap 解除を検出する形にした。
+- 残存課題: なし（processor modules 側の temp file 統一は task 5 scope のまま）。
+
+#### Finding Closure Matrix
+
+| Target requirement | Category | Required Action | Fix commit | Test/assertion | Verification result | Notes / no-change reason |
+|--------------------|----------|-----------------|------------|----------------|---------------------|--------------------------|
+| 5.5 | AC 未カバー | triage JSON の利用完了後または失敗 path で cleanup する | `fix(watcher): clean up triage secure tempfile` | `security_medium_tempfiles_test.sh`: triage JSON cleanup trap covers failure returns / normal path removes tempfile after parsing / disables cleanup trap after removal | `bash local-watcher/test/security_medium_tempfiles_test.sh` pass; `shellcheck local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/bin/idd-codex-modules/core_utils.sh local-watcher/test/security_medium_tempfiles_test.sh` pass | 早期 return は `RETURN` trap、通常 path は明示 `rm -f "$TRIAGE_FILE"` で cleanup する。 |
+| 5.5 | missing test | triage JSON cleanup または diagnostic retention log の regression を追加する | `fix(watcher): clean up triage secure tempfile` | `security_medium_tempfiles_test.sh`: triage block extraction asserts cleanup trap and normal cleanup statements | `bash local-watcher/test/security_medium_tempfiles_test.sh` pass; `shellcheck local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/bin/idd-codex-modules/core_utils.sh local-watcher/test/security_medium_tempfiles_test.sh` pass | diagnostic retention ではなく cleanup 方針を採用したため、retention log は追加しない。 |
+
 ## 確認事項
 
 （task 1 の人間判断は確定済み。残存する確認事項なし）
@@ -102,7 +117,7 @@
 | 5.2 | `core_utils.sh`: `idd_secure_mktemp` private root creation and `umask 077` file creation | Any watcher flow requesting prompt / JSON / stderr / reset-state tempfile | `security_medium_tempfiles_test.sh`: private tmp directory is `700`; temporary file mode is owner-only | `bash local-watcher/test/security_medium_tempfiles_test.sh` pass | default root is `$LOG_DIR/tmp`; `IDD_CODEX_TMP_DIR` override must also be owner-only |
 | 5.3 | `core_utils.sh`: fail-closed branches in `idd_secure_mktemp`; watcher call-sites using `|| return` or explicit mark-failed path | Secure tempfile creation failure in current watcher operation | `security_medium_tempfiles_test.sh`: uncreatable tmp root returns non-zero and emits `secure-tempfile: ERROR:`; no predictable fallback path is created | `bash local-watcher/test/security_medium_tempfiles_test.sh` pass | push verify / resume push call-sites additionally route through existing failure paths |
 | 5.4 | `core_utils.sh`: symlink / mode validation for temp root | Tempfile root setup before writing operational diagnostics | `security_medium_tempfiles_test.sh`: helper uses private `$LOG_DIR/tmp` root and rejects uncreatable override | `bash local-watcher/test/security_medium_tempfiles_test.sh` pass | `$TMPDIR` is only used as parent when `LOG_DIR` is unavailable; file creation itself is through private root + `mktemp` |
-| 5.5 | `idd-codex-issue-watcher.sh`, `core_utils.sh`: existing `rm -f` cleanup retained after secure path creation | Completion / failure cleanup for triage reset file, stage reset file, stderr temp, worktree reset, slot hook | `security_medium_tempfiles_test.sh`: call-site regression verifies old predictable paths removed while existing cleanup branches remain in production code | `bash local-watcher/test/security_medium_tempfiles_test.sh` pass | diagnostic artifacts intentionally retained by later PR Reviewer task are task 6 scope |
+| 5.5 | `idd-codex-issue-watcher.sh`, `core_utils.sh`: triage JSON cleanup trap and explicit normal-path cleanup; existing `rm -f` cleanup retained after secure path creation | Completion / failure cleanup for triage JSON, triage reset file, stage reset file, stderr temp, worktree reset, slot hook | `security_medium_tempfiles_test.sh`: triage block regression verifies failure-return cleanup trap, normal-path `rm -f "$TRIAGE_FILE"`, and trap disarm; call-site regression verifies old predictable paths removed while existing cleanup branches remain | `bash local-watcher/test/security_medium_tempfiles_test.sh` pass; `shellcheck local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/bin/idd-codex-modules/core_utils.sh local-watcher/test/security_medium_tempfiles_test.sh` pass | diagnostic artifacts intentionally retained by later PR Reviewer task are task 6 scope |
 | NFR 2.2 | `core_utils.sh`: `secure-tempfile: ERROR:` messages; watcher explicit failure paths | Tempfile hardening check rejects unsafe / unavailable temp root | `security_medium_tempfiles_test.sh`: failure is operator-visible | `bash local-watcher/test/security_medium_tempfiles_test.sh` pass | reason category is emitted locally; public PR comment behavior is task 6 scope |
 | NFR 2.3 | `local-watcher/test/security_medium_tempfiles_test.sh` | secure tempfile regression suite | helper normal / unwanted failure / boundary label and watcher call-site string regression | `bash local-watcher/test/security_medium_tempfiles_test.sh` pass; `shellcheck local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/bin/idd-codex-modules/core_utils.sh local-watcher/test/security_medium_tempfiles_test.sh` pass | task 4 の正常系・異常系・境界値を含む |
 
@@ -120,6 +135,8 @@
 - `git fetch --depth 1 origin 9f8e9cea7df960f5be14849edcbac03dea55162e` against `https://github.com/hitoshiichikawa/idd-codex.git` — pass
 - `bash local-watcher/test/security_medium_tempfiles_test.sh` — pass
 - `shellcheck local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/bin/idd-codex-modules/core_utils.sh local-watcher/test/security_medium_tempfiles_test.sh` — pass
+- `bash local-watcher/test/security_medium_tempfiles_test.sh` — pass (Reviewer Round 1 closure: triage JSON cleanup trap / normal cleanup regression)
+- `shellcheck local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/bin/idd-codex-modules/core_utils.sh local-watcher/test/security_medium_tempfiles_test.sh` — pass (Reviewer Round 1 closure)
 - `git diff --check` — pass
 
 STATUS: complete

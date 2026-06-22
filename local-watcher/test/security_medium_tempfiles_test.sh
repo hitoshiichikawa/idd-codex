@@ -123,12 +123,22 @@ esac
 echo "[case4] watcher core has no predictable temp path fallback for task-4 targets"
 watcher_body="$(cat "$WATCHER_SH")"
 core_body="$(cat "$CORE_UTILS_SH")"
+triage_block="$(
+  awk '
+    /TRIAGE_FILE=\$\(idd_secure_mktemp "triage-/ { in_block = 1 }
+    in_block { print }
+    in_block && /if \[ "\$NEEDS_ARCHITECT" = "true" \]; then/ { exit }
+  ' "$WATCHER_SH"
+)"
 assert_not_contains "triage JSON no longer uses /tmp path" "$watcher_body" 'TRIAGE_FILE="/tmp/triage-'
 assert_not_contains "quota reset handoff no longer uses /tmp path" "$watcher_body" '="/tmp/qa-reset-'
 assert_not_contains "mktemp fallback no longer suppresses secure temp failure" "$watcher_body" 'mktemp -t verify-push-XXXXXX.err 2>/dev/null || echo ""'
 assert_not_contains "resume push stderr no longer falls back to missing tempfile" "$watcher_body" 'mktemp -t resume-push-XXXXXX.err 2>/dev/null || echo ""'
 assert_not_contains "core utilities no longer use predictable mktemp fallback" "$core_body" 'mktemp -t worktree-reset-clean-XXXXXX.err 2>/dev/null || echo ""'
 assert_not_contains "slot hook stderr no longer uses predictable mktemp fallback" "$core_body" 'mktemp -t slot-init-hook-XXXXXX.err 2>/dev/null || echo ""'
+assert_contains "triage JSON cleanup trap covers failure returns" "$triage_block" "trap 'if [ \"\${_triage_file_cleanup_enabled:-false}\" = \"true\" ] && [ -n \"\${TRIAGE_FILE:-}\" ]; then rm -f \"\$TRIAGE_FILE\"; fi' RETURN"
+assert_contains "triage JSON normal path removes tempfile after parsing" "$triage_block" "rm -f \"\$TRIAGE_FILE\""
+assert_contains "triage JSON normal path disables cleanup trap after removal" "$triage_block" 'trap - RETURN'
 
 echo "──────────────"
 echo "PASS=$PASS FAIL=$FAIL"

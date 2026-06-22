@@ -10490,6 +10490,8 @@ _slot_run_issue() {
     # ── Triage フェーズ ──
     local TRIAGE_FILE
     TRIAGE_FILE=$(idd_secure_mktemp "triage-${REPO_SLUG}-${NUMBER}-${TS}.json") || return 1
+    local _triage_file_cleanup_enabled=true
+    trap 'if [ "${_triage_file_cleanup_enabled:-false}" = "true" ] && [ -n "${TRIAGE_FILE:-}" ]; then rm -f "$TRIAGE_FILE"; fi' RETURN
 
     # Issue #47: 未信頼の Issue タイトル（公開 repo では誰でも設定可）を安全に差し込む。
     # 詳細は _triage_render_prompt のコメント参照。
@@ -10600,6 +10602,11 @@ _slot_run_issue() {
       slot_log "Triage 結果: codex-needs-decisions（codex-claimed 取り消し済）"
       return 0
     fi
+
+    rm -f "$TRIAGE_FILE"
+    TRIAGE_FILE=""
+    _triage_file_cleanup_enabled=false
+    trap - RETURN
 
     if [ "$NEEDS_ARCHITECT" = "true" ]; then
       MODE="design"
