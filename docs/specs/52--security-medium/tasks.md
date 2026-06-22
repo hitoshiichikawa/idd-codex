@@ -59,7 +59,7 @@
   - _Requirements:_ 1.4, 1.5, 2.3, 4.2, 4.4, 5.3, NFR 1.1, NFR 1.2, NFR 1.3, NFR 1.4, NFR 2.1, NFR 2.2
   - _Depends:_ 1, 2, 3, 4, 5, 6
 
-- [ ] 8. hardening 全体の静的検証と smoke を実行する
+- [x] 8. hardening 全体の静的検証と smoke を実行する
   - 変更した shell scripts と追加 test に `shellcheck` を実行する。
   - 追加した security_medium 系 test をすべて実行する。
   - `install.sh --local --dry-run` の出力に local runtime / Guard profile action が含まれることを確認する。
