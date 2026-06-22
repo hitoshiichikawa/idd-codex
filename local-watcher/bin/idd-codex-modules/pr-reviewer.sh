@@ -996,6 +996,114 @@ pr_add_iteration_label() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# pr_status_check_enabled: commit status publish の AND 二重 opt-in gate (#98)
+#   戻り値: 0 = 両 gate ON / 1 = いずれか OFF（no-op）。副作用なし。
+#   `PR_REVIEWER_STATUS_CHECK_ENABLED=true` かつ `FULL_AUTO_ENABLED=true`（#97 kill
+#   switch）の双方が厳密一致のときのみ ON。Config で正規化済みだが遅延束縛のため
+#   `:-false` fallback で安全側に倒す。
+# ─────────────────────────────────────────────────────────────────────────────
+pr_status_check_enabled() {
+  if [ "${PR_REVIEWER_STATUS_CHECK_ENABLED:-false}" != "true" ]; then
+    return 1
+  fi
+  if [ "${FULL_AUTO_ENABLED:-false}" != "true" ]; then
+    return 1
+  fi
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# pr_publish_commit_status: commit status を 1 件 publish する低レベルヘルパー (#98)
+#   入力: $1=pr_number $2=sha $3=context $4=state $5=description $6=target_url(省略可)
+#   戻り値: 0=成功 / 1=gate OFF(no-op) / 2=入力検証失敗 / 3=API 失敗
+#   副作用: gate ON 時のみ `gh api -X POST /repos/{REPO}/statuses/{sha}`。
+#   失敗は silent fail せず WARN + 続行（パイプライン本体を止めない）。
+# ─────────────────────────────────────────────────────────────────────────────
+pr_publish_commit_status() {
+  local pr_number="$1" sha="$2" context="$3" state="$4" description="$5" target_url="${6:-}"
+
+  # AND 二重 opt-in gate。OFF 時の suppression ログは cycle あたり 1 行に制限。
+  # FULL_AUTO_ENABLED 起因の抑止は #97 のログに委ね、本 gate OFF のみ記録する。
+  if ! pr_status_check_enabled; then
+    if [ "${PR_REVIEWER_STATUS_CHECK_ENABLED:-false}" != "true" ] \
+        && [ "${PR_STATUS_GATE_SUPPRESS_LOGGED:-0}" != "1" ]; then
+      pr_log "commit status publish suppressed by PR_REVIEWER_STATUS_CHECK_ENABLED gate (no-op)"
+      PR_STATUS_GATE_SUPPRESS_LOGGED=1
+    fi
+    return 1
+  fi
+
+  # 未信頼入力検証（silent fail せず WARN して return 2）
+  if ! [[ "$pr_number" =~ ^[0-9]+$ ]]; then
+    pr_warn "commit status publish: 不正な pr_number='${pr_number}'"; return 2
+  fi
+  if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+    pr_warn "commit status publish: 不正な sha='${sha}'（40桁小文字hex期待）"; return 2
+  fi
+  case "$state" in
+    success|failure|pending|error) : ;;
+    *) pr_warn "commit status publish: 不正な state='${state}'"; return 2 ;;
+  esac
+  if [ -z "$context" ]; then
+    pr_warn "commit status publish: context が空"; return 2
+  fi
+
+  # description 整形（空ならデフォルト / 72 字超は切り詰め）
+  if [ -z "$description" ]; then
+    description="${context}: ${state}"
+  fi
+  if [ "${#description}" -gt 72 ]; then
+    description="${description:0:72}"
+  fi
+
+  # gh api 引数を配列で構築（-f key=val で JSON body を組むため inline 展開リスクが低い）。
+  # target_url が空のときは -f target_url= を渡さない（空 URL 誤判定回避）。
+  local -a api_args=(-X POST "repos/${REPO}/statuses/${sha}" \
+    -f "state=$state" -f "context=$context" -f "description=$description")
+  if [ -n "$target_url" ]; then
+    api_args+=(-f "target_url=$target_url")
+  fi
+
+  local err_file api_rc=0
+  err_file=$(idd_secure_mktemp "pr-status-${pr_number}" 2>/dev/null || true)
+  if [ -n "$err_file" ]; then
+    timeout "$PR_REVIEWER_GIT_TIMEOUT" gh api "${api_args[@]}" >/dev/null 2>"$err_file" || api_rc=$?
+  else
+    timeout "$PR_REVIEWER_GIT_TIMEOUT" gh api "${api_args[@]}" >/dev/null 2>&1 || api_rc=$?
+  fi
+
+  if [ "$api_rc" -ne 0 ]; then
+    local err_tail=""
+    if [ -n "$err_file" ]; then
+      err_tail=$(tail -c 512 "$err_file" 2>/dev/null | tr '\n' ' ')
+      rm -f "$err_file"
+    fi
+    pr_warn "commit status publish FAILED: pr=#${pr_number} sha=${sha} context=${context} state=${state} rc=${api_rc} stderr='${err_tail}'"
+    return 3
+  fi
+  [ -n "$err_file" ] && rm -f "$err_file"
+  pr_log "commit status published: pr=#${pr_number} sha=${sha} context=${context} state=${state}"
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# pr_publish_codex_status: codex Reviewer の verdict を codex-review status へ写す (#98)
+#   入力: $1=pr_number $2=sha $3=verdict(approve|iteration|conflict|...) $4=pr_url
+#   戻り値: pr_publish_commit_status の戻り値をそのまま返す。
+#   approve → success / それ以外（iteration / conflict 等）→ failure。
+#   target_url はコメント permalink が取れないため PR URL に fallback。
+# ─────────────────────────────────────────────────────────────────────────────
+pr_publish_codex_status() {
+  local pr_number="$1" sha="$2" verdict="$3" pr_url="${4:-}"
+  local state description
+  case "$verdict" in
+    approve) state="success"; description="codex: approve" ;;
+    *)       state="failure"; description="codex: ${verdict}" ;;
+  esac
+  pr_publish_commit_status "$pr_number" "$sha" "codex-review" "$state" "$description" "$pr_url"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # pr_run_review_for_pr: 1 PR 分のレビューを統括する（task 4〜6 の orchestration）
 #   入力: $1 = pr_json（pr_fetch_candidate_prs の単一要素）, $2 = tool
 #   戻り値: 0 = success / 1 = failure（一時的・skip 相当）/ 2 = skip（重複検出）/
@@ -1165,6 +1273,11 @@ pr_run_review_for_pr() {
   if [ "$verdict" = "iteration" ] || [ "$verdict" = "conflict" ]; then
     pr_add_iteration_label "$pr_number"
   fi
+
+  # codex-review commit status を publish（AND 二重 opt-in gate ON 時のみ / #98）。
+  # auto-merge(#99) の required status check の source になる。publish 失敗は
+  # パイプラインを止めない（best-effort / pr_publish_commit_status が WARN 済み）。
+  pr_publish_codex_status "$pr_number" "$sha" "$verdict" "$pr_url" || true
 
   return 0
 }
