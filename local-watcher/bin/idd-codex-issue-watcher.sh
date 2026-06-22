@@ -480,6 +480,12 @@ REVIEWER_MAX_TURNS="${REVIEWER_MAX_TURNS:-30}"
 DEBUGGER_ENABLED="${DEBUGGER_ENABLED:-false}"
 DEBUGGER_MODEL="${DEBUGGER_MODEL:-gpt-5.5}"
 DEBUGGER_MAX_TURNS="${DEBUGGER_MAX_TURNS:-40}"
+# Debugger stage で codex の live web search（native `web_search` tool）を有効化する (#17)。
+# Debugger の存在意義は外部ライブラリ ABI 等の root-cause を web search で究明することだが、
+# 移植時は codex 起動に検索有効化フラグが無く、prompt の WebSearch 指示が空振りしていた。
+# codex の `--search` は **global 位置（exec の前）専用**フラグ。Debugger stage のみに付与する。
+# `=true` 厳密一致時のみ有効（既定 true）。`false` 等で従来挙動（検索なし）に戻せる。
+CODEX_DEBUGGER_WEB_SEARCH="${CODEX_DEBUGGER_WEB_SEARCH:-true}"
 
 # ─── Codex CLI 実行設定 ───
 # Claude Code 版の `claude --print` 呼び出しを Codex 版では `codex exec` に集約する。
@@ -769,6 +775,16 @@ codex_effective_timeout_sec() {
   fi
 }
 
+# ─── 当該 stage で codex の live web search（--search）を付与すべきか（#17）───
+# Debugger stage のみ true。`CODEX_DEBUGGER_WEB_SEARCH=true`（既定）厳密一致時のみ有効。
+codex_wants_web_search() {
+  [ "${CODEX_DEBUGGER_WEB_SEARCH:-true}" = "true" ] || return 1
+  case "${1:-}" in
+    Debugger-*|Debugger*|debugger*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 codex_exec_prompt() {
   local stage_label="$1"
   local model="$2"
@@ -797,6 +813,10 @@ ${prompt}"
   guard_build_args
   if [ "${#CODEX_HOOK_ARGS[@]}" -gt 0 ]; then
     codex_global_args+=("${CODEX_HOOK_ARGS[@]}")
+  fi
+  # Debugger stage のみ live web search を有効化（`--search` は exec の前＝global 位置専用 / #17）。
+  if codex_wants_web_search "$stage_label"; then
+    codex_global_args+=(--search)
   fi
   if [ "$CODEX_EPHEMERAL" = "true" ]; then
     args+=(--ephemeral)
@@ -5846,7 +5866,8 @@ git diff ${BASE_BRANCH}..HEAD -- <path>   # 必要に応じてファイル単位
 
 ## web search の活用
 
-外部知識が必要な原因分析には WebSearch / WebFetch を活用してください:
+外部知識が必要な原因分析には codex の **web 検索ツール（\`web_search\`）** を活用してください
+（本 stage では watcher が \`--search\` で live web search を有効化しています）:
 
 - 外部ライブラリの ABI / API 仕様 / breaking changes
 - フレームワーク内部の挙動 / known issue / GitHub issues
@@ -5899,7 +5920,7 @@ fi )
 1. 必読ファイルを順に Read
 2. Bash で \`git diff\` / \`git log\` を実行して実装差分を全体把握
 3. trigger に応じた手がかり（review-notes.md の Findings / impl-notes.md の BLOCKED 行）から問題箇所を特定
-4. 必要に応じて WebSearch / WebFetch で外部知識を収集
+4. 必要に応じて codex の \`web_search\` ツールで外部知識を収集
 5. 根本原因を 1 つに絞り込む
 6. 具体的な修正手順を Developer が機械的に実施できる粒度で書く
 7. 検証方法（テストコマンド / 期待挙動）を明示
