@@ -85,6 +85,17 @@ ar_error() {
   echo "[$(date '+%F %T')] [$REPO] auto-rebase: ERROR: $*" >&2
 }
 
+# auto-merge 専用ロガー（#99 / `mq_log` と同一の `[$REPO]` 3 段 prefix）。
+am_log() {
+  echo "[$(date '+%F %T')] [$REPO] auto-merge: $*"
+}
+am_warn() {
+  echo "[$(date '+%F %T')] [$REPO] auto-merge: WARN: $*" >&2
+}
+am_error() {
+  echo "[$(date '+%F %T')] [$REPO] auto-merge: ERROR: $*" >&2
+}
+
 # promote-pipeline 専用ロガー（Phase A `mq_log` と同一の書式：
 # `[YYYY-MM-DD HH:MM:SS] [$REPO] promote-pipeline:` prefix。Req 5.1.1, 5.1.5）。
 pp_log() {
