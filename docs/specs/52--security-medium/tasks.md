@@ -50,7 +50,7 @@
   - `security_medium_pr_reviewer_test.sh` に placeholder normal / unwanted value / boundary leading dash、public redaction、local diagnostics、disabled no-op、head pattern / fork exclusion regression を追加する。
   - _Requirements:_ 4.1, 4.2, 4.3, 4.4, 4.5, 6.1, 6.2, 6.3, 6.4, 6.5, NFR 1.1, NFR 1.2, NFR 2.2, NFR 2.3
 
-- [ ] 7. README / QUICK-HOWTO の operator-visible behavior を実装結果に同期する
+- [x] 7. README / QUICK-HOWTO の operator-visible behavior を実装結果に同期する
   - local runtime overwrite policy、recovery file、`--dry-run` action、Guard profile exact path handling、secure tempfile policy を README に追記する。
   - PR Reviewer non-quota failure comment が generic になり、詳細は local logs / artifacts で見ることを README の PR Reviewer 節に反映する。
   - mutable branch override と checksum artifacts の扱いを QUICK-HOWTO にも同期する。
