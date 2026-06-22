@@ -1268,6 +1268,16 @@ idd-codex は基本フロー（Triage → 実装 → PR 作成）以外の機能
 経て **デフォルト有効** へ段階的に昇格させています。無効化したい機能は env で
 `=false` を明示することでコードパスを skip でき、挙動は本機能導入前と一致します。
 
+> **未移植機能: Security Review Processor（idd-claude #279 / 意図的 scope-out / #81）**
+> idd-claude にある opt-in の PR セキュリティレビュー（`claude --permission-mode plan` で
+> Claude Code 公式 `/security-review` skill を起動し PR diff を advisory レビュー）は、
+> その価値が **Claude skill 依存**で codex に等価物が無いため idd-codex には移植していません。
+> idd-codex のセキュリティは多層で担保しています: Codex Guard Hook（base/force push・guard 自己改変
+> deny ＋ Reviewer/Debugger の write-scope / #80）／未信頼入力境界の明示（#70）／Stage A Verify の
+> `codex sandbox` 実行（repo 由来 verify コマンドの sandbox 化 / #51）。
+> PR 単位のセキュリティレビューが欲しい場合は、Claude Code の `/security-review` skill や `gh` を
+> **手動で**実行してください（watcher の自動処理としては提供しません）。
+
 > **Migration Note (#112, 2026-05-18)**: 旧バージョンでは下記 8 種の env var が
 > opt-in（既定 `false`）でしたが、Issue #112 で **デフォルト `true` に反転**しました。
 > 既存環境で `=true` を明示している cron / launchd エントリは挙動が変わりません
