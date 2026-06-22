@@ -72,6 +72,7 @@ LOGGER_FUNCS=(
   mqr_log mqr_warn mqr_error
   drr_log drr_warn drr_error
   qa_log qa_warn qa_error
+  fr_log fr_warn fr_error
 )
 
 for fn in "${LOGGER_FUNCS[@]}"; do
@@ -217,6 +218,17 @@ assert_contains "Req 1.5 qa_warn: prefix 維持" \
 OUT=$(qa_error "marker parse failed" 2>&1)
 assert_contains "Req 1.5 qa_error: prefix 維持" \
   "[owner/test-repo] quota-aware: ERROR: marker parse failed" "$OUT"
+
+# Req 1.6: fr_log（#101 failed-recovery）
+OUT=$(fr_log "サイクル開始" 2>&1)
+assert_contains "Req 1.6 fr_log: [owner/test-repo] failed-recovery:" \
+  "[owner/test-repo] failed-recovery: サイクル開始" "$OUT"
+OUT=$(fr_warn "state save failed" 2>&1)
+assert_contains "Req 1.6 fr_warn: prefix 維持" \
+  "[owner/test-repo] failed-recovery: WARN: state save failed" "$OUT"
+OUT=$(fr_error "unexpected" 2>&1)
+assert_contains "Req 1.6 fr_error: prefix 維持" \
+  "[owner/test-repo] failed-recovery: ERROR: unexpected" "$OUT"
 
 # Req 1.8: REPO がデフォルト値 (owner/your-repo) のままでもそのまま出力される
 REPO_BACKUP="$REPO"
