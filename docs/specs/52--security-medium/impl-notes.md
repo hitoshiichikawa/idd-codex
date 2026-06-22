@@ -125,6 +125,22 @@
 |--------------------|----------|-----------------|------------|----------------|---------------------|--------------------------|
 | N/A | N/A | Reviewer reject / Debugger 指摘なし | `b76a39f docs(readme): sync security hardening behavior` | N/A | N/A | `review-notes.md` は task 6 approve のみで、task 7 の reject Finding は存在しない。 |
 
+### Task 8
+
+- 採用方針: task 1〜7 の実装差分には手を入れず、宣言済み verify block、`install.sh --local --dry-run` smoke、後方互換性の差分レビューを実行して hardening 全体の受入確認に閉じた。
+- 重要な判断:
+  - `shellcheck` と security_medium 系 4 test は tasks.md の `stage-a-verify` block と同一コマンドで実行し、全て pass した。
+  - `install.sh --local --dry-run` は local runtime watcher の `BACKUP` / `OVERWRITE` と Guard profile の `OVERWRITE ... generated Codex profile` を表示し、対象ファイルを変更しなかった。
+  - `git diff --exit-code main..HEAD -- .github/scripts/idd-codex-labels.sh .github/ISSUE_TEMPLATE repo-template/.github/ISSUE_TEMPLATE` で label / Issue template 差分なし、`git diff --check` と `.codex` root↔repo-template 同期 diff も問題なしを確認した。
+  - pinned reference は task 1 で確定した commit SHA `9f8e9cea7df960f5be14849edcbac03dea55162e` のまま、checksum artifact は本 PR では生成せず docs の manual verification path で扱う方針のまま変更しない。
+- 残存課題: なし。
+
+#### Finding Closure Matrix
+
+| Target requirement | Category | Required Action | Fix commit | Test/assertion | Verification result | Notes / no-change reason |
+|--------------------|----------|-----------------|------------|----------------|---------------------|--------------------------|
+| N/A | N/A | Reviewer reject / Debugger 指摘なし | N/A | N/A | N/A | `review-notes.md` は task 7 approve で Findings なし。task 8 は検証記録のみで code / test 差分は不要。 |
+
 ## 確認事項
 
 （task 1 の人間判断は確定済み。残存する確認事項なし）
@@ -209,5 +225,10 @@
 - `bash local-watcher/test/security_medium_bootstrap_docs_test.sh` — pass (task 7 docs sync regression)
 - `shellcheck setup.sh local-watcher/test/security_medium_bootstrap_docs_test.sh` — pass (task 7)
 - `git diff --check` — pass
+- `shellcheck setup.sh install.sh local-watcher/bin/idd-codex-issue-watcher.sh local-watcher/bin/idd-codex-modules/core_utils.sh local-watcher/bin/idd-codex-modules/auto-rebase.sh local-watcher/bin/idd-codex-modules/pr-reviewer.sh local-watcher/bin/idd-codex-modules/pr-iteration.sh local-watcher/bin/idd-codex-modules/quota-aware.sh local-watcher/test/security_medium_bootstrap_docs_test.sh local-watcher/test/security_medium_install_test.sh local-watcher/test/security_medium_tempfiles_test.sh local-watcher/test/security_medium_pr_reviewer_test.sh && bash local-watcher/test/security_medium_bootstrap_docs_test.sh && bash local-watcher/test/security_medium_install_test.sh && bash local-watcher/test/security_medium_tempfiles_test.sh && bash local-watcher/test/security_medium_pr_reviewer_test.sh` — pass (task 8 full hardening verify)
+- `bash install.sh --local --dry-run` — pass (task 8 smoke: local runtime `BACKUP` / `OVERWRITE` and Guard profile generated profile action were reported)
+- `git diff --exit-code main..HEAD -- .github/scripts/idd-codex-labels.sh .github/ISSUE_TEMPLATE repo-template/.github/ISSUE_TEMPLATE` — pass (task 8: label and Issue template definitions unchanged)
+- `diff -r .codex/agents repo-template/.codex/agents && diff -r .codex/rules repo-template/.codex/rules` — pass (task 8: root and repo-template agent/rule files remain byte-identical)
+- `git diff --check` — pass (task 8)
 
 STATUS: complete
