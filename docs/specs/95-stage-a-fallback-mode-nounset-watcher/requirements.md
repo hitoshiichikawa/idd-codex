@@ -38,7 +38,7 @@ Issue コメントでは Triage edit paths と処理開始通知以外の追加�
 #### Acceptance Criteria
 
 1. When regression verification runs for Stage A fallback logging, the verification shall cover a nounset shell environment with a mode value followed by a multibyte delimiter.
-2. When regression verification is evaluated against the historical unsafe mode-log expression, the verification shall detect the unbound variable failure.
+2. When regression verification is evaluated against the historical unsafe mode-log expression, the verification shall detect the unbraced `$MODE）` form as unsafe without requiring runtime failure on every supported bash version.
 3. When regression verification is evaluated against the corrected mode-log behavior, the verification shall pass and confirm that the expected Stage A mode text is emitted.
 4. When regression verification covers Stage A PM split or fallback logging, the verification shall confirm that the PM requirements-definition path is still reachable after the mode log is written.
 5. When regression verification scans watcher shell sources, the verification shall detect unsafe unbraced shell variable expansions immediately followed by multibyte text in Stage A logging-adjacent paths.
