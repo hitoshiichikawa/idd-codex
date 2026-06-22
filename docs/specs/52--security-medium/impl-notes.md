@@ -22,6 +22,13 @@
     manual verification path のみ docs に記載した。
 - 残存課題: なし（release ごとの SHA bump は maintainer note として docs / `setup.sh` に記載済み）。
 
+#### Finding Closure Matrix
+
+| Target requirement | Category | Required Action | Fix commit | Test/assertion | Verification result | Notes / no-change reason |
+|--------------------|----------|-----------------|------------|----------------|---------------------|--------------------------|
+| boundary:Task 1 implementation range | boundary 逸脱 | `AGENTS.md`、`local-watcher/bin/idd-codex-issue-watcher.sh`、`local-watcher/test/per_task_needs_decision_test.sh` の endpoint 差分を task 1 range から除外する | `5ef9183 fix(codex): restore task 1 review boundary` | `bash local-watcher/test/per_task_needs_decision_test.sh`; `git diff --name-status main..HEAD` | pass; endpoint diff は `setup.sh` / docs / task 1 test / impl-notes / marker のみに限定 | 復元対象は task 1 実装ではなく、前回 range 混入の打ち消し。`shellcheck` を復元 test まで広げると main baseline の SC2034 が出るため、機能 regression は bash test で確認した。 |
+| boundary:docs/specs/52--security-medium/tasks.md | boundary 逸脱 | 非 marker commit で混入した task 本文変更を戻し、endpoint 差分を task 1 checkbox のみに限定する | `5ef9183 fix(codex): restore task 1 review boundary` + final `docs(tasks): mark 1 as done` marker | `git diff main -- docs/specs/52--security-medium/tasks.md` | pass; task 1 の `- [ ]` → `- [x]` 以外の endpoint 差分なし | history rewrite は禁止のため corrective commit で本文差分を打ち消し、attempt 末尾に canonical marker を置き直す。 |
+
 ## 確認事項
 
 （task 1 の人間判断は確定済み。残存する確認事項なし）
@@ -41,6 +48,7 @@
 ## Verification
 
 - `bash local-watcher/test/security_medium_bootstrap_docs_test.sh` — pass
+- `bash local-watcher/test/per_task_needs_decision_test.sh` — pass
 - `shellcheck setup.sh local-watcher/test/security_medium_bootstrap_docs_test.sh` — pass
 - `git fetch --depth 1 origin 9f8e9cea7df960f5be14849edcbac03dea55162e` against `https://github.com/hitoshiichikawa/idd-codex.git` — pass
 
