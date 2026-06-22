@@ -5,7 +5,7 @@
 # 用途:
 #   idd-codex-issue-watcher.sh から切り出した Stage A Verify Module (#125) の関数定義を集約する。
 #   Stage A（Developer 実装）完了直前に tasks.md 末尾の build/test/lint コマンド（verify
-#   タスク）を watcher 自身が REPO_DIR で独立再実行し、Developer の自己申告のみで build
+#   タスク）を Stage A Verify が独立再実行し、Developer の自己申告のみで build
 #   不通が Stage A を通過するのを防ぐゲート。STAGE_A_VERIFY_ENABLED で gate。
 #   - sav_log / sav_warn / sav_error           : `stage-a-verify:` prefix logger
 #   - _sav_cmd_starts_with_keyword             : verify keyword 行頭一致判定
@@ -38,7 +38,7 @@
 #     stage_a_verify_run → _sav_handle_failure。いずれも run_impl_pipeline 実行前に全モジュールが
 #     source されるため、呼び出し時点で定義済みであり挙動不変。
 #   - call site（run_impl_pipeline 内の stage_a_verify_run）は本体に残置する。
-#   - 外部 CLI: gh / git。
+#   - 外部 CLI: gh / git / codex / timeout。
 #
 # セットアップ参照先:
 #   - 設計: docs/specs/181-feat-watcher-issue-watcher-sh-part-3-pr/design.md（decision 2）
@@ -55,6 +55,56 @@ sav_warn() {
 }
 sav_error() {
   echo "[$(date '+%F %T')] [$REPO] stage-a-verify: ERROR: $*" >&2
+}
+
+# ─── _sav_source_requires_sandbox ───
+#
+# Stage A Verify の解決手段が repository 由来かを判定する。structured-block と heuristic は
+# `tasks.md` 由来であり、Issue / PR prompt injection の影響を受けうる未信頼入力として扱う。
+# env-command は operator が cron / launchd で明示した既存 escape hatch のため、従来の直接実行
+# semantics を維持する（Issue #51 Option A）。
+_sav_source_requires_sandbox() {
+  case "${1:-}" in
+    structured-block|heuristic) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# ─── _sav_sandbox_profile_is_forbidden ───
+#
+# `codex sandbox -P :danger-full-access` は sandbox 境界を確立しないため、repository 由来 verify
+# では fail-closed する。custom profile の内容は Codex config 側の責務だが、明示的な no-sandbox
+# built-in はここで拒否し、非 sandbox 権限へのフォールバックを防ぐ。
+_sav_sandbox_profile_is_forbidden() {
+  case "${1:-}" in
+    ":danger-full-access"|"danger-full-access") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# ─── _sav_run_repo_command_in_codex_sandbox ───
+#
+# `tasks.md` 由来の verify コマンドを Codex CLI の sandbox runner 内で実行する。親 watcher は
+# `codex sandbox` プロセスを起動するだけで、未信頼コマンド自体を非 sandbox の `bash -c` へ
+# 直接渡さない。sandbox helper / profile が使えない場合も非 sandbox へ fallback しない。
+#
+# 入力:
+#   $1 = 実行する shell コマンド（複数行 / メタ文字を保持）
+#   $2 = timeout 秒
+# 戻り値: `codex sandbox ... bash -c "$cmd"` の exit code（timeout は 124）
+_sav_run_repo_command_in_codex_sandbox() {
+  local cmd="$1"
+  local timeout_sec="$2"
+  local profile="${STAGE_A_VERIFY_SANDBOX_PROFILE:-:workspace}"
+
+  if _sav_sandbox_profile_is_forbidden "$profile"; then
+    sav_error "sandbox profile refuses repository-derived verify source profile=$profile reason=no-sandbox"
+    return 126
+  fi
+
+  sav_log "sandbox EXEC profile=$profile boundary=codex-sandbox"
+  timeout --kill-after=10 "$timeout_sec" \
+    "${CODEX_BIN:-codex}" sandbox -P "$profile" -C "$REPO_DIR" -- bash -c "$cmd"
 }
 
 # ─── _sav_cmd_starts_with_keyword ───
@@ -673,7 +723,7 @@ _sav_handle_failure() {
       local comment_body
       comment_body="🔁 stage-a-verify が失敗しました（round=1 / ${kind}=${detail}）。
 
-\`tasks.md\` 末尾の verify タスク（build/test/lint）を watcher が REPO_DIR で独立再実行したところ、exit code が 0 以外でした。
+\`tasks.md\` 末尾の verify タスク（build/test/lint）を Stage A Verify で独立再実行したところ、exit code が 0 以外でした。
 
 - 検出されたコマンドの実行結果はログ \`${LOG:-(unknown)}\` を参照
 - 次サイクルで Developer が再実装し、Stage B 開始前に stage-a-verify が再評価されます
@@ -720,8 +770,10 @@ _sav_handle_failure() {
 #
 # 不変条件:
 #   - 1 回の呼び出しで `stage-a-verify:` 行を必ず 1 行以上出力（NFR 4.1）
-#   - 抽出した cmd は `bash -c` に **そのまま**渡し、watcher 側で `&&` / `||` / `;` を
-#     解釈しない（Req 1.3）
+#   - repository 由来の cmd は `codex sandbox ... bash -c` に **そのまま**渡し、watcher 側で
+#     `&&` / `||` / `;` を解釈しない（Issue #51 Req 2.4）
+#   - `STAGE_A_VERIFY_COMMAND` 由来の cmd は operator override として既存の直接実行 semantics
+#     を維持する
 stage_a_verify_run() {
   # run サマリ用 outcome（#239 task 5）。各 return 直前で確定する。
   _SAV_LAST_OUTCOME=""
@@ -767,13 +819,20 @@ stage_a_verify_run() {
   # ── Execute ──
   local _timeout="${STAGE_A_VERIFY_TIMEOUT:-600}"
   # cmd の shell エスケープは printf %q で安全側に倒し、ログ復元性を確保する。
-  sav_log "EXEC issue=#${NUMBER:-?} timeout=${_timeout}s cmd=$(printf '%q' "$cmd")"
+  sav_log "EXEC issue=#${NUMBER:-?} source=${resolved_source:-unknown} timeout=${_timeout}s cmd=$(printf '%q' "$cmd")"
   local rc=0
-  # subshell `(cd && ...)` で cwd を REPO_DIR に隔離（NFR 5.1）。
-  # `timeout --kill-after=10 "$_timeout"` で暴走を時間でも遮断し、タイムアウト到達時は
-  # 子孫プロセスも SIGKILL する（NFR 5.2）。
-  (cd "$REPO_DIR" && timeout --kill-after=10 "$_timeout" bash -c "$cmd") \
-      >> "$LOG" 2>&1 || rc=$?
+  if _sav_source_requires_sandbox "$resolved_source"; then
+    # repository 由来 verify は Codex sandbox runner に委譲し、sandbox 確立失敗時も
+    # watcher / cron ユーザーの非 sandbox `bash -c` へ fallback しない（Issue #51 Req 1.2, 1.3）。
+    _sav_run_repo_command_in_codex_sandbox "$cmd" "$_timeout" >> "$LOG" 2>&1 || rc=$?
+  else
+    # operator が明示した STAGE_A_VERIFY_COMMAND は既存 semantics を維持する。
+    # subshell `(cd && ...)` で cwd を REPO_DIR に隔離（NFR 5.1）。
+    # `timeout --kill-after=10 "$_timeout"` で暴走を時間でも遮断し、タイムアウト到達時は
+    # 子孫プロセスも SIGKILL する（NFR 5.2）。
+    (cd "$REPO_DIR" && timeout --kill-after=10 "$_timeout" bash -c "$cmd") \
+        >> "$LOG" 2>&1 || rc=$?
+  fi
 
   # ── 結果分岐 ──
   case "$rc" in

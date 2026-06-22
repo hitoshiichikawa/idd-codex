@@ -1334,7 +1334,7 @@ idd-codex は基本フロー（Triage → 実装 → PR 作成）以外の機能
 | **impl-resume Branch Protection**（既存 origin branch resume + force-push 抑制 + tasks.md 進捗追跡） | `IMPL_RESUME_PRESERVE_COMMITS` | `true` | `=false` 厳密一致のみ無効。それ以外（`Yes` / `1` / 空文字 / typo / 不正値）はすべて有効 | 推奨: `IMPL_RESUME_PROGRESS_TRACKING`（既定 `true`。`=false` で進捗追跡指示の注入のみ抑制。`IMPL_RESUME_PRESERVE_COMMITS=false` 時は値に関わらず注入されない） | [impl-resume Branch Protection (#67)](#impl-resume-branch-protection-67) | #67, #112 |
 | **impl-resume tasks.md 進捗追跡**（Developer がタスク完了ごとに `- [ ]` → `- [x]` を専用 commit） | `IMPL_RESUME_PROGRESS_TRACKING` | `true` | `=false` 厳密一致のみ無効。それ以外（空文字含む）は有効 | 必須前提: `IMPL_RESUME_PRESERVE_COMMITS=true`（既定）。`IMPL_RESUME_PRESERVE_COMMITS=false` の状態では本機能は **常に未注入**（サイレント no-op） | [impl-resume Branch Protection (#67)](#impl-resume-branch-protection-67) | #67 |
 | **Stage Checkpoint Resume**（impl 系 Stage 単位の checkpoint で Reviewer / PjM 失敗時の Developer 再実行回避。#212 Stage C 直前冪等ガード / #219 Stage A 越境観測・spec 成果物完全性保証を相乗りで内包） | `STAGE_CHECKPOINT_ENABLED` | `true` | `=false` 厳密一致のみ無効。それ以外（空文字 / `0` / `False` / typo）はすべて有効 | — | [Stage Checkpoint (#68)](#stage-checkpoint-68) | #68, #112, #212, #219 |
-| **Stage A Verify Gate**（tasks.md 末尾 verify タスク（build/test/lint）の独立再実行で自己申告ガード） | `STAGE_A_VERIFY_ENABLED` | `true` | `=false` 厳密一致のみ無効。それ以外（空文字 / `0` / `False` / typo）はすべて有効 | 推奨: `STAGE_A_VERIFY_TIMEOUT`（既定 `600` 秒）、`STAGE_A_VERIFY_COMMAND`（構造化ブロック不在時に参照する固定 escape hatch / 未対応言語向け）、`STAGE_A_VERIFY_STATE_DIR`（round counter 永続化先 / 既定 `$HOME/.idd-codex/issue-watcher/state/<repo_slug>` / 通常変更不要 / #246） | [Stage A Verify Gate (#125)](#stage-a-verify-gate-125) | #125, #246 |
+| **Stage A Verify Gate**（tasks.md 末尾 verify タスク（build/test/lint）の独立再実行で自己申告ガード） | `STAGE_A_VERIFY_ENABLED` | `true` | `=false` 厳密一致のみ無効。それ以外（空文字 / `0` / `False` / typo）はすべて有効 | 推奨: `STAGE_A_VERIFY_TIMEOUT`（既定 `600` 秒）、`STAGE_A_VERIFY_COMMAND`（構造化ブロック不在時に参照する operator 固定 escape hatch / 未対応言語向け）、`STAGE_A_VERIFY_SANDBOX_PROFILE`（tasks.md 由来 verify 用 Codex permission profile / 既定 `:workspace`）、`STAGE_A_VERIFY_STATE_DIR`（round counter 永続化先 / 既定 `$HOME/.idd-codex/issue-watcher/state/<repo_slug>` / 通常変更不要 / #246） | [Stage A Verify Gate (#125)](#stage-a-verify-gate-125) | #125, #246, #51 |
 | **Tasks Count Gate**（Architect 完了直後の tasks.md 件数を harness で再評価し、8〜10 件で警告コメント / ≥11 件で `codex-needs-decisions` + Developer 自動起動抑止） | `TC_ENABLED` | `true` | `=false` 厳密一致のみ無効。それ以外（空文字 / `0` / `False` / typo）はすべて有効 | 推奨: `TC_WARN_LOWER`（既定 `8`）、`TC_WARN_UPPER`（既定 `10`）、`TC_ESCALATE_LOWER`（既定 `11`）。非整数は warning ログ + 既定値にフォールバック | [Tasks Count Gate (#147)](#tasks-count-gate-147) | #147 |
 | **Per-Run Evidence Summary**（1 サイクルの stage/gate 実行実態を `run-summary:` 1 行で機械可読出力。前述「複数リポ運用時の cron.log grep 例」節参照） | `RUN_SUMMARY_ENABLED` | `true` | lowercase の `false` / `0` / `no` / `off` のいずれかで無効。それ以外（空文字 / `False` / `OFF` / typo）はすべて有効（#112 系 8 種の「`=false` 厳密一致のみ無効」とは正規化規則が異なる点に注意） | — | Issue #239（専用詳細セクションなし。grep 例・enum 表は本節の上記参照） | #239 |
 
@@ -3939,8 +3939,10 @@ cd ~/.idd-codex && git pull && ./install.sh --local
 
 local watcher の `impl` / `impl-resume` モードは Stage A（PM + Developer）/ Stage B
 （Reviewer）/ Stage C（PjM、PR 作成）の 3 Stage 構成です。本機能を有効化すると、
-**Stage A 完了直前に watcher 自身が `tasks.md` 末尾の build/test/lint コマンドを
-REPO_DIR で独立再実行**し、exit code が 0 以外であれば Stage B に進ませません。
+**Stage A 完了直前に `tasks.md` 末尾の build/test/lint コマンドを独立再実行**し、
+exit code が 0 以外であれば Stage B に進ませません。`tasks.md` 由来の自動 verify
+（構造化ブロック / ヒューリスティック抽出）は、watcher / cron ユーザーの非 sandbox 権限では
+直接実行せず、`codex sandbox` の permission profile 境界内で実行します。
 これにより、Developer が `impl-notes.md` に「ローカル build 失敗だがスコープ外」と
 自由記述するだけで Stage A が完了扱いとなり、build 不通のまま PR が出てしまう
 事故を構造的に防ぎます。
@@ -3962,9 +3964,11 @@ flowchart TD
     RS -->|ブロック無 + env 非空| SRC2[source=env-command]
     RS -->|ブロック無 + env 空 + heuristic ヒット| SRC3[source=heuristic]
     RS -->|いずれも不可| OK2
-    SRC1 --> X1{実行結果}
-    SRC2 --> X1
-    SRC3 --> X1
+    SRC1 --> SX[codex sandbox -P profile]
+    SRC3 --> SX
+    SRC2 --> DX[operator command direct]
+    SX --> X1{実行結果}
+    DX --> X1
     X1 -->|SKIPPED no-verify-task| OK2[Stage A 完了 + SKIPPED ログ]
     X1 -->|exit 0| OK3[Stage A 完了 + SUCCESS ログ]
     X1 -->|exit 非 0 or timeout| F{stage-a-verify round}
@@ -3994,6 +3998,7 @@ flowchart TD
 | `STAGE_A_VERIFY_ENABLED` | `true` | 無効化する場合のみ `false` | Stage A Verify Gate の有効化 / 無効化 |
 | `STAGE_A_VERIFY_TIMEOUT` | `600`（秒） | 大規模 repo は延長 | verify 再実行の最大経過秒数 |
 | `STAGE_A_VERIFY_COMMAND` | （空） | 未対応言語のみ | 構造化 verify ブロックが無い場合に参照する固定 escape hatch（散文誤認回避用。構造化ブロックがある場合はそちらが優先） |
+| `STAGE_A_VERIFY_SANDBOX_PROFILE` | `:workspace` | 通常は変更不要 | `tasks.md` 由来 verify を `codex sandbox` で実行する permission profile。`:danger-full-access` / `danger-full-access` は repository 由来 verify では拒否 |
 | `STAGE_A_VERIFY_STATE_DIR` | `$HOME/.idd-codex/issue-watcher/state/<repo_slug>` | 通常は変更不要 | round counter の永続化先ベースディレクトリ（worktree 外）。テスト / 隔離用途で上書き可能（#246） |
 
 `STAGE_A_VERIFY_ENABLED` は `=false` 完全一致のみが明示 opt-out。`=false` 以外
@@ -4026,7 +4031,26 @@ verify コマンドは以下の順序で **決定論的に**解決されます�
 
 採用された解決手段は `stage-a-verify: resolve source=<structured-block|env-command|heuristic>` の
 ログ 1 行に記録されます。構造化 verify ブロックを持たない既存 spec は手段 1 を素通りし、env
-（設定済みなら）またはヒューリスティックに到達するため、**本機能導入前と挙動は変わりません**。
+（設定済みなら）またはヒューリスティックに到達するため、**コマンド解決順序は本機能導入前と
+変わりません**。実行境界は #51 で変わり、`structured-block` / `heuristic` は `codex sandbox`
+内、`env-command` は operator 明示設定として従来どおり直接実行されます。
+
+#### Stage A Verify の信頼境界（#51）
+
+`tasks.md` は repository 由来の成果物であり、Issue / PR 由来の prompt injection の影響を受けうる
+未信頼入力として扱います。そのため、構造化 verify ブロックとヒューリスティック抽出で得たコマンドは
+watcher / cron 実行ユーザーの非 sandbox 権限で `bash -c` 実行しません。Stage A Verify は
+`codex sandbox -P "$STAGE_A_VERIFY_SANDBOX_PROFILE" -C "$REPO_DIR" -- bash -c "$cmd"` で実行し、
+`&&` / `|` / `;` / 改行などの正当な複合 shell コマンドは sandbox 内の shell にそのまま渡します。
+
+既定 profile は `:workspace` です。sandbox helper が利用できない、profile が未設定、または profile が
+`:danger-full-access` / `danger-full-access` の場合、Stage A Verify は非 sandbox 実行へ fallback せず
+失敗として扱い、`stage-a-verify:` ログと通常の round 処理で原因を確認できる形にします。
+
+`STAGE_A_VERIFY_COMMAND` は repository 由来ではなく operator が cron / launchd で明示する設定です。
+このため既存 semantics を維持し、構造化 verify ブロックが無い場合の固定 escape hatch として
+従来どおり watcher 側で直接実行します。公開 repo で未信頼 Issue を扱う場合は、repo 由来 verify を
+優先できるよう構造化 verify ブロックへ移行し、必要最小限の期間だけ env command を使ってください。
 
 ### design-less impl（tasks.md 不在）は gate 対象外（意図された仕様）
 
@@ -4222,7 +4246,8 @@ body の形式（grep / awk で個別抽出可能）:
 
 - `DISABLED reason=env-opt-out` — opt-out 時
 - `SKIPPED reason=no-verify-task-in-tasks-md` — keyword 一致なし
-- `EXEC issue=#<N> timeout=<S>s cmd=<shell-quoted>` — 実行開始
+- `EXEC issue=#<N> source=<structured-block|env-command|heuristic> timeout=<S>s cmd=<shell-quoted>` — 実行開始
+- `sandbox EXEC profile=<PROFILE> boundary=codex-sandbox` — repository 由来 verify の sandbox 実行開始
 - `SUCCESS exit=0` — 成功
 - `FAILED exit=<N>` — 失敗（exit）
 - `TIMEOUT timeout=<S>s exit=124` — 失敗（timeout）
