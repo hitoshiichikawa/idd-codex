@@ -382,17 +382,88 @@ pr_build_prompt_file() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# pr_placeholder_reject_reason: placeholder 値の拒否理由を返す（Issue #52 Req 6）
+#   入力: $1 = field(base|head|pr), $2 = value
+#   出力: ok または reason category
+#   戻り値: 0 固定
+# ─────────────────────────────────────────────────────────────────────────────
+pr_placeholder_reject_reason() {
+  local field="$1"
+  local value="$2"
+
+  if [ -z "$value" ] || [ "$value" = "null" ]; then
+    printf 'empty'
+    return 0
+  fi
+  case "$value" in
+    -*) printf 'leading-option'; return 0 ;;
+    *$'\n'* | *$'\r'*) printf 'newline'; return 0 ;;
+  esac
+
+  if [ "$field" = "pr" ] && ! [[ "$value" =~ ^[0-9]+$ ]]; then
+    printf 'non-numeric-pr'
+    return 0
+  fi
+
+  local command_substitution_marker="\$("
+  local backtick_marker="\`"
+  if [[ "$value" == *"$command_substitution_marker"* || "$value" == *"$backtick_marker"* ]]; then
+    printf 'command-substitution'
+    return 0
+  fi
+
+  case "$value" in
+    *'>'* | *'<'*) printf 'redirection'; return 0 ;;
+    *'*'* | *'?'* | *'['*) printf 'glob'; return 0 ;;
+    *';'* | *'|'* | *'&'*) printf 'shell-separator'; return 0 ;;
+  esac
+
+  if ! [[ "$value" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+    printf 'unsafe-character'
+    return 0
+  fi
+
+  printf 'ok'
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# pr_validate_placeholder_value: PR-derived placeholder 値を data として検証する
+#   入力: $1 = field(base|head|pr), $2 = value, $3 = pr_number_for_log(optional)
+#   戻り値: 0 = ok / 1 = rejected
+#
+#   rejected value は public comment に出さず、local warning も raw value ではなく
+#   PR number / field / reason category のみを出す。
+# ─────────────────────────────────────────────────────────────────────────────
+pr_validate_placeholder_value() {
+  local field="$1"
+  local value="$2"
+  local pr_context="${3:-unknown}"
+  local reason
+  reason=$(pr_placeholder_reject_reason "$field" "$value")
+  if [ "$reason" = "ok" ]; then
+    return 0
+  fi
+
+  if ! [[ "$pr_context" =~ ^[0-9]+$ ]]; then
+    pr_context="unknown"
+  fi
+  pr_warn "PR #${pr_context}: placeholder rejected field=${field} reason=${reason}; skip"
+  return 1
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # pr_substitute_placeholders: 実行コマンドのプレースホルダ置換（task 5.1）
 #   入力: $1 = cmd_template, $2 = base_ref, $3 = head_ref, $4 = pr_number,
 #         $5 = prompt_file_path
 #   出力: stdout に置換済みコマンド文字列
-#   戻り値: 0 = ok / 1 = metachar 検出（呼び出し元は当該 PR を skip）
-#   AC: 4.3
+#   戻り値: 0 = ok / 1 = unsafe placeholder value（呼び出し元は当該 PR を skip）
+#   AC: 4.3, Issue #52 Req 6.1, 6.2, 6.5
 #
 #   - 置換対象: {BASE} / {HEAD} / {PR} / {PROMPT_FILE}
-#   - 注入値（GitHub 由来の branch 名 / PR 番号）に shell metacharacter
-#     （`;` `|` `&` `` ` `` `$(`）が混入していないか検査し、検出時は WARN + skip
-#     （GitHub branch 命名規約では発生しないが防御的設計 / Security Considerations）。
+#   - 注入値（GitHub 由来の branch 名 / PR 番号）は field ごとに allowlist 検査し、
+#     newline / redirection / glob / command substitution / separator / leading option /
+#     non-numeric PR number を WARN + skip で拒否する。
 #   - prompt_file_path は secure tempfile helper 由来の自前パスのため検査対象外。cmd_template は
 #     運用者入力（信頼境界内）かつ正当な `$(cat '...')` を含むため検査しない。
 #   - stdout に結果を返す契約のため pr_log は使わず pr_warn（stderr）のみ使用。
@@ -404,16 +475,10 @@ pr_substitute_placeholders() {
   local pr_number="$4"
   local prompt_file="$5"
 
-  local v
-  for v in "$base_ref" "$head_ref" "$pr_number"; do
-    # shellcheck disable=SC2016  # 単一引用符内の $( は意図した「リテラル文字列の検出パターン」
-    case "$v" in
-      *';'* | *'|'* | *'&'* | *'`'* | *'$('* )
-        pr_warn "placeholder 値に shell metacharacter を検出（base='${base_ref}' head='${head_ref}' pr='${pr_number}'）。当該 PR を skip します"
-        return 1
-        ;;
-    esac
-  done
+  local pr_context="$pr_number"
+  pr_validate_placeholder_value "base" "$base_ref" "$pr_context" || return 1
+  pr_validate_placeholder_value "head" "$head_ref" "$pr_context" || return 1
+  pr_validate_placeholder_value "pr" "$pr_number" "$pr_context" || return 1
 
   local out="$cmd_template"
   out="${out//\{BASE\}/$base_ref}"
@@ -421,6 +486,44 @@ pr_substitute_placeholders() {
   out="${out//\{PR\}/$pr_number}"
   out="${out//\{PROMPT_FILE\}/$prompt_file}"
   printf '%s' "$out"
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# pr_write_exec_failure_diagnostic: non-quota exec failure の local artifact を残す
+#   入力: $1=pr_number, $2=sha, $3=tool, $4=exit_rc, $5=stdout_file, $6=stderr_file
+#   出力: stdout に diagnostic artifact path（作成不能なら空）
+#   戻り値: 0 固定
+# ─────────────────────────────────────────────────────────────────────────────
+pr_write_exec_failure_diagnostic() {
+  local pr_number="$1"
+  local sha="$2"
+  local tool="$3"
+  local exec_rc="$4"
+  local out_file="$5"
+  local err_file="$6"
+
+  local diagnostic_file
+  if ! diagnostic_file=$(idd_secure_mktemp "pr-reviewer-diagnostic-${pr_number}"); then
+    pr_warn "PR #${pr_number}: exec-failed diagnostic artifact の作成に失敗"
+    printf '\n'
+    return 0
+  fi
+
+  {
+    printf 'PR Reviewer execution failure diagnostic\n'
+    printf 'pr_number=%s\n' "$pr_number"
+    printf 'sha=%s\n' "$sha"
+    printf 'tool=%s\n' "$tool"
+    printf 'exit=%s\n' "$exec_rc"
+    printf '\n[stdout]\n'
+    cat "$out_file" 2>/dev/null || true
+    printf '\n[stderr]\n'
+    cat "$err_file" 2>/dev/null || true
+  } > "$diagnostic_file"
+
+  pr_error "PR #${pr_number}: exec-failed diagnostic retained path=${diagnostic_file} reason=non-quota-exec-failure"
+  printf '%s\n' "$diagnostic_file"
   return 0
 }
 
@@ -963,7 +1066,7 @@ pr_run_review_for_pr() {
   # shellcheck disable=SC2064  # secure tempfile paths are shell-escaped into a fixed cleanup command.
   trap "$cleanup_cmd" RETURN
 
-  # プレースホルダ置換（{BASE}/{HEAD}/{PR}/{PROMPT_FILE}）+ metachar 検査（AC 4.3）
+  # プレースホルダ置換（{BASE}/{HEAD}/{PR}/{PROMPT_FILE}）+ unsafe value 検査（AC 4.3 / Issue #52 Req 6）
   local resolved_cmd
   if ! resolved_cmd=$(pr_substitute_placeholders "$cmd_template" "$base_ref" "$head_ref" "$pr_number" "$prompt_file"); then
     return 1
@@ -997,7 +1100,7 @@ pr_run_review_for_pr() {
     return 3
   fi
 
-  # 実行失敗（非ゼロ終了）→ exec-failed エラーコメント（stderr 1KB 抜粋付き、AC 4.5）
+  # 実行失敗（非ゼロ終了）→ public は generic、raw stdout/stderr は local diagnostic artifact に限定
   if [ "$exec_rc" -ne 0 ]; then
     local quota_reset_epoch
     quota_reset_epoch=$(pr_detect_usage_limit_reset_epoch "$out_file" "$err_file")
@@ -1006,12 +1109,16 @@ pr_run_review_for_pr() {
       return 2
     fi
 
-    local err_excerpt detail
-    err_excerpt=$(head -c 1024 "$err_file" 2>/dev/null || echo "")
-    pr_error "PR #${pr_number}: レビュー実行コマンドが非ゼロ終了 (exit=${exec_rc}, tool=${tool})"
-    # shellcheck disable=SC2016  # 単一引用符内のバッククォートは markdown コードフェンスのリテラル
-    detail=$(printf 'レビュー実行コマンドが非ゼロ終了しました（exit=%s, tool=%s）。\n\n```\n%s\n```' \
-      "$exec_rc" "$tool" "$err_excerpt")
+    local diagnostic_file correlation_token detail
+    diagnostic_file=$(pr_write_exec_failure_diagnostic "$pr_number" "$sha" "$tool" "$exec_rc" "$out_file" "$err_file")
+    correlation_token="unavailable"
+    if [ -n "$diagnostic_file" ]; then
+      correlation_token="$(basename "$diagnostic_file")"
+    fi
+    pr_error "PR #${pr_number}: レビュー実行コマンドが非ゼロ終了 (exit=${exec_rc}, tool=${tool}, correlation=${correlation_token})"
+    # shellcheck disable=SC2016  # 単一引用符内のバッククォートは markdown inline code のリテラル
+    detail=$(printf 'レビュー実行コマンドが非ゼロ終了しました。詳細は watcher のローカルログまたは診断 artifact を確認してください。\n\n- PR: #%s\n- sha: `%s`\n- tool: `%s`\n- exit: `%s`\n- correlation: `%s`' \
+      "$pr_number" "$sha" "$tool" "$exec_rc" "$correlation_token")
     pr_post_error_comment "$pr_number" "$sha" "exec-failed" "$detail" "$tool"
     return 3
   fi

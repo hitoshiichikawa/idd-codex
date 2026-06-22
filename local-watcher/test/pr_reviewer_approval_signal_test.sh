@@ -35,6 +35,8 @@ extract_function() {
 }
 
 # shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$CORE_UTILS_SH" "idd_secure_mktemp")"
+# shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$CORE_UTILS_SH" "pr_log")"
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$CORE_UTILS_SH" "pr_warn")"
@@ -46,6 +48,10 @@ eval "$(extract_function "$PR_REVIEWER_SH" "pr_build_marker")"
 eval "$(extract_function "$PR_REVIEWER_SH" "pr_default_prompt")"
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$PR_REVIEWER_SH" "pr_build_prompt_file")"
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$PR_REVIEWER_SH" "pr_placeholder_reject_reason")"
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$PR_REVIEWER_SH" "pr_validate_placeholder_value")"
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$PR_REVIEWER_SH" "pr_substitute_placeholders")"
 # shellcheck disable=SC1090,SC2086
@@ -65,8 +71,9 @@ eval "$(extract_function "$PR_REVIEWER_SH" "pr_add_iteration_label")"
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$PR_REVIEWER_SH" "pr_run_review_for_pr")"
 
-for fn in pr_log pr_warn pr_error pr_build_marker pr_default_prompt \
-  pr_build_prompt_file pr_substitute_placeholders pr_post_review_comment \
+for fn in idd_secure_mktemp pr_log pr_warn pr_error pr_build_marker pr_default_prompt \
+  pr_build_prompt_file pr_placeholder_reject_reason pr_validate_placeholder_value \
+  pr_substitute_placeholders pr_post_review_comment \
   pr_detect_usage_limit_reset_epoch pr_detect_iteration_keyword \
   pr_detect_approval_keyword pr_resolve_review_verdict \
   pr_try_post_formal_approval pr_add_iteration_label pr_run_review_for_pr; do
@@ -116,6 +123,8 @@ trap 'rm -rf "$tmp_dir"' EXIT
 comments_file="$tmp_dir/comments.json"
 formal_file="$tmp_dir/formal-reviews.txt"
 labels_file="$tmp_dir/labels.txt"
+export LOG_DIR="$tmp_dir/logs"
+mkdir -p "$LOG_DIR"
 printf '[]\n' > "$comments_file"
 : > "$formal_file"
 : > "$labels_file"
