@@ -38,6 +38,15 @@
   - Darwin 依存の launchd plist 経路は fake `uname` を使う shell test で production branch 経由の動作を検証した。
 - 残存課題: なし（task 3 の Guard profile renderer は本 task scope 外）。
 
+### Task 3
+
+- 採用方針: Guard profile 生成を `sed` 置換から `render_guard_profile_config` の literal replacement に切り替え、hook path を data として扱うようにした。
+- 重要な判断:
+  - `#` / `\` / `&` / spaces を含む path で delimiter や replacement syntax の影響を受けないよう、bash の置換ではなく `awk` の `index` / `substr` で placeholder を置換した。
+  - Guard config template は TOML literal string (`'...'`) に変更し、backslash を escape sequence として解釈させず exact path を保持する形式にした。
+  - placeholder 不在や TOML literal string で安全に表現できない path は malformed profile を書かず、operator-visible error で fail closed する。
+- 残存課題: なし（single quote / newline を含む hook path は fail closed。通常の `$HOME/.idd-codex/hooks` 系 path には影響なし）。
+
 ## 確認事項
 
 （task 1 の人間判断は確定済み。残存する確認事項なし）
@@ -56,11 +65,16 @@
 | 2.3 | `install.sh`: `log_action BACKUP`, `.bak` recovery path | Operator が install log を確認して previous contents を復元する flow | `security_medium_install_test.sh`: watcher / plist backup path is operator-visible | `bash local-watcher/test/security_medium_install_test.sh` pass | recovery は `<target>.bak` |
 | 2.4 | `install.sh`: existing `.bak` branch in `copy_local_runtime_file` | Reinstall 時に既存 recovery file がある local runtime overwrite flow | `security_medium_install_test.sh`: existing recovery prevents overwrite without force / force preserves `.bak` | `bash local-watcher/test/security_medium_install_test.sh` pass | `--force` は target overwrite の opt-in。既存 `.bak` は温存 |
 | 2.5 | `install.sh`: dry-run-aware `copy_local_runtime_file` logging | `install.sh --dry-run --local` / `--dry-run --all` の action preview flow | `security_medium_install_test.sh`: dry-run reports BACKUP and OVERWRITE without modifying files | `bash local-watcher/test/security_medium_install_test.sh` pass | `--local` 経路で検証。`--all` でも同じ `INSTALL_LOCAL` branch を通る |
+| 3.1 | `install.sh`: `render_guard_profile_config`; `local-watcher/hooks/idd-codex-guard.config.toml` | `install.sh --local` が `${CODEX_HOME:-$HOME/.codex}/idd-codex-guard.config.toml` を生成する flow | `security_medium_install_test.sh`: guard profile normal install preserves exact hook path / removes placeholder | `bash local-watcher/test/security_medium_install_test.sh` pass | 通常 path の production install 経路で検証 |
+| 3.2 | `install.sh`: `render_guard_profile_config` literal replacement; Guard template TOML literal string | Operator が `IDD_CODEX_HOOKS_INSTALL_DIR` に特殊文字を含む path を指定して `install.sh --local` を実行する flow | `security_medium_install_test.sh`: guard profile keeps `#`, `&`, backslash, and spaces / leaves no placeholder | `bash local-watcher/test/security_medium_install_test.sh` pass | `sed` delimiter / replacement syntax を通さない regression |
+| 3.3 | `install.sh`: guard renderer validation before write | Guard profile template が壊れている場合の local install failure path | `security_medium_install_test.sh`: renderer fails closed when template lacks placeholder / emits no malformed profile content / error is visible | `bash local-watcher/test/security_medium_install_test.sh` pass | malformed template は helper 単位で検証。install path は helper failure で `exit 1` |
+| 3.4 | `install.sh`: dry-run guard profile branch | `install.sh --dry-run --local` の Guard profile action preview flow | `security_medium_install_test.sh`: dry-run reports generated profile action and does not create profile | `bash local-watcher/test/security_medium_install_test.sh` pass | dry-run でも action は表示、dest は未作成 |
 | NFR 1.1 | `setup.sh`, `README.md` env var table | Existing bootstrap env override flow | `security_medium_bootstrap_docs_test.sh`: env var names maintained | `bash local-watcher/test/security_medium_bootstrap_docs_test.sh` pass | `IDD_CODEX_BRANCH` default 値のみ変更 |
 | NFR 1.3 | `install.sh`: watcher target path and launchd target path unchanged | Existing cron / launchd command path flow | `security_medium_install_test.sh`: watcher installed at `$HOME/bin/idd-codex-issue-watcher.sh`; plist installed at `$HOME/Library/LaunchAgents/com.local.idd-codex-issue-watcher.plist` | `bash local-watcher/test/security_medium_install_test.sh` pass | command path は変更なし |
 | NFR 1.4 | `install.sh`: safe overwrite idempotency branches | Repeated `install.sh --local` / `--all` reinstall flow | `security_medium_install_test.sh`: identical skip, existing recovery skip, force overwrite with recovery preserved; `install_local_namespace_test.sh`: repeated install regression | both tests pass | repo install path は変更なし |
 | NFR 2.1 | `README.md`, `QUICK-HOWTO.md`, `setup.sh` comments | Operator-visible bootstrap docs | `security_medium_bootstrap_docs_test.sh`: pinned URL / override / checksum docs assertions | `bash local-watcher/test/security_medium_bootstrap_docs_test.sh` pass | 変更した operator-visible behavior を docs に記載 |
-| NFR 2.3 | `local-watcher/test/security_medium_install_test.sh` | Task 2 の regression suite | Normal create / unwanted existing recovery / boundary dry-run and Darwin plist assertions | `bash local-watcher/test/security_medium_install_test.sh` pass | 正常系・異常系・境界値を含む |
+| NFR 2.2 | `install.sh`: Guard renderer failure messages | Guard profile hardening check が input / template を reject する flow | `security_medium_install_test.sh`: guard renderer failure is operator-visible | `bash local-watcher/test/security_medium_install_test.sh` pass | affected feature と reason category を stderr に出す |
+| NFR 2.3 | `local-watcher/test/security_medium_install_test.sh` | install hardening regression suite | Normal create / unwanted existing recovery / Guard malformed template / boundary dry-run and Darwin plist assertions | `bash local-watcher/test/security_medium_install_test.sh` pass | task 2 / task 3 とも正常系・異常系・境界値を含む |
 
 ## Verification
 
@@ -70,6 +84,7 @@
 - `bash local-watcher/test/install_local_namespace_test.sh` — pass
 - `shellcheck setup.sh local-watcher/test/security_medium_bootstrap_docs_test.sh` — pass
 - `shellcheck install.sh local-watcher/test/security_medium_install_test.sh local-watcher/test/install_local_namespace_test.sh` — pass
+- `shellcheck install.sh local-watcher/test/security_medium_install_test.sh` — pass
 - `git fetch --depth 1 origin 9f8e9cea7df960f5be14849edcbac03dea55162e` against `https://github.com/hitoshiichikawa/idd-codex.git` — pass
 
 STATUS: complete
