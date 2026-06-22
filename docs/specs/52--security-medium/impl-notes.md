@@ -4,12 +4,13 @@
 
 ### Task 1
 
-- 採用方針: pinned bootstrap reference と checksum artifacts 方針が未決のため、`setup.sh` / README / QUICK-HOWTO / regression test の変更は実施しない。
-- 重要な判断: `requirements.md` / `design.md` / `tasks.md` と Issue #52 コメントを確認したが、既定に採用する release tag または commit SHA の人間決定は見つからなかった。
-- 重要な判断: checksum artifacts を同一 PR で提供するか、release 運用手順として別扱いにするかも未決であり、Developer 判断で checksum 値や artifact 手順を発明しない。
-- 残存課題: 人間が pinned reference と checksum 方針を決定した後、task 1 を再実行して setup / docs / test を同期する必要がある。
+- 前提だった人間判断は **#52 owner により確定済み**（詳細は `tasks.md` の task 1 を参照）:
+  - 既定 pinned reference = **commit SHA**（mutable `main` ではない）。初期値は実装時点の
+    `origin/main` HEAD の commit SHA を採用し、`setup.sh` / docs に「release ごとに本 SHA を bump する」
+    maintainer note を併記する。`IDD_CODEX_BRANCH` / `IDD_CODEX_REPO_URL` override は名称・挙動を変えず温存。
+  - checksum artifacts は本 PR では生成・提供しない（別 release 運用）。AC 1.5 は検証 path の docs 記載で満たす。
+- 次アクション: 上記確定方針に従って `setup.sh` / README / QUICK-HOWTO / `security_medium_bootstrap_docs_test.sh` を実装する。
 
 ## 確認事項
 
-- task 1 の既定値として採用する pinned release tag または commit SHA を決定してください。
-- checksum artifacts をこの PR で提供するか、release 運用手順として別途扱うかを決定してください。
+（task 1 の人間判断は確定済み。残存する確認事項なし）

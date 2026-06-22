@@ -1,8 +1,15 @@
 # Implementation Plan
 
-- [ ] 1. pinned bootstrap reference と checksum 方針を人間決定後に setup / docs へ反映する
-  - 着手前に、既定の pinned release tag または commit SHA と、checksum artifacts を同一 PR で提供するかどうかの人間決定を確認する。未決なら実装せず PR の「確認事項」に戻す。
-  - `setup.sh` の推奨 command コメント、no-args guidance、`IDD_CODEX_BRANCH` default を同じ pinned reference に更新する。
+- [ ] 1. 確定済み pinned reference / checksum 方針を setup / docs へ反映する
+  - **人間決定は確定済み（#52 owner 判断 / 本 task は実装可能）**:
+    - 既定 pinned reference は **commit SHA**（mutable `main` ではなく）を採用する。初期値は実装時点の
+      `origin/main` HEAD の commit SHA（`git rev-parse origin/main` 等で取得した 40 桁 / 短縮でも可）を
+      埋め込み、`setup.sh` と docs に「**release ごとに本 SHA を bump する**」maintainer note を併記する。
+    - `IDD_CODEX_BRANCH` / `IDD_CODEX_REPO_URL` override は **名称・挙動を一切変えず温存**する
+      （mutable branch を選ぶのは明示 override であることを docs に明記）。
+    - **checksum artifacts は本 PR では生成・提供しない**（別 release 運用として扱う）。AC 1.5 は
+      「artifacts を提供する場合の検証 path」を docs に記載することで満たす（artifact 自体は本 PR scope 外）。
+  - `setup.sh` の推奨 command コメント、no-args guidance、`IDD_CODEX_BRANCH` default を同じ pinned reference（commit SHA）に更新する。
   - README と QUICK-HOWTO の quick install URL、env var table、mutable branch override note、checksum verification path を同じ pinned reference に同期する。
   - `security_medium_bootstrap_docs_test.sh` を追加し、`setup.sh` default と README / QUICK-HOWTO の推奨 URL が同じ pinned reference を参照し、`IDD_CODEX_BRANCH` / `IDD_CODEX_REPO_URL` override 名が維持されることを検証する。
   - _Requirements:_ 1.1, 1.2, 1.3, 1.4, 1.5, NFR 1.1, NFR 2.1
