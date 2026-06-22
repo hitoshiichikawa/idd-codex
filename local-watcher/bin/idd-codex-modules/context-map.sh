@@ -493,8 +493,21 @@ ci_exec_indexer_prompt() {
     return 2
   fi
 
-  printf '%s' "$prompt" |
-    "${CODEX_BIN:-codex}" exec -C "$REPO_DIR" -m "$model" --sandbox read-only -
+  # #75 の runaway 上限（CODEX_DEFAULT_TIMEOUT_SEC）を Indexer exec にも継承する。Indexer は
+  # codex_exec_prompt を経由しない直接呼び出しのため、ここで明示的に timeout を適用する。
+  # codex_effective_timeout_sec は watcher 本体（#75）で定義される。未定義（単体テスト等）/
+  # 空のときは timeout なし＝本変更導入前と同一挙動にフォールバックする。
+  local _idx_timeout=""
+  if declare -F codex_effective_timeout_sec >/dev/null 2>&1; then
+    _idx_timeout="$(codex_effective_timeout_sec)"
+  fi
+  if [ -n "$_idx_timeout" ]; then
+    printf '%s' "$prompt" |
+      timeout "$_idx_timeout" "${CODEX_BIN:-codex}" exec -C "$REPO_DIR" -m "$model" --sandbox read-only -
+  else
+    printf '%s' "$prompt" |
+      "${CODEX_BIN:-codex}" exec -C "$REPO_DIR" -m "$model" --sandbox read-only -
+  fi
 }
 
 ci_run_indexer() {
