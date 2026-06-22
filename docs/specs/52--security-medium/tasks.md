@@ -1,13 +1,13 @@
 # Implementation Plan
 
-- [ ] 1. pinned bootstrap reference と checksum 方針を人間決定後に setup / docs へ反映する
+- [x] 1. pinned bootstrap reference と checksum 方針を人間決定後に setup / docs へ反映する
   - 着手前に、既定の pinned release tag または commit SHA と、checksum artifacts を同一 PR で提供するかどうかの人間決定を確認する。未決なら実装せず PR の「確認事項」に戻す。
   - `setup.sh` の推奨 command コメント、no-args guidance、`IDD_CODEX_BRANCH` default を同じ pinned reference に更新する。
   - README と QUICK-HOWTO の quick install URL、env var table、mutable branch override note、checksum verification path を同じ pinned reference に同期する。
   - `security_medium_bootstrap_docs_test.sh` を追加し、`setup.sh` default と README / QUICK-HOWTO の推奨 URL が同じ pinned reference を参照し、`IDD_CODEX_BRANCH` / `IDD_CODEX_REPO_URL` override 名が維持されることを検証する。
   - _Requirements:_ 1.1, 1.2, 1.3, 1.4, 1.5, NFR 1.1, NFR 2.1
 
-- [ ] 2. `install.sh --local` の local runtime safe overwrite を実装する (P)
+- [x] 2. `install.sh --local` の local runtime safe overwrite を実装する (P)
   - `$HOME/bin/idd-codex-issue-watcher.sh` と macOS launchd plist にだけ適用する local runtime copy helper を追加し、差分あり既存ファイルを silent overwrite しない。
   - recovery file を operator-visible に作成し、既存 recovery file を無断で上書きしない。`--force` 時も recovery file 保護をログに出す。
   - `--dry-run --local` / `--dry-run --all` で create / skip / backup / overwrite の予定 action を表示する。
@@ -15,7 +15,7 @@
   - _Requirements:_ 2.1, 2.2, 2.3, 2.4, 2.5, NFR 1.3, NFR 1.4, NFR 2.3
   - _Boundary:_ Local Runtime Safe Copy
 
-- [ ] 3. Guard Hook profile の literal rendering と dry-run reporting を実装する
+- [x] 3. Guard Hook profile の literal rendering と dry-run reporting を実装する
   - `install.sh` の Guard profile 生成を `sed` delimiter replacement から literal replacement helper に置き換える。
   - hook path に `#`, `\`, `&`, spaces を含むケースで rendered profile が exact path を保持し、placeholder が残らないことを検証する。
   - generation failure 時は malformed profile を書かず、operator-visible error を出す。
@@ -24,7 +24,7 @@
   - _Requirements:_ 3.1, 3.2, 3.3, 3.4, NFR 2.2, NFR 2.3
   - _Depends:_ 2
 
-- [ ] 4. secure tempfile helper を `core_utils.sh` に追加し watcher 本体の predictable temp path を置換する (P)
+- [x] 4. secure tempfile helper を `core_utils.sh` に追加し watcher 本体の predictable temp path を置換する (P)
   - `core_utils.sh` に owner-only temp directory と non-predictable file を作る `idd_secure_mktemp` helper を追加する。
   - `idd-codex-issue-watcher.sh` の triage JSON、quota reset handoff、command stderr temp、diagnostic temp の predictable `/tmp` path / fallback を helper に置き換える。
   - helper failure は current operation を fail-visible にし、timestamp / PID / issue number / repo slug だけの fallback を使わない。
@@ -33,7 +33,7 @@
   - _Requirements:_ 5.1, 5.2, 5.3, 5.4, 5.5, NFR 2.2, NFR 2.3
   - _Boundary:_ Secure Tempfile Helper, Watcher Core Tempfile Call Sites
 
-- [ ] 5. processor modules の temp file 作成を secure tempfile helper に統一する
+- [x] 5. processor modules の temp file 作成を secure tempfile helper に統一する
   - `auto-rebase.sh` の result file / dismissal stderr temp から predictable fallback を除去する。
   - `pr-reviewer.sh` の prompt / stdout / stderr / result / approval body / approval stderr temp を helper に置き換える。
   - `pr-iteration.sh` の usage-limit / soft-fail / recovery handoff temp と、`quota-aware.sh` の quota reset state atomic update temp を owner-only creation に合わせる。
@@ -42,7 +42,7 @@
   - _Requirements:_ 5.1, 5.2, 5.3, 5.4, 5.5, NFR 2.2, NFR 2.3
   - _Depends:_ 4
 
-- [ ] 6. PR Reviewer の placeholder validation と public error redaction を実装する
+- [x] 6. PR Reviewer の placeholder validation と public error redaction を実装する
   - `{BASE}`, `{HEAD}`, `{PR}` に入る PR-derived value を field ごとに検証し、newline、redirection、glob、command substitution、shell separator、leading option-like form、非 numeric PR number を拒否する。
   - unsafe value は当該 PR を skip し、operator-visible warning には PR number / field / reason category を出す。raw value は public comment に出さない。
   - non-quota execution failure の public `exec-failed` comment から raw stdout / stderr excerpt を除去し、PR number、head SHA、tool、exit code、local log correlation token だけを含める。
@@ -50,7 +50,7 @@
   - `security_medium_pr_reviewer_test.sh` に placeholder normal / unwanted value / boundary leading dash、public redaction、local diagnostics、disabled no-op、head pattern / fork exclusion regression を追加する。
   - _Requirements:_ 4.1, 4.2, 4.3, 4.4, 4.5, 6.1, 6.2, 6.3, 6.4, 6.5, NFR 1.1, NFR 1.2, NFR 2.2, NFR 2.3
 
-- [ ] 7. README / QUICK-HOWTO の operator-visible behavior を実装結果に同期する
+- [x] 7. README / QUICK-HOWTO の operator-visible behavior を実装結果に同期する
   - local runtime overwrite policy、recovery file、`--dry-run` action、Guard profile exact path handling、secure tempfile policy を README に追記する。
   - PR Reviewer non-quota failure comment が generic になり、詳細は local logs / artifacts で見ることを README の PR Reviewer 節に反映する。
   - mutable branch override と checksum artifacts の扱いを QUICK-HOWTO にも同期する。
@@ -59,7 +59,7 @@
   - _Requirements:_ 1.4, 1.5, 2.3, 4.2, 4.4, 5.3, NFR 1.1, NFR 1.2, NFR 1.3, NFR 1.4, NFR 2.1, NFR 2.2
   - _Depends:_ 1, 2, 3, 4, 5, 6
 
-- [ ] 8. hardening 全体の静的検証と smoke を実行する
+- [x] 8. hardening 全体の静的検証と smoke を実行する
   - 変更した shell scripts と追加 test に `shellcheck` を実行する。
   - 追加した security_medium 系 test をすべて実行する。
   - `install.sh --local --dry-run` の出力に local runtime / Guard profile action が含まれることを確認する。

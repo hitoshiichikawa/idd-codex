@@ -51,6 +51,8 @@ extract_function() {
 }
 
 # shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$CORE_UTILS_SH" "idd_secure_mktemp")"
+# shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$CORE_UTILS_SH" "qa_format_iso8601")"
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$CORE_UTILS_SH" "pr_log")"
@@ -71,6 +73,10 @@ eval "$(extract_function "$PR_REVIEWER_SH" "pr_default_prompt")"
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$PR_REVIEWER_SH" "pr_build_prompt_file")"
 # shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$PR_REVIEWER_SH" "pr_placeholder_reject_reason")"
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$PR_REVIEWER_SH" "pr_validate_placeholder_value")"
+# shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$PR_REVIEWER_SH" "pr_substitute_placeholders")"
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$PR_REVIEWER_SH" "pr_detect_usage_limit_reset_epoch")"
@@ -81,9 +87,10 @@ eval "$(extract_function "$PR_REVIEWER_SH" "pr_run_review_for_pr")"
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$PR_ITERATION_SH" "pi_pr_has_pr_reviewer_quota_marker")"
 
-for fn in qa_format_iso8601 pr_log pr_warn pr_error qa_detect_rate_limit \
+for fn in idd_secure_mktemp qa_format_iso8601 pr_log pr_warn pr_error qa_detect_rate_limit \
   qa_extract_usage_limit_reset_epoch qa_persist_reset_time \
   pr_reviewer_quota_marker_reset pr_default_prompt pr_build_prompt_file \
+  pr_placeholder_reject_reason pr_validate_placeholder_value \
   pr_substitute_placeholders pr_detect_usage_limit_reset_epoch \
   pr_handle_quota_wait pr_run_review_for_pr pi_pr_has_pr_reviewer_quota_marker; do
   if ! declare -F "$fn" >/dev/null; then
@@ -114,6 +121,8 @@ tmp_dir=$(mktemp -d)
 trap 'rm -rf "$tmp_dir"' EXIT
 comments_file="$tmp_dir/comments.json"
 labels_file="$tmp_dir/labels.txt"
+export LOG_DIR="$tmp_dir/logs"
+mkdir -p "$LOG_DIR"
 printf '[]\n' > "$comments_file"
 : > "$labels_file"
 

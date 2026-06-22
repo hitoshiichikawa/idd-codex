@@ -245,6 +245,126 @@ copy_template_file() {
   esac
 }
 
+# copy_local_runtime_file <src> <dest> [--executable]
+#   ローカル実行時にユーザーが編集し得るファイルの safe-overwrite 処理。
+#   対象: $HOME/bin/idd-codex-issue-watcher.sh と macOS launchd plist。
+#   差分あり既存ファイルは <dest>.bak に一度だけ退避し、既存 .bak は上書きしない。
+copy_local_runtime_file() {
+  local src="$1"
+  local dest="$2"
+  local executable=false
+  if [ "${3:-}" = "--executable" ]; then
+    executable=true
+  fi
+
+  if [ ! -f "$src" ]; then
+    echo "Error: source file not found: $src" >&2
+    return 1
+  fi
+
+  local action
+  action="$(classify_action "$src" "$dest")"
+
+  local note=""
+  if [ "$executable" = "true" ]; then
+    note="(chmod +x)"
+  fi
+
+  case "$action" in
+    NEW)
+      log_action "NEW" "$dest" "$note"
+      if [ "$DRY_RUN" = "false" ]; then
+        ensure_dir "$(dirname "$dest")"
+        cp "$src" "$dest"
+        if [ "$executable" = "true" ]; then
+          chmod +x "$dest"
+        fi
+      fi
+      ;;
+    SKIP)
+      log_action "SKIP" "$dest" "(identical to template)"
+      ;;
+    OVERWRITE)
+      local bak="$dest.bak"
+      local bak_name
+      bak_name="$(basename "$dest").bak"
+      if [ ! -f "$bak" ]; then
+        log_action "BACKUP" "$dest" "→ $bak_name (custom edits detected)"
+        if [ "$DRY_RUN" = "false" ]; then
+          cp "$dest" "$bak"
+        fi
+        log_action "OVERWRITE" "$dest" "$note"
+        if [ "$DRY_RUN" = "false" ]; then
+          cp "$src" "$dest"
+          if [ "$executable" = "true" ]; then
+            chmod +x "$dest"
+          fi
+        fi
+      else
+        if [ "$FORCE" = "true" ]; then
+          log_action "SKIP" "$bak" "(existing .bak preserved even with --force)"
+          log_action "OVERWRITE" "$dest" "$note"
+          if [ "$DRY_RUN" = "false" ]; then
+            cp "$src" "$dest"
+            if [ "$executable" = "true" ]; then
+              chmod +x "$dest"
+            fi
+          fi
+        else
+          log_action "SKIP" "$dest" "(existing .bak found, use --force to overwrite)"
+        fi
+      fi
+      ;;
+  esac
+}
+
+# render_guard_profile_config <template> <hook_path>
+#   Codex Guard profile template の placeholder を hook path に literal replacement する。
+#   sed delimiter / replacement syntax を通さず、# / \ / & / space を path data として扱う。
+render_guard_profile_config() {
+  local template_path="$1"
+  local hook_path="$2"
+  local placeholder="__IDD_CODEX_GUARD_HOOK_PATH__"
+
+  if [ ! -f "$template_path" ]; then
+    echo "Error: guard profile template not found: $template_path" >&2
+    return 1
+  fi
+
+  case "$hook_path" in
+    *"'"*|*$'\n'*|*$'\r'*)
+      echo "Error: guard hook path contains characters unsupported by TOML literal string" >&2
+      return 1
+      ;;
+  esac
+
+  local template_content
+  if ! template_content="$(cat "$template_path")"; then
+    echo "Error: failed to read guard profile template: $template_path" >&2
+    return 1
+  fi
+
+  if [[ "$template_content" != *"$placeholder"* ]]; then
+    echo "Error: guard profile template missing $placeholder" >&2
+    return 1
+  fi
+
+  IDD_CODEX_GUARD_HOOK_PATH_REPLACEMENT="$hook_path" awk -v placeholder="$placeholder" '
+    BEGIN {
+      replacement = ENVIRON["IDD_CODEX_GUARD_HOOK_PATH_REPLACEMENT"]
+    }
+    {
+      line = $0
+      rendered = ""
+      while ((pos = index(line, placeholder)) > 0) {
+        rendered = rendered substr(line, 1, pos - 1) replacement
+        line = substr(line, pos + length(placeholder))
+      }
+      print rendered line
+    }
+  ' "$template_path"
+}
+
 # copy_glob_to_homebin <src_dir> <pattern> <dest_dir> [--executable]
 #   `<src_dir>/<pattern>` にマッチする全ファイルを <dest_dir> に配置する。
 #   nullglob を一時的に有効化し、マッチ 0 件は SKIP ログを出して exit 0 で継続する。
@@ -289,6 +409,47 @@ copy_glob_to_homebin() {
   fi
 
   # nullglob を呼び出し前の状態に戻す
+  if [ "$prev_nullglob" = "off" ]; then
+    shopt -u nullglob
+  fi
+}
+
+# copy_local_watcher_scripts <src_dir> <dest_dir>
+#   local-watcher/bin/*.sh を配置する。ユーザー編集対象の watcher 本体だけ
+#   copy_local_runtime_file を使い、将来追加される補助 *.sh は従来どおり template として扱う。
+copy_local_watcher_scripts() {
+  local src_dir="$1"
+  local dest_dir="$2"
+
+  ensure_dir "$dest_dir"
+
+  local prev_nullglob
+  if shopt -q nullglob; then
+    prev_nullglob=on
+  else
+    prev_nullglob=off
+  fi
+  shopt -s nullglob
+
+  local files=( "$src_dir"/*.sh )
+  local count=${#files[@]}
+
+  if [ "$count" -eq 0 ]; then
+    log_action "SKIP" "$src_dir/*.sh" "(no files matched)"
+  else
+    local src
+    for src in "${files[@]}"; do
+      local dest name
+      name="$(basename "$src")"
+      dest="$dest_dir/$name"
+      if [ "$name" = "idd-codex-issue-watcher.sh" ]; then
+        copy_local_runtime_file "$src" "$dest" --executable
+      else
+        copy_template_file "$src" "$dest" --executable
+      fi
+    done
+  fi
+
   if [ "$prev_nullglob" = "off" ]; then
     shopt -u nullglob
   fi
@@ -1228,7 +1389,7 @@ if $INSTALL_LOCAL; then
   # 新規 *.tmpl / *.sh が追加された場合に install.sh を書き換えなくて済む。
   # 配置されるテンプレート例: idd-codex-triage-prompt.tmpl / idd-codex-iteration-prompt.tmpl /
   #   idd-codex-iteration-prompt-design.tmpl（#35 設計 PR 用）
-  copy_glob_to_homebin "$LOCAL_WATCHER_DIR/bin" "*.sh"   "$HOME/bin" --executable
+  copy_local_watcher_scripts "$LOCAL_WATCHER_DIR/bin" "$HOME/bin"
   copy_glob_to_homebin "$LOCAL_WATCHER_DIR/bin" "*.tmpl" "$HOME/bin"
 
   # local-watcher/bin/idd-codex-modules/ 配下の *.sh を $HOME/bin/idd-codex-modules/ へ配置（#177 Part 1）。
@@ -1257,14 +1418,13 @@ if $INSTALL_LOCAL; then
     _guard_config_template="$LOCAL_WATCHER_DIR/hooks/idd-codex-guard.config.toml"
     _guard_config_dest="$CODEX_CONFIG_DIR/${IDD_CODEX_HOOKS_PROFILE_NAME}.config.toml"
     _guard_hook_dest="$IDD_CODEX_HOOKS_INSTALL_DIR/idd-codex-guard.sh"
-    _guard_hook_dest_sed="${_guard_hook_dest//\\/\\\\}"
-    _guard_hook_dest_sed="${_guard_hook_dest_sed//&/\\&}"
     if [ -f "$_guard_config_template" ]; then
-      _guard_action="$(classify_action "$_guard_config_template" "$_guard_config_dest" || echo "OVERWRITE")"
+      if ! _guard_expected="$(render_guard_profile_config "$_guard_config_template" "$_guard_hook_dest")"; then
+        exit 1
+      fi
       # template と generated config は placeholder 展開の分だけ内容が異なるため、既存 dest が
       # generated 内容と一致するかは後段で直接比較する。ここではログ分類用に使う。
       if [ -f "$_guard_config_dest" ]; then
-        _guard_expected="$(sed "s#__IDD_CODEX_GUARD_HOOK_PATH__#$_guard_hook_dest_sed#g" "$_guard_config_template")"
         if [ "$_guard_expected" = "$(cat "$_guard_config_dest")" ]; then
           _guard_action="SKIP"
         else
@@ -1280,18 +1440,18 @@ if $INSTALL_LOCAL; then
         NEW|OVERWRITE)
           log_action "$_guard_action" "$_guard_config_dest" "(generated Codex profile)"
           if [ "$DRY_RUN" = "false" ]; then
-            sed "s#__IDD_CODEX_GUARD_HOOK_PATH__#$_guard_hook_dest_sed#g" "$_guard_config_template" >"$_guard_config_dest"
+            printf '%s\n' "$_guard_expected" >"$_guard_config_dest"
           fi
           ;;
       esac
     fi
-    unset _guard_config_template _guard_config_dest _guard_hook_dest _guard_hook_dest_sed _guard_action _guard_expected
+    unset _guard_config_template _guard_config_dest _guard_hook_dest _guard_action _guard_expected
   fi
 
   # macOS: launchd
   if [ "$(uname)" = "Darwin" ]; then
     ensure_dir "$HOME/Library/LaunchAgents"
-    copy_template_file \
+    copy_local_runtime_file \
       "$LOCAL_WATCHER_DIR/LaunchAgents/com.local.idd-codex-issue-watcher.plist" \
       "$HOME/Library/LaunchAgents/com.local.idd-codex-issue-watcher.plist"
 

@@ -8,14 +8,14 @@
 # 使い方（すべて推奨順）:
 #
 # 1) 対話モード（ターミナル直実行）:
-#      bash <(curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/main/setup.sh)
+#      bash <(curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/9f8e9cea7df960f5be14849edcbac03dea55162e/setup.sh)
 #
 # 2) curl パイプ + 引数指定（非対話）:
-#      curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/main/setup.sh \
+#      curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/9f8e9cea7df960f5be14849edcbac03dea55162e/setup.sh \
 #        | bash -s -- --repo /path/to/your-project --local
 #
 # 3) curl パイプ（対話、対応可能なシェル限定）:
-#      curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/main/setup.sh | bash
+#      curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/9f8e9cea7df960f5be14849edcbac03dea55162e/setup.sh | bash
 #      → stdin を /dev/tty に再接続して install.sh の対話プロンプトに入る
 #
 # オプション（install.sh に転送される）:
@@ -25,8 +25,9 @@
 #   -h | --help                    install.sh のヘルプを表示
 #
 # 環境変数で挙動を上書き:
-#   IDD_CODEX_REPO_URL   クローン元 URL（デフォルト: upstream の main）
-#   IDD_CODEX_BRANCH     チェックアウトするブランチ／タグ（デフォルト: main）
+#   IDD_CODEX_REPO_URL   クローン元 URL（デフォルト: upstream）
+#   IDD_CODEX_BRANCH     チェックアウトするブランチ／タグ／commit SHA
+#                        （デフォルト: 下記 IDD_CODEX_PINNED_REF）
 #   IDD_CODEX_DIR        クローン先パス（デフォルト: $HOME/.idd-codex）
 #
 # セキュリティ注意:
@@ -38,7 +39,9 @@
 set -euo pipefail
 
 IDD_CODEX_REPO_URL="${IDD_CODEX_REPO_URL:-https://github.com/hitoshiichikawa/idd-codex.git}"
-IDD_CODEX_BRANCH="${IDD_CODEX_BRANCH:-main}"
+# Maintainer note: release ごとに README / QUICK-HOWTO の raw URL と同時に bump する。
+IDD_CODEX_PINNED_REF="9f8e9cea7df960f5be14849edcbac03dea55162e"
+IDD_CODEX_BRANCH="${IDD_CODEX_BRANCH:-$IDD_CODEX_PINNED_REF}"
 IDD_CODEX_DIR="${IDD_CODEX_DIR:-$HOME/.idd-codex}"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -80,11 +83,11 @@ Error: curl | bash で引数なし実行されました。install.sh が対話�
 次のいずれかで再実行してください:
 
   # 1) 引数を付けて非対話実行（カレントディレクトリに配置 + watcher）
-  curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/main/setup.sh \
+  curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/9f8e9cea7df960f5be14849edcbac03dea55162e/setup.sh \
     | bash -s -- --all
 
   # 2) プロセス置換でターミナル stdin を保持したまま対話実行
-  bash <(curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/main/setup.sh)
+  bash <(curl -fsSL https://raw.githubusercontent.com/hitoshiichikawa/idd-codex/9f8e9cea7df960f5be14849edcbac03dea55162e/setup.sh)
 
   # 3) 手動インストール（最も確実）
   git clone --depth 1 https://github.com/hitoshiichikawa/idd-codex.git ~/.idd-codex
@@ -101,29 +104,56 @@ fi
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 export GIT_TERMINAL_PROMPT=0
 
+checkout_idd_codex_ref() {
+  local repo_dir="$1"
+  local ref="$2"
+
+  if ! git -C "$repo_dir" fetch --depth 1 origin "$ref"; then
+    if [[ "$ref" =~ ^[0-9a-fA-F]{40}$ ]]; then
+      echo "⚠️  commit SHA の直接 fetch に失敗しました。default branch の shallow fetch で再試行します。" >&2
+      git -C "$repo_dir" fetch --depth 1 origin
+    else
+      return 1
+    fi
+  fi
+
+  git -C "$repo_dir" checkout --detach "$ref" 2>/dev/null \
+    || git -C "$repo_dir" checkout --detach FETCH_HEAD
+  git -C "$repo_dir" reset --hard HEAD
+}
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # クローン（未取得） or 更新（既存）
 #   --progress で進捗を表示（--quiet だと無応答に見えるため）
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 if [ -d "$IDD_CODEX_DIR/.git" ]; then
-  echo "📦 既存のクローンを更新: $IDD_CODEX_DIR (branch=$IDD_CODEX_BRANCH)"
-  git -C "$IDD_CODEX_DIR" fetch --depth 1 origin "$IDD_CODEX_BRANCH"
-  git -C "$IDD_CODEX_DIR" checkout "$IDD_CODEX_BRANCH" 2>/dev/null || true
-  git -C "$IDD_CODEX_DIR" reset --hard "origin/$IDD_CODEX_BRANCH"
+  echo "📦 既存のクローンを更新: $IDD_CODEX_DIR (ref=$IDD_CODEX_BRANCH)"
+  if ! checkout_idd_codex_ref "$IDD_CODEX_DIR" "$IDD_CODEX_BRANCH"; then
+    echo "" >&2
+    echo "Error: idd-codex ref の checkout に失敗しました: $IDD_CODEX_BRANCH" >&2
+    echo "  - IDD_CODEX_BRANCH を上書きしている場合は、ブランチ／タグ／commit SHA が存在するか確認してください" >&2
+    exit 1
+  fi
 else
   # 既存の非 git ディレクトリがある場合は安全のため停止
   if [ -e "$IDD_CODEX_DIR" ]; then
     echo "Error: '$IDD_CODEX_DIR' は git リポジトリではありません。移動または削除してから再実行してください。" >&2
     exit 1
   fi
-  echo "📦 idd-codex をクローン: $IDD_CODEX_DIR (branch=$IDD_CODEX_BRANCH)"
-  if ! git clone --progress --depth 1 --branch "$IDD_CODEX_BRANCH" \
+  echo "📦 idd-codex をクローン: $IDD_CODEX_DIR (ref=$IDD_CODEX_BRANCH)"
+  if ! git clone --progress --depth 1 --no-checkout \
        "$IDD_CODEX_REPO_URL" "$IDD_CODEX_DIR"; then
     echo "" >&2
     echo "Error: git clone に失敗しました。" >&2
     echo "  - ネットワーク接続を確認してください" >&2
     echo "  - プロキシ設定がある場合は https_proxy 環境変数をセットしてください" >&2
     echo "  - IDD_CODEX_REPO_URL を fork に変えている場合は URL / 認証を確認してください" >&2
+    exit 1
+  fi
+  if ! checkout_idd_codex_ref "$IDD_CODEX_DIR" "$IDD_CODEX_BRANCH"; then
+    echo "" >&2
+    echo "Error: idd-codex ref の checkout に失敗しました: $IDD_CODEX_BRANCH" >&2
+    echo "  - IDD_CODEX_BRANCH を上書きしている場合は、ブランチ／タグ／commit SHA が存在するか確認してください" >&2
     exit 1
   fi
 fi

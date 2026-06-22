@@ -132,6 +132,80 @@ pr_error() {
   echo "[$(date '+%F %T')] [$REPO] pr-reviewer: ERROR: $*" >&2
 }
 
+# secure tempfile helper（Issue #52 Req 5）
+#
+# prompt / JSON / stderr / quota reset state などを置く一時ファイルを、repo ごとに
+# 分離済みの private tmp root（既定: $LOG_DIR/tmp）配下へ non-predictable name で
+# 作成する。mktemp 失敗時は predictable `/tmp/...-$$` 等へ fallback せず fail closed
+# し、呼び出し元が current operation を失敗扱いにできるよう非 0 を返す。
+#
+# Args:
+#   $1 = human-readable label（basename に使う前に safe charset へ正規化）
+# Stdout:
+#   作成済み tempfile の絶対 path
+# Returns:
+#   0 = created / 1 = failed（stderr に operator-visible reason）
+idd_secure_mktemp() {
+  local label="${1:-tmp}"
+  local tmp_root="${IDD_CODEX_TMP_DIR:-}"
+  if [ -z "$tmp_root" ]; then
+    if [ -n "${LOG_DIR:-}" ]; then
+      tmp_root="$LOG_DIR/tmp"
+    else
+      local uid_part="${UID:-}"
+      if [ -z "$uid_part" ]; then
+        uid_part="$(id -u 2>/dev/null || printf 'unknown')"
+      fi
+      tmp_root="${TMPDIR:-/tmp}/idd-codex-${uid_part}/tmp"
+    fi
+  fi
+
+  if [ -L "$tmp_root" ]; then
+    echo "secure-tempfile: ERROR: tmp root is a symlink: $tmp_root" >&2
+    return 1
+  fi
+  if [ -e "$tmp_root" ] && [ ! -d "$tmp_root" ]; then
+    echo "secure-tempfile: ERROR: tmp root is not a directory: $tmp_root" >&2
+    return 1
+  fi
+  if ! mkdir -p "$tmp_root" 2>/dev/null; then
+    echo "secure-tempfile: ERROR: failed to create tmp root: $tmp_root" >&2
+    return 1
+  fi
+  if ! chmod 700 "$tmp_root" 2>/dev/null; then
+    echo "secure-tempfile: ERROR: failed to set owner-only mode on tmp root: $tmp_root" >&2
+    return 1
+  fi
+
+  local mode=""
+  if mode=$(stat -c '%a' "$tmp_root" 2>/dev/null); then
+    :
+  elif mode=$(stat -f '%Lp' "$tmp_root" 2>/dev/null); then
+    :
+  else
+    echo "secure-tempfile: ERROR: failed to inspect tmp root mode: $tmp_root" >&2
+    return 1
+  fi
+  if [ "$mode" != "700" ]; then
+    echo "secure-tempfile: ERROR: tmp root is not owner-only mode=0${mode}: $tmp_root" >&2
+    return 1
+  fi
+
+  local safe_label
+  safe_label="$(printf '%s' "$label" | tr -cs 'A-Za-z0-9_.-' '-' | sed -e 's/^-*//' -e 's/-*$//')"
+  if [ -z "$safe_label" ]; then
+    safe_label="tmp"
+  fi
+
+  local tmp_file
+  if ! tmp_file=$(umask 077; mktemp "$tmp_root/idd-${safe_label}-XXXXXX" 2>/dev/null); then
+    echo "secure-tempfile: ERROR: mktemp failed in private tmp root: $tmp_root" >&2
+    return 1
+  fi
+  chmod 600 "$tmp_file" 2>/dev/null || true
+  printf '%s\n' "$tmp_file"
+}
+
 # ─── Issue #259: Codex API 529 Overloaded detector ───
 #
 # Codex API の一時的な過負荷 (HTTP 529 Overloaded) は codex CLI の stream-json
@@ -336,15 +410,12 @@ _worktree_reset() {
   #    EACCES 起因の失敗を検出して escalated cleanup に分岐するため、stderr を tmp file に
   #    キャプチャしてから内容を SLOT_LOG（>&2 経由）にも転写する。
   local clean_stderr=""
-  clean_stderr="$(mktemp -t worktree-reset-clean-XXXXXX.err 2>/dev/null || echo "")"
-  local clean_rc=0
-  if [ -n "$clean_stderr" ]; then
-    git -C "$wt" clean -fdx >/dev/null 2>"$clean_stderr" || clean_rc=$?
-  else
-    # mktemp 失敗（極端な disk full 等）の保険: 直接 stderr 素通しに fallback。
-    # この経路では EACCES 判定ができず、従来同様の挙動（失敗時 return 1）となる。
-    git -C "$wt" clean -fdx >/dev/null || clean_rc=$?
+  if ! clean_stderr="$(idd_secure_mktemp "worktree-reset-clean-stderr")"; then
+    echo "[$(date '+%F %T')] worktree-reset: ERROR: secure stderr tempfile creation failed (wt=$wt)" >&2
+    return 1
   fi
+  local clean_rc=0
+  git -C "$wt" clean -fdx >/dev/null 2>"$clean_stderr" || clean_rc=$?
 
   if [ "$clean_rc" -eq 0 ]; then
     # 成功パス: tmp file が空である前提（git clean は成功時 stderr に書かない）。
@@ -669,7 +740,10 @@ _hook_invoke() {
 
   # stderr を一時ファイルに捕捉して非ゼロ exit 時にログ転記する（Req 5.7）
   local stderr_tmp
-  stderr_tmp="$(mktemp -t slot-init-hook-XXXXXX.err 2>/dev/null || echo "")"
+  if ! stderr_tmp="$(idd_secure_mktemp "slot-init-hook-stderr")"; then
+    echo "[$(date '+%F %T')] slot-${n}: ERROR: secure stderr tempfile creation failed" >&2
+    return 1
+  fi
   local rc=0
 
   # IDD_SLOT_NUMBER / IDD_SLOT_WORKTREE / PARALLEL_SLOTS / REPO / REPO_DIR を export
@@ -680,26 +754,17 @@ _hook_invoke() {
   # `tail -c 2000` 読み出しと tee の flush の間にレースを生じ、失敗ログ末尾が欠落
   # しうる。同期リダイレクトでフック終了時に一時ファイルが確定したのち、Req 1.4 を
   # 満たすため `cat "$stderr_tmp" >&2` で stderr を従来どおり運用者へ流す。
-  if [ -n "$stderr_tmp" ]; then
-    IDD_SLOT_NUMBER="$n" \
-      IDD_SLOT_WORKTREE="$wt" \
-      PARALLEL_SLOTS="$PARALLEL_SLOTS" \
-      REPO="$REPO" \
-      REPO_DIR="$REPO_DIR" \
-      "$SLOT_INIT_HOOK" 2>"$stderr_tmp" || rc=$?
-    # フック終了後（一時ファイル確定後）に同期で stderr へ転記する。
-    # `set -euo pipefail` 下で cat 失敗が誤って _hook_invoke を致命化しないよう
-    # `|| true` でガードする（Req 1.4: stderr 観測性維持 / NFR 3.1）。
-    if [ -s "$stderr_tmp" ]; then
-      cat "$stderr_tmp" >&2 || true
-    fi
-  else
-    IDD_SLOT_NUMBER="$n" \
-      IDD_SLOT_WORKTREE="$wt" \
-      PARALLEL_SLOTS="$PARALLEL_SLOTS" \
-      REPO="$REPO" \
-      REPO_DIR="$REPO_DIR" \
-      "$SLOT_INIT_HOOK" || rc=$?
+  IDD_SLOT_NUMBER="$n" \
+    IDD_SLOT_WORKTREE="$wt" \
+    PARALLEL_SLOTS="$PARALLEL_SLOTS" \
+    REPO="$REPO" \
+    REPO_DIR="$REPO_DIR" \
+    "$SLOT_INIT_HOOK" 2>"$stderr_tmp" || rc=$?
+  # フック終了後（一時ファイル確定後）に同期で stderr へ転記する。
+  # `set -euo pipefail` 下で cat 失敗が誤って _hook_invoke を致命化しないよう
+  # `|| true` でガードする（Req 1.4: stderr 観測性維持 / NFR 3.1）。
+  if [ -s "$stderr_tmp" ]; then
+    cat "$stderr_tmp" >&2 || true
   fi
 
   if [ "$rc" -ne 0 ]; then

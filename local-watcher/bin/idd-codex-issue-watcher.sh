@@ -3062,7 +3062,9 @@ pt_build_redo_context_block() {
   esac
 
   if [ "$redo_kind" != "blocked-debugger" ]; then
-    diag_file=$(mktemp)
+    if ! diag_file=$(idd_secure_mktemp "redo-review-context-diag"); then
+      return 1
+    fi
     if review_context=$(pt_extract_review_reject_context "$task_id" "$review_round" "$review_notes_path" 2>"$diag_file"); then
       :
     else
@@ -3085,7 +3087,9 @@ EOF
   fi
 
   if [ "$redo_kind" = "debugger-fix-plan" ] || [ "$redo_kind" = "blocked-debugger" ]; then
-    diag_file=$(mktemp)
+    if ! diag_file=$(idd_secure_mktemp "redo-debugger-context-diag"); then
+      return 1
+    fi
     if debugger_context=$(pt_extract_debugger_task_section "$task_id" "$debugger_notes_path" 2>"$diag_file"); then
       :
     else
@@ -3340,7 +3344,9 @@ ${end_marker}
 EOF
 
   if grep -Fxq "$start_marker" "$impl_notes_path"; then
-    tmp_file=$(mktemp)
+    if ! tmp_file=$(idd_secure_mktemp "repeated-reject-warning"); then
+      return 1
+    fi
     awk -v start="$start_marker" -v end="$end_marker" -v block="$artifact_block" '
       $0 == start {
         print block
@@ -4160,7 +4166,7 @@ run_per_task_implementer() {
 
   local _qa_reset_file _qa_rc=0 _qa_ts _qa_stage_label
   _qa_ts=$(date +%Y%m%d-%H%M%S)
-  _qa_reset_file="/tmp/qa-reset-${REPO_SLUG}-${NUMBER}-pt-impl-${task_id}-${_qa_ts}"
+  _qa_reset_file=$(idd_secure_mktemp "qa-reset-${REPO_SLUG}-${NUMBER}-pt-impl-${task_id}-${_qa_ts}") || return 1
   _qa_stage_label="PerTask-Impl-${task_id}"
   qa_run_codex_stage "$_qa_stage_label" "$_qa_reset_file" -- \
     codex_exec_prompt "$_qa_stage_label" "$DEV_MODEL" "$prompt" \
@@ -4325,7 +4331,7 @@ run_per_task_reviewer() {
 
     local _qa_reset_file _qa_rc=0 _qa_ts _qa_stage_label
     _qa_ts=$(date +%Y%m%d-%H%M%S)
-    _qa_reset_file="/tmp/qa-reset-${REPO_SLUG}-${NUMBER}-pt-rev-${task_id}-r${round}-a${attempt}-${_qa_ts}"
+    _qa_reset_file=$(idd_secure_mktemp "qa-reset-${REPO_SLUG}-${NUMBER}-pt-rev-${task_id}-r${round}-a${attempt}-${_qa_ts}") || return 2
     _qa_stage_label="PerTask-Rev-${task_id}-r${round}-a${attempt}"
     qa_run_codex_stage "$_qa_stage_label" "$_qa_reset_file" -- \
       codex_exec_prompt "$_qa_stage_label" "$REVIEWER_MODEL" "$prompt" \
@@ -5719,7 +5725,7 @@ run_debugger_stage() {
 
   local _qa_reset_file _qa_rc=0 _qa_ts _qa_stage_label
   _qa_ts=$(date +%Y%m%d-%H%M%S)
-  _qa_reset_file="/tmp/qa-reset-${REPO_SLUG}-${NUMBER}-debugger-${trigger}-${task_label}-${_qa_ts}"
+  _qa_reset_file=$(idd_secure_mktemp "qa-reset-${REPO_SLUG}-${NUMBER}-debugger-${trigger}-${task_label}-${_qa_ts}") || return 1
   _qa_stage_label="Debugger-${trigger}-${task_label}"
   qa_run_codex_stage "$_qa_stage_label" "$_qa_reset_file" -- \
     codex_exec_prompt "$_qa_stage_label" "$DEBUGGER_MODEL" "$prompt" \
@@ -6415,7 +6421,7 @@ run_reviewer_stage() {
     # quota 超過検出として呼び出し側（run_impl_pipeline）に伝搬する。
     local _qa_reset_file_rv _qa_rc_rv=0 _qa_ts_rv _qa_stage_label_rv
     _qa_ts_rv=$(date +%Y%m%d-%H%M%S)
-    _qa_reset_file_rv="/tmp/qa-reset-${REPO_SLUG}-${NUMBER}-reviewer-r${round}-a${attempt}-${_qa_ts_rv}"
+    _qa_reset_file_rv=$(idd_secure_mktemp "qa-reset-${REPO_SLUG}-${NUMBER}-reviewer-r${round}-a${attempt}-${_qa_ts_rv}") || return 2
     _qa_stage_label_rv="Reviewer-r${round}-a${attempt}"
     qa_run_codex_stage "$_qa_stage_label_rv" "$_qa_reset_file_rv" -- \
       codex_exec_prompt "$_qa_stage_label_rv" "$REVIEWER_MODEL" "$prompt" \
@@ -6566,19 +6572,14 @@ verify_pushed_or_retry() {
 
   local push_rc=0
   local push_stderr_tmp
-  push_stderr_tmp=$(mktemp -t verify-push-XXXXXX.err 2>/dev/null || echo "")
-  if [ -n "$push_stderr_tmp" ]; then
-    if [ "$_has_timeout" = "true" ]; then
-      timeout 30 git push origin "$branch" 2>"$push_stderr_tmp" || push_rc=$?
-    else
-      git push origin "$branch" 2>"$push_stderr_tmp" || push_rc=$?
-    fi
+  if ! push_stderr_tmp=$(idd_secure_mktemp "verify-push-stderr"); then
+    mark_issue_failed "$stage_id" "${stage_label} の push 状態 verify 用 stderr 一時ファイルを安全に作成できませんでした。ローカルログの secure-tempfile エラーを確認してください。"
+    return 1
+  fi
+  if [ "$_has_timeout" = "true" ]; then
+    timeout 30 git push origin "$branch" 2>"$push_stderr_tmp" || push_rc=$?
   else
-    if [ "$_has_timeout" = "true" ]; then
-      timeout 30 git push origin "$branch" || push_rc=$?
-    else
-      git push origin "$branch" || push_rc=$?
-    fi
+    git push origin "$branch" 2>"$push_stderr_tmp" || push_rc=$?
   fi
 
   if [ "$push_rc" -eq 0 ]; then
@@ -7533,7 +7534,7 @@ run_impl_pipeline() {
           local _pm_prompt _qa_reset_file_pm _qa_rc_pm=0 _qa_ts_pm
           _pm_prompt=$(build_dev_prompt_a "impl-pm")
           _qa_ts_pm=$(date +%Y%m%d-%H%M%S)
-          _qa_reset_file_pm="/tmp/qa-reset-${REPO_SLUG}-${NUMBER}-stageA-pm-${_qa_ts_pm}"
+          _qa_reset_file_pm=$(idd_secure_mktemp "qa-reset-${REPO_SLUG}-${NUMBER}-stageA-pm-${_qa_ts_pm}") || return 1
           qa_run_codex_stage "StageA-PM" "$_qa_reset_file_pm" -- \
             codex_exec_prompt "StageA-PM" "$DEV_MODEL" "$_pm_prompt" \
             >> "$LOG" 2>&1 || _qa_rc_pm=$?
@@ -7568,7 +7569,7 @@ run_impl_pipeline() {
         # Issue #66: Quota-Aware Watcher 経由で codex を起動（Req 1.1, 1.2, 2.1）
         local _qa_reset_file_a _qa_rc_a=0 _qa_ts_a
         _qa_ts_a=$(date +%Y%m%d-%H%M%S)
-        _qa_reset_file_a="/tmp/qa-reset-${REPO_SLUG}-${NUMBER}-stageA-${_qa_ts_a}"
+        _qa_reset_file_a=$(idd_secure_mktemp "qa-reset-${REPO_SLUG}-${NUMBER}-stageA-${_qa_ts_a}") || return 1
         qa_run_codex_stage "StageA" "$_qa_reset_file_a" -- \
           codex_exec_prompt "StageA" "$DEV_MODEL" "$prompt_a" \
           >> "$LOG" 2>&1 || _qa_rc_a=$?
@@ -7681,7 +7682,7 @@ run_impl_pipeline() {
         "$REPO_DIR/$SPEC_DIR_REL/debugger-notes.md")
       local _qa_reset_file_bl _qa_rc_bl=0 _qa_ts_bl
       _qa_ts_bl=$(date +%Y%m%d-%H%M%S)
-      _qa_reset_file_bl="/tmp/qa-reset-${REPO_SLUG}-${NUMBER}-stageA-prime-blocked-${_qa_ts_bl}"
+      _qa_reset_file_bl=$(idd_secure_mktemp "qa-reset-${REPO_SLUG}-${NUMBER}-stageA-prime-blocked-${_qa_ts_bl}") || return 1
       qa_run_codex_stage "StageA-prime-blocked" "$_qa_reset_file_bl" -- \
         codex_exec_prompt "StageA-prime-blocked" "$DEV_MODEL" "$prompt_redo_bl" \
         >> "$LOG" 2>&1 || _qa_rc_bl=$?
@@ -7818,7 +7819,7 @@ run_impl_pipeline() {
           # Issue #66: Quota-Aware Watcher 経由で codex を起動
           local _qa_reset_file_aredo _qa_rc_aredo=0 _qa_ts_aredo
           _qa_ts_aredo=$(date +%Y%m%d-%H%M%S)
-          _qa_reset_file_aredo="/tmp/qa-reset-${REPO_SLUG}-${NUMBER}-stageA-redo-${_qa_ts_aredo}"
+          _qa_reset_file_aredo=$(idd_secure_mktemp "qa-reset-${REPO_SLUG}-${NUMBER}-stageA-redo-${_qa_ts_aredo}") || return 1
           qa_run_codex_stage "StageA-redo" "$_qa_reset_file_aredo" -- \
             codex_exec_prompt "StageA-redo" "$DEV_MODEL" "$prompt_redo" \
             >> "$LOG" 2>&1 || _qa_rc_aredo=$?
@@ -7928,7 +7929,7 @@ run_impl_pipeline() {
                   "$REPO_DIR/$SPEC_DIR_REL/debugger-notes.md")
                 local _qa_reset_file_app _qa_rc_app=0 _qa_ts_app
                 _qa_ts_app=$(date +%Y%m%d-%H%M%S)
-                _qa_reset_file_app="/tmp/qa-reset-${REPO_SLUG}-${NUMBER}-stageA-pp-${_qa_ts_app}"
+                _qa_reset_file_app=$(idd_secure_mktemp "qa-reset-${REPO_SLUG}-${NUMBER}-stageA-pp-${_qa_ts_app}") || return 1
                 qa_run_codex_stage "StageA-pp" "$_qa_reset_file_app" -- \
                   codex_exec_prompt "StageA-pp" "$DEV_MODEL" "$prompt_redo_fp" \
                   >> "$LOG" 2>&1 || _qa_rc_app=$?
@@ -8127,7 +8128,7 @@ run_impl_pipeline() {
   # Issue #66: Quota-Aware Watcher 経由で codex を起動
   local _qa_reset_file_c _qa_rc_c=0 _qa_ts_c
   _qa_ts_c=$(date +%Y%m%d-%H%M%S)
-  _qa_reset_file_c="/tmp/qa-reset-${REPO_SLUG}-${NUMBER}-stageC-${_qa_ts_c}"
+  _qa_reset_file_c=$(idd_secure_mktemp "qa-reset-${REPO_SLUG}-${NUMBER}-stageC-${_qa_ts_c}") || return 1
   qa_run_codex_stage "StageC" "$_qa_reset_file_c" -- \
     codex_exec_prompt "StageC" "$DEV_MODEL" "$prompt_c" \
     >> "$LOG" 2>&1 || _qa_rc_c=$?
@@ -8982,12 +8983,11 @@ _failed_recovery_checkout_branch() {
   local failed_message="$4"
 
   local stderr_tmp rc=0
-  stderr_tmp="$(mktemp -t failed-recovery-checkout-XXXXXX.err 2>/dev/null || echo "")"
-  if [ -n "$stderr_tmp" ]; then
-    git checkout -B "$branch" "$start_ref" 2>"$stderr_tmp" || rc=$?
-  else
-    git checkout -B "$branch" "$start_ref" || rc=$?
+  if ! stderr_tmp="$(idd_secure_mktemp "failed-recovery-checkout-stderr")"; then
+    echo "failed-recovery: ERROR: secure stderr tempfile creation failed" >&2
+    return 1
   fi
+  git checkout -B "$branch" "$start_ref" 2>"$stderr_tmp" || rc=$?
   if [ "$rc" -eq 0 ]; then
     if [ -n "$stderr_tmp" ]; then
       rm -f "$stderr_tmp" 2>/dev/null || true
@@ -9136,15 +9136,13 @@ _resume_branch_init() {
 _resume_push() {
   local branch="$1"
   local stderr_tmp
-  stderr_tmp=$(mktemp -t resume-push-XXXXXX.err 2>/dev/null || echo "")
+  if ! stderr_tmp=$(idd_secure_mktemp "resume-push-stderr"); then
+    _slot_mark_failed "branch-push" "ブランチ \`$branch\` の push 用 stderr 一時ファイルを安全に作成できませんでした。ローカルログの secure-tempfile エラーを確認してください。"
+    return 1
+  fi
 
   local rc=0
-  if [ -n "$stderr_tmp" ]; then
-    git push -u origin "$branch" 2>"$stderr_tmp" || rc=$?
-  else
-    # mktemp 失敗時のフォールバック（stderr 捕捉できないが push は試みる）
-    git push -u origin "$branch" || rc=$?
-  fi
+  git push -u origin "$branch" 2>"$stderr_tmp" || rc=$?
 
   if [ "$rc" -eq 0 ]; then
     if [ -n "$stderr_tmp" ]; then
@@ -10490,8 +10488,10 @@ _slot_run_issue() {
     fi
 
     # ── Triage フェーズ ──
-    local TRIAGE_FILE="/tmp/triage-${REPO_SLUG}-${NUMBER}-${TS}.json"
-    rm -f "$TRIAGE_FILE"
+    local TRIAGE_FILE
+    TRIAGE_FILE=$(idd_secure_mktemp "triage-${REPO_SLUG}-${NUMBER}-${TS}.json") || return 1
+    local _triage_file_cleanup_enabled=true
+    trap 'if [ "${_triage_file_cleanup_enabled:-false}" = "true" ] && [ -n "${TRIAGE_FILE:-}" ]; then rm -f "$TRIAGE_FILE"; fi' RETURN
 
     # Issue #47: 未信頼の Issue タイトル（公開 repo では誰でも設定可）を安全に差し込む。
     # 詳細は _triage_render_prompt のコメント参照。
@@ -10506,7 +10506,8 @@ _slot_run_issue() {
     echo "--- Triage 実行 ---" >> "$LOG"
     # Issue #66: Quota-Aware Watcher 経由で codex を起動。opt-out 時は素通し
     # （既存挙動互換）、opt-in 時は rate_limit_event 検知で exit 99 を返す。
-    local _qa_reset_file_triage="/tmp/qa-reset-${REPO_SLUG}-${NUMBER}-triage-${TS}"
+    local _qa_reset_file_triage
+    _qa_reset_file_triage=$(idd_secure_mktemp "qa-reset-${REPO_SLUG}-${NUMBER}-triage-${TS}") || return 1
     local _qa_rc_triage=0
     qa_run_codex_stage "Triage" "$_qa_reset_file_triage" -- \
       codex_exec_prompt "Triage" "$TRIAGE_MODEL" "$TRIAGE_PROMPT" \
@@ -10601,6 +10602,11 @@ _slot_run_issue() {
       slot_log "Triage 結果: codex-needs-decisions（codex-claimed 取り消し済）"
       return 0
     fi
+
+    rm -f "$TRIAGE_FILE"
+    TRIAGE_FILE=""
+    _triage_file_cleanup_enabled=false
+    trap - RETURN
 
     if [ "$NEEDS_ARCHITECT" = "true" ]; then
       MODE="design"
@@ -10760,7 +10766,7 @@ EOF
     # Issue #66: Quota-Aware Watcher 経由で codex を起動
     local _qa_reset_file_design _qa_rc_design=0 _qa_ts_design
     _qa_ts_design=$(date +%Y%m%d-%H%M%S)
-    _qa_reset_file_design="/tmp/qa-reset-${REPO_SLUG}-${NUMBER}-design-${_qa_ts_design}"
+    _qa_reset_file_design=$(idd_secure_mktemp "qa-reset-${REPO_SLUG}-${NUMBER}-design-${_qa_ts_design}") || return 1
     qa_run_codex_stage "design" "$_qa_reset_file_design" -- \
       codex_exec_prompt "design" "$DEV_MODEL" "$DEV_PROMPT" \
       >> "$LOG" 2>&1 || _qa_rc_design=$?

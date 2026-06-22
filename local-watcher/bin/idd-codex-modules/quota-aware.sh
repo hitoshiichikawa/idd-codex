@@ -687,9 +687,10 @@ qa_persist_reset_time() {
   fi
 
   # アトミック書込: temp file に出力 → mv で置換（同一 Issue・同一 epoch を複数回実行しても
-  # 1 件の最新値に収束 / NFR 4.1）。temp file は同一ディレクトリに作り mv を atomic に保つ。
+  # 1 件の最新値に収束 / NFR 4.1）。temp file は secure tempfile helper で owner-only に作る。
   local tmp_file
-  if ! tmp_file=$(mktemp "${QUOTA_RESET_STATE_FILE}.XXXXXX" 2>/dev/null); then
+  if ! tmp_file=$(idd_secure_mktemp "quota-reset-state-${issue_number}"); then
+    qa_warn "Issue #${issue_number}: quota reset state secure tempfile の作成に失敗"
     return 1
   fi
   if ! printf '%s' "$base_json" | jq \
