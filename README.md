@@ -5441,6 +5441,15 @@ idd-codex は [cc-sdd](https://github.com/gotalab/cc-sdd) の仕様記法・レ�
 2. テストを書き、**いったん失敗することを確認**してから実装で通す（Red → Green → Refactor）
 3. 失敗した既存テストを書き換えて通さない → 実装側の問題として調査
 4. Snapshot は差分が実装変更の意図と一致するか確認してから更新（盲目的な `-u` 禁止）
+5. `STATUS: complete` 前に `impl-notes.md` の AC Coverage Matrix で requirement / implementation path /
+   production entrypoint / test / verification result を trace する
+6. user-facing flow / 公開 API・エンドポイント / イベントハンドラ・コールバック / UI・プレゼンテーション層の状態 /
+   永続化・リポジトリ境界 を含む AC では、内部 service / 下位レイヤの単体テストだけで完了扱いにせず、
+   production entrypoint または owning flow 経由のテストを少なくとも 1 つ追加する
+7. error propagation / retry / state clear / auth boundary / fallback を含む AC では negative-path test を
+   追加するか、追加不能な理由を AC Coverage Matrix に残す
+8. プロジェクト固有の検証コマンドが環境設定（toolchain 未選択・環境変数未設定等）を理由に失敗し、対象 repo に
+   既知の修正手順がある場合は、それを適用して 1 回だけ再試行する（失敗継続時のみ impl-notes.md に記録）
 
 ### 禁止行為
 

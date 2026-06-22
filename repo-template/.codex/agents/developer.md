@@ -148,6 +148,18 @@ turn 消費が不要に膨らみ、Codex の context / 予算を実装本体で�
    - `npm run lint`
    - `npm run build`（ビルド対象がある場合）
 
+## 検証コマンドの環境起因失敗時の再試行
+
+プロジェクト固有の検証コマンド（ビルド / テスト / lint 等）が、**コードの不備ではなく環境設定**
+（toolchain の未選択、必要な環境変数の未設定、SDK / ツールパスの誤り等）が原因で失敗し、かつ
+**対象リポジトリに既知の修正手順が文書化されている**場合は、未実行扱いにせず、その修正を適用して
+**1 回だけ**再試行してください。再試行しても失敗する場合のみ、エラーと制約を `impl-notes.md` に
+記録します。
+
+言語・ツールチェーン固有の修正手順（特定 toolchain の指定方法・環境変数等）は本テンプレートに
+焼き込まず、対象リポジトリの `AGENTS.md` / 開発者ドキュメントの規約に従ってください
+（本テンプレートは特定言語・特定 IDE に依存しません）。
+
 ## opt-in 時の追加実装フロー（Feature Flag Protocol が opt-in な場合のみ適用）
 
 対象 repo の `AGENTS.md` で `**採否**: opt-in` が宣言されている場合、上記実装フローの各タスクで
@@ -216,6 +228,13 @@ watcher は注入セクション自体を出力しないため、Developer は�
 
 - **AC 起点**: 新規テストは requirements.md の numeric ID と 1 対 1 で紐付ける。AC が無い挙動のテストを書かない
 - **異常系・境界値の必須化**: 各 AC に対し、最低 1 ケースの異常系（If パターンの AC）または境界値・空入力を追加する
+- **production entrypoint coverage**: user-facing flow / 公開 API・エンドポイント /
+  イベントハンドラ・コールバック / UI・プレゼンテーション層の状態 / 永続化・リポジトリ境界 を
+  変更する AC では、内部 service / 下位レイヤの単体テストだけで complete 扱いにしない。実際の
+  production entrypoint または owning flow 経由のテストを少なくとも 1 つ追加する
+- **negative-path coverage**: error propagation / retry / state clear / auth boundary / fallback を
+  含む AC では、該当する failure path test を追加する。追加不能な場合は理由を
+  AC Coverage Matrix に記録する
 - **命名と構造**: `describe('<対象>') > it('<条件>のとき<期待結果>')` 形式、Arrange / Act / Assert の 3 部構成、1 テスト 1 検証（詳細は AGENTS.md「テスト規約」）
 - **Red → Green**: テストが失敗する状態を先に観測してから実装で通す
 - **既存テストを壊さない**: 失敗した既存テストを書き換えて通してはいけない。落ちたら実装側の問題として調査する
@@ -286,7 +305,8 @@ watcher は `^STATUS: (.+)$` 固定 regex で検出するため、以下の **�
 - `STATUS:` 行を **出さない** 旧 Developer 動作は orchestrator 側で `complete` として扱われ
   ます（status 行不在 = complete fallback）
 - 既存 PR / Issue の retroactive 適用は不要
-- 全タスク完了時は **必ず** `STATUS: complete` を 1 行 `impl-notes.md` 末尾に追加してください
+- 全タスク完了時は **必ず** 下記「受入基準の達成確認」の AC Coverage Matrix を作成または更新してから、
+  `STATUS: complete` を 1 行 `impl-notes.md` 末尾に追加してください
   （明示が推奨。fallback はあくまで旧プロンプト互換のため）
 
 # 補足ノート
@@ -309,9 +329,34 @@ watcher は `^STATUS: (.+)$` 固定 regex で検出するため、以下の **�
 
 # 受入基準の達成確認
 
-すべての requirement numeric ID（1.1, 1.2, 2.1 ...）について、どのテストで担保したかを
-`impl-notes.md` に記載してください。requirements.md の AC に対応するテストが存在しない場合は、
-テスト追加が必須です。
+`STATUS: complete` を出す前に、すべての requirement numeric ID（1.1, 1.2, 2.1 ...）について
+AC Coverage Matrix を `impl-notes.md` に作成または更新してください。Reviewer が初めて
+production path の穴を見つける状態を避けるため、単なる「テスト名一覧」ではなく、AC が実際の
+実行経路で満たされることを trace します。
+
+必須列は以下です:
+
+| Requirement / AC | Implementation path | Production entrypoint / owning flow | Test / assertion | Verification result | Notes |
+|------------------|---------------------|-------------------------------------|------------------|---------------------|-------|
+
+- `Requirement / AC`: requirements.md の numeric ID
+- `Implementation path`: 主な実装ファイル / 関数 / component
+- `Production entrypoint / owning flow`: 実ユーザー操作 / 公開 API・エンドポイント /
+  イベントハンドラ・コールバック / UI・プレゼンテーション層の状態 / 永続化・リポジトリ境界 など、
+  本番でその AC が通る入口。該当しない純粋ロジックでは `N/A (pure logic)` と書く
+- `Test / assertion`: 追加または更新した test 名 / assertion 名。requirements.md の AC に対応する
+  テストが存在しない場合はテスト追加が必須
+- `Verification result`: 実行した検証コマンドと結果
+- `Notes`: failure path test を追加できない理由、または scope 外判断など
+
+user-facing flow / 公開 API・エンドポイント / イベントハンドラ・コールバック /
+UI・プレゼンテーション層の状態 / 永続化・リポジトリ境界 を変更する AC では、内部 service / 下位
+レイヤの単体テストだけで complete 扱いにしないでください。production entrypoint または owning flow
+経由のテストを少なくとも 1 つ含めます。
+
+error propagation / retry / state clear / auth boundary / fallback を含む AC では、対応する
+negative-path test を追加してください。追加不能な場合は、なぜ実装上または環境上不可能なのかを
+AC Coverage Matrix の `Notes` に明記します。
 
 # per-task ループ下での Implementer の責務（PER_TASK_LOOP_ENABLED=true 適用時のみ）
 
