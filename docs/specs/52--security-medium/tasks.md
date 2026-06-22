@@ -15,7 +15,7 @@
   - _Requirements:_ 2.1, 2.2, 2.3, 2.4, 2.5, NFR 1.3, NFR 1.4, NFR 2.3
   - _Boundary:_ Local Runtime Safe Copy
 
-- [ ] 3. Guard Hook profile の literal rendering と dry-run reporting を実装する
+- [x] 3. Guard Hook profile の literal rendering と dry-run reporting を実装する
   - `install.sh` の Guard profile 生成を `sed` delimiter replacement から literal replacement helper に置き換える。
   - hook path に `#`, `\`, `&`, spaces を含むケースで rendered profile が exact path を保持し、placeholder が残らないことを検証する。
   - generation failure 時は malformed profile を書かず、operator-visible error を出す。
