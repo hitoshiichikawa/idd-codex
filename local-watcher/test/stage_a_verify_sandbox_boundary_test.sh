@@ -9,6 +9,7 @@
 #   - heuristic 抽出由来コマンドも sandbox 経由
 #   - `STAGE_A_VERIFY_COMMAND` は operator override として従来どおり直接実行
 #   - repository 由来 verify で no-sandbox profile は fail-closed
+#   - repository 由来 verify の source sidecar 伝達失敗は fail-closed
 #
 # 実行: bash local-watcher/test/stage_a_verify_sandbox_boundary_test.sh
 
@@ -28,7 +29,7 @@ source "$MODULE_SH"
 PASS=0
 FAIL=0
 TMP_ROOT="$(mktemp -d)"
-trap 'rm -rf "$TMP_ROOT"' EXIT
+trap 'chmod -R u+w "$TMP_ROOT" 2>/dev/null || true; rm -rf "$TMP_ROOT"' EXIT
 
 assert_eq() {
   local actual="$1" expected="$2" label="$3"
@@ -60,6 +61,18 @@ assert_file_absent() {
     PASS=$((PASS + 1))
   else
     echo "  NG: ${label}（存在してはいけない file が存在: $path）" >&2
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+assert_file_empty() {
+  local path="$1" label="$2"
+  if [ ! -s "$path" ]; then
+    echo "  ok: $label"
+    PASS=$((PASS + 1))
+  else
+    echo "  NG: ${label}（空であるべき file に内容があります: $path）" >&2
+    echo "      実際: $(cat "$path")" >&2
     FAIL=$((FAIL + 1))
   fi
 }
@@ -182,6 +195,49 @@ args="$(cat "$CODEX_ARGS_FILE")"
 assert_eq "$forbidden_rc" "126" "no-sandbox profile は実行前に拒否する"
 assert_contains "$forbidden_output" "reason=no-sandbox" "拒否理由をログに出す"
 assert_eq "$args" "" "拒否時に codex sandbox を起動しない"
+
+echo "[case6] repository 由来 verify の source sidecar 伝達失敗は fail-closed"
+setup_case "sidecar-write-failure"
+SIDECAR_MARKER="$TMP_ROOT/sidecar-marker"
+write_tasks \
+  "# Tasks" \
+  "" \
+  "<!-- stage-a-verify -->" \
+  '```bash' \
+  "shellcheck --version; touch '$SIDECAR_MARKER'" \
+  '```'
+mkdir "$REPO_DIR/$SPEC_DIR_REL/.stage-a-verify-source"
+chmod a-w "$REPO_DIR/$SPEC_DIR_REL"
+rc="$(run_stage_a_verify)"
+args="$(cat "$CODEX_ARGS_FILE")"
+log_body="$(cat "$LOG")"
+assert_eq "$rc" "1" "sidecar 書き込み失敗は round=1 failure として fail-closed"
+assert_file_empty "$CODEX_ARGS_FILE" "sidecar 書き込み失敗時は codex sandbox を起動しない"
+assert_eq "$args" "" "sidecar 書き込み失敗時の sandbox args は空"
+assert_file_absent "$SIDECAR_MARKER" "sidecar 書き込み失敗時に repository 由来コマンドを直接実行しない"
+assert_contains "$log_body" "source sidecar fail-closed reason=write" "fail-closed 理由をログに出す"
+
+echo "[case7] repository 由来 verify の source sidecar 未知値は fail-closed"
+setup_case "sidecar-unknown"
+SIDECAR_UNKNOWN_MARKER="$TMP_ROOT/sidecar-unknown-marker"
+write_tasks \
+  "# Tasks" \
+  "" \
+  "<!-- stage-a-verify -->" \
+  '```bash' \
+  "shellcheck --version; touch '$SIDECAR_UNKNOWN_MARKER'" \
+  '```'
+_sav_read_resolved_source() {
+  printf '%s\n' "unknown-source"
+  return 2
+}
+rc="$(run_stage_a_verify)"
+args="$(cat "$CODEX_ARGS_FILE")"
+log_body="$(cat "$LOG")"
+assert_eq "$rc" "1" "sidecar 未知値は round=1 failure として fail-closed"
+assert_eq "$args" "" "sidecar 未知値時の sandbox args は空"
+assert_file_absent "$SIDECAR_UNKNOWN_MARKER" "sidecar 未知値時に repository 由来コマンドを直接実行しない"
+assert_contains "$log_body" "source sidecar fail-closed reason=unknown" "未知値の fail-closed 理由をログに出す"
 
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"

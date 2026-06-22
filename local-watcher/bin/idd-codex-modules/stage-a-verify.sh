@@ -70,6 +70,16 @@ _sav_source_requires_sandbox() {
   esac
 }
 
+# ─── _sav_source_is_known ───
+#
+# Stage A Verify の source sidecar に保存してよい既知値かを判定する。
+_sav_source_is_known() {
+  case "${1:-}" in
+    structured-block|env-command|heuristic) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # ─── _sav_sandbox_profile_is_forbidden ───
 #
 # `codex sandbox -P :danger-full-access` は sandbox 境界を確立しないため、repository 由来 verify
@@ -421,13 +431,10 @@ stage_a_verify_extract_verify_block() {
 # `stage_a_verify_run` の Gate 3 bypass 判定が参照する。resolve 呼び出しの度に冒頭で
 # 初期化され、前回呼び出しの残値で誤判定しない（NFR 3.1）。
 #
-# 注意（サブシェル境界）: `stage_a_verify_run` は resolve を command substitution
-# （`cmd=$(stage_a_verify_resolve_command)`）で呼ぶため、サブシェル内で代入した
-# `_SAV_RESOLVED_SOURCE` は親（run）のプロセスへ伝播しない。そこで resolve は確定した
-# source を round counter と同じ流儀の sidecar（`.stage-a-verify-source`）へも書き出し、
-# run 側は `_sav_read_resolved_source` でそれを読み戻して Gate 3 判定に使う。モジュール変数
-# 代入（同一プロセス内呼び出し用）と sidecar 書き出し（サブシェル越え用）を併用することで、
-# 設計の「source をモジュールスコープで共有する」意図をサブシェル境界でも成立させる。
+# 注意: `stage_a_verify_run` は resolver の stdout を一時ファイルへリダイレクトして
+# 同一シェルで呼び、親プロセス側でも `_SAV_RESOLVED_SOURCE` を直接参照できるようにする。
+# source sidecar（`.stage-a-verify-source`）も defense-in-depth として併用し、repository 由来
+# source は sidecar の書き込み・読み取り・既知値検証が通った場合だけ実行へ進む。
 _SAV_RESOLVED_SOURCE=""
 
 # ─── _SAV_LAST_OUTCOME（run サマリ用 outcome 露出 / #239 task 5） ───
@@ -461,33 +468,56 @@ _sav_source_path() {
 # ─── _sav_set_resolved_source ───
 #
 # 解決手段名 ($1) をモジュール変数 `_SAV_RESOLVED_SOURCE` と source sidecar の双方へ記録する。
-# モジュール変数は同一プロセス内呼び出し用、sidecar は command substitution のサブシェル
-# 境界を越えて `stage_a_verify_run`（親プロセス）へ source を伝える用途。sidecar 書き込み
-# 失敗は致命ではない（Gate 3 が heuristic 同様の defense-in-depth に倒れるだけ）ため警告に留める。
+# モジュール変数は同一プロセス内呼び出し用、sidecar は fail-closed 境界検証用。
+# repository 由来 source では sidecar 書き込み失敗を致命として扱い、非 sandbox `bash -c` への
+# フォールバックを防ぐ（Issue #51 Reviewer Finding 1）。
 #
 # 入力: $1 = 解決手段名（structured-block / env-command / heuristic）
+# 戻り値: 0 = 記録成功 / 1 = 未知 source or sidecar 書き込み失敗
 _sav_set_resolved_source() {
-  _SAV_RESOLVED_SOURCE="$1"
+  local source="$1"
+  if ! _sav_source_is_known "$source"; then
+    sav_error "source sidecar unknown source=$source"
+    return 1
+  fi
+
+  _SAV_RESOLVED_SOURCE="$source"
   local path
   path=$(_sav_source_path)
-  mkdir -p "$(dirname "$path")" 2>/dev/null || true
-  printf '%s\n' "$1" > "$path" 2>/dev/null || \
-    sav_warn "source sidecar 書き込みに失敗 path=$path source=$1（Gate 3 bypass 判定が defense-in-depth に倒れます）"
+  if ! mkdir -p "$(dirname "$path")" 2>/dev/null; then
+    sav_error "source sidecar ディレクトリ作成に失敗 path=$path source=$source"
+    return 1
+  fi
+  if ! printf '%s\n' "$source" > "$path" 2>/dev/null; then
+    sav_error "source sidecar 書き込みに失敗 path=$path source=$source"
+    return 1
+  fi
+  return 0
 }
 
 # ─── _sav_read_resolved_source ───
 #
-# source sidecar から直近の解決手段名を stdout に出す。不在 / 読み取り不能なら空文字。
-# `stage_a_verify_run` が Gate 3 bypass 判定のために読む（サブシェル越えの source 共有）。
+# source sidecar から直近の解決手段名を stdout に出す。不在 / 読み取り不能 / 未知値は
+# 非 0 を返す。repository 由来 source は呼び出し側でこの失敗を fail-closed として扱う。
 #
 # 入力: 環境変数 REPO_DIR / SPEC_DIR_REL
-# stdout: 解決手段名 1 行（不在時は空）
+# stdout: 解決手段名 1 行
+# 戻り値: 0 = 読み取り成功 / 1 = 不在 or 読み取り失敗 / 2 = 未知 source
 _sav_read_resolved_source() {
   local path
   path=$(_sav_source_path)
-  if [ -f "$path" ]; then
-    head -n1 "$path" 2>/dev/null | tr -d '[:space:]'
+  if [ ! -f "$path" ]; then
+    return 1
   fi
+  local val
+  if ! val=$(head -n1 "$path" 2>/dev/null); then
+    return 1
+  fi
+  val=$(printf '%s' "$val" | tr -d '[:space:]')
+  if ! _sav_source_is_known "$val"; then
+    return 2
+  fi
+  printf '%s\n' "$val"
 }
 
 # ─── _sav_reset_resolved_source ───
@@ -525,10 +555,13 @@ _sav_reset_resolved_source() {
 # Verify Gate (#125)」節参照）。
 #
 # 入力: 環境変数 STAGE_A_VERIFY_COMMAND / REPO_DIR / SPEC_DIR_REL
-# 戻り値: 0 = 解決成功 / 1 = SKIPPED（いずれの手段でも解決不能）
+# 戻り値:
+#   0 = 解決成功
+#   1 = SKIPPED（いずれの手段でも解決不能）
+#   2 = repository 由来 source の sidecar 伝達失敗（呼び出し側で fail-closed）
 # stdout: 解決した shell コマンド（成功時のみ。構造化ブロック由来は複数行を改行込みで保持）
 # stderr: source=<structured-block|env-command|heuristic> の 1 行（sav_log 経由、NFR 2.1）
-# 副作用: モジュールスコープ変数 _SAV_RESOLVED_SOURCE を設定する
+# 副作用: モジュールスコープ変数 _SAV_RESOLVED_SOURCE と source sidecar を設定する
 stage_a_verify_resolve_command() {
   # 前回呼び出しの残値で Gate 3 bypass を誤判定しないよう、毎回冒頭で初期化する
   # （モジュール変数 + sidecar の双方）。
@@ -539,7 +572,7 @@ stage_a_verify_resolve_command() {
 
   # ── 第 1 段: 構造化 verify ブロック（input 契約・最優先） ──
   if cmd=$(stage_a_verify_extract_verify_block); then
-    _sav_set_resolved_source "structured-block"
+    _sav_set_resolved_source "structured-block" || return 2
     sav_log "resolve source=structured-block" >&2
     printf '%s\n' "$cmd"
     return 0
@@ -547,7 +580,8 @@ stage_a_verify_resolve_command() {
 
   # ── 第 2 段: STAGE_A_VERIFY_COMMAND env（固定 escape hatch） ──
   if [ -n "${STAGE_A_VERIFY_COMMAND:-}" ]; then
-    _sav_set_resolved_source "env-command"
+    _sav_set_resolved_source "env-command" || \
+      sav_warn "source sidecar 伝達に失敗しましたが operator override として直接実行を継続します"
     sav_log "resolve source=env-command" >&2
     printf '%s\n' "$STAGE_A_VERIFY_COMMAND"
     return 0
@@ -555,7 +589,7 @@ stage_a_verify_resolve_command() {
 
   # ── 第 3 段: ヒューリスティック抽出（後方互換 fallback） ──
   if cmd=$(stage_a_verify_extract_command) && [ -n "$cmd" ]; then
-    _sav_set_resolved_source "heuristic"
+    _sav_set_resolved_source "heuristic" || return 2
     sav_log "resolve source=heuristic" >&2
     printf '%s\n' "$cmd"
     return 0
@@ -701,7 +735,7 @@ stage_a_verify_reset_round() {
 # `codex-needs-iteration` ラベルは Issue 側には付与しない既存契約（NFR 1.2）を維持。
 #
 # 入力:
-#   $1 = kind ("timeout" | "exit")
+#   $1 = kind ("timeout" | "exit" | "source-sidecar")
 #   $2 = detail (timeout 秒 | exit code)
 # 戻り値:
 #   1 = Developer 差し戻し（次 tick で stage-a-verify 再評価）
@@ -751,6 +785,29 @@ _sav_handle_failure() {
   esac
 }
 
+# ─── _sav_handle_source_sidecar_failure ───
+#
+# repository 由来 verify の source sidecar 伝達が成立しない場合の fail-closed 共通処理。
+# 未信頼 repository コマンドを source 不明のまま非 sandbox `bash -c` へ落とさず、
+# 通常の Stage A Verify failure と同じ round 契約で差し戻し / escalate する。
+#
+# 入力:
+#   $1 = reason（write / read / unknown / mismatch など）
+# 戻り値:
+#   1 = Developer 差し戻し
+#   2 = codex-failed 付与済み
+_sav_handle_source_sidecar_failure() {
+  local reason="$1"
+  sav_error "source sidecar fail-closed reason=$reason"
+  local _hf_rc=0
+  _sav_handle_failure "source-sidecar" "$reason" || _hf_rc=$?
+  case "$_hf_rc" in
+    1) _SAV_LAST_OUTCOME="round1" ;;
+    2) _SAV_LAST_OUTCOME="round2" ;;
+  esac
+  return "$_hf_rc"
+}
+
 # ─── stage_a_verify_run ───
 #
 # Stage A Verify Module の統合ランナー。`run_impl_pipeline` の Stage A 成功直後・
@@ -789,17 +846,56 @@ stage_a_verify_run() {
   # ── Gate 2: SKIPPED（解決できない / 一致なし）──
   # design-less impl（tasks.md 不在）は resolve の全段が解決失敗となりここで SKIPPED に倒れる。
   # これは意図された仕様であり（#230）、round counter を増やさず Stage A を続行する。
-  local cmd
-  if ! cmd=$(stage_a_verify_resolve_command); then
+  local cmd cmd_file resolve_rc
+  cmd_file=$(mktemp "${TMPDIR:-/tmp}/stage-a-verify-cmd.XXXXXX") || {
+    sav_error "temporary command file 作成に失敗"
+    local fail_rc=0
+    _sav_handle_source_sidecar_failure "tempfile" || fail_rc=$?
+    return "$fail_rc"
+  }
+  resolve_rc=0
+  stage_a_verify_resolve_command > "$cmd_file" || resolve_rc=$?
+  if [ "$resolve_rc" -ne 0 ]; then
+    rm -f "$cmd_file" 2>/dev/null || true
+    if [ "$resolve_rc" -eq 2 ]; then
+      local fail_rc=0
+      _sav_handle_source_sidecar_failure "write" || fail_rc=$?
+      return "$fail_rc"
+    fi
     sav_log "SKIPPED reason=no-verify-task-in-tasks-md"
     _SAV_LAST_OUTCOME="skip"
     return 0
   fi
-  # resolve は command substitution のサブシェルで実行されるため、サブシェル内で代入した
-  # `_SAV_RESOLVED_SOURCE` は親（run）へ伝播しない。resolve が併せて書き出した source sidecar
-  # を読み戻して Gate 3 判定に使う（サブシェル越えの source 共有、design.md Decision 採用案）。
+  cmd=$(cat "$cmd_file")
+  rm -f "$cmd_file" 2>/dev/null || true
+
+  # resolver は同一シェルで実行し、source は `_SAV_RESOLVED_SOURCE` から直接受け取る。
+  # repository 由来 source は sidecar の読み戻しも必須にし、sidecar 伝達が壊れた状態で
+  # 非 sandbox `bash -c` へ到達しないよう fail-closed する。
   local resolved_source
-  resolved_source=$(_sav_read_resolved_source)
+  resolved_source="${_SAV_RESOLVED_SOURCE:-}"
+  if ! _sav_source_is_known "$resolved_source"; then
+    local fail_rc=0
+    _sav_handle_source_sidecar_failure "unknown" || fail_rc=$?
+    return "$fail_rc"
+  fi
+  if _sav_source_requires_sandbox "$resolved_source"; then
+    local sidecar_source sidecar_rc
+    sidecar_rc=0
+    sidecar_source=$(_sav_read_resolved_source) || sidecar_rc=$?
+    if [ "$sidecar_rc" -ne 0 ]; then
+      local fail_rc=0
+      local sidecar_reason="read"
+      [ "$sidecar_rc" -eq 2 ] && sidecar_reason="unknown"
+      _sav_handle_source_sidecar_failure "$sidecar_reason" || fail_rc=$?
+      return "$fail_rc"
+    fi
+    if [ "$sidecar_source" != "$resolved_source" ]; then
+      local fail_rc=0
+      _sav_handle_source_sidecar_failure "mismatch" || fail_rc=$?
+      return "$fail_rc"
+    fi
+  fi
 
   # ── Gate 3: SKIPPED（抽出した cmd が keyword で開始しない）──
   # heuristic 経路の `stage_a_verify_extract_command` 側で行頭一致を保証しているが、
