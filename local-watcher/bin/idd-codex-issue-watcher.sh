@@ -3957,6 +3957,16 @@ ${learnings_block}
 - requirements.md / design.md / tasks.md 本文の書き換えは禁止（tasks.md の進捗マーカー
   \`- [ ]\` → \`- [x]\` のみ例外）
 
+## 人間判断が未決で実装できない場合（NEEDS_DECISION）
+本 task が「人間が決めるべき値・方針（例: 既定値・採用する release tag/SHA・運用ポリシー等）」を
+**前提としており、それが未決**で推測実装すべきでないと判断した場合は:
+- 確認事項を impl-notes.md の「確認事項」に列挙したうえで、**impl-notes.md に行頭固定で次の 1 行**を出力すること:
+  \`NEEDS_DECISION: <必要な人間判断を 1 行で要約>\`
+- この場合、対象 task の \`- [ ]\` → \`- [x]\` 遷移は **行わない**（実装していないため）。
+- watcher は本 marker を検出すると、当該 Issue を \`codex-failed\` ではなく **\`${LABEL_NEEDS_DECISIONS}\`**
+  （人間判断待ち）にルートする。技術的に詰まった場合の \`BLOCKED:\` 宣言とは用途が異なる
+  （\`BLOCKED:\` は Debugger 起動・技術ブロッカー向け / \`NEEDS_DECISION:\` は製品/運用判断向け）。
+
 ## 既存 commit の温存
 
 本 worktree は既存 commit を温存した状態でチェックアウトされています。
@@ -4718,6 +4728,37 @@ pt_mark_no_progress_failed() {
   local stage_phase="$2"
   local check_rc="$3"
 
+  # Implementer が「task の実装に人間の判断が必要・未決」と NEEDS_DECISION marker で宣言している
+  # 場合は、機械的失敗（codex-failed）ではなく人間判断待ち（codex-needs-decisions）にルートする。
+  # 人間判断待ちの task（例: 既定値・運用方針を人間が決める前提の task）を rc=0+進捗ゼロだけで
+  # 一律 codex-failed 化していた誤分類を防ぐ。技術ブロッカー（BLOCKED→Debugger）とは別軸。
+  local _pt_nd_reason
+  if _pt_nd_reason=$(detect_needs_decision_marker "$REPO_DIR/$SPEC_DIR_REL/impl-notes.md"); then
+    pt_log "task=${task_id} implementer end rc=0 progress=zero phase=${stage_phase} NEEDS_DECISION → codex-needs-decisions (per-task-implementer-needs-decision)" >> "$LOG"
+    local _pt_nd_body
+    read -r -d '' _pt_nd_body <<EOF || true
+## 人間判断待ち（per-task Implementer / per-task-implementer-needs-decision）
+
+per-task Implementer が task=\`${task_id}\` の実装に必要な **人間判断が未決**であると宣言しました
+（developer 規約に従い、推測で実装せず確認事項として記録）。\`codex-failed\` は付与していません。
+
+- 対象 task ID: \`${task_id}\`
+- 検出フェーズ: \`${stage_phase}\`
+
+## 必要な判断
+${_pt_nd_reason}
+
+詳細は \`${SPEC_DIR_REL}/impl-notes.md\` の確認事項を参照してください。
+
+## 次の手順
+1. 上記の判断を行い、必要なら \`${SPEC_DIR_REL}/requirements.md\` / \`${SPEC_DIR_REL}/tasks.md\` に反映する
+2. \`${LABEL_NEEDS_DECISIONS}\` ラベルを外すと watcher が次サイクルで再 pickup し、当該 task の
+   実装を再開します
+EOF
+    mark_issue_needs_decisions "per-task-implementer-needs-decision" "$_pt_nd_body"
+    return 0
+  fi
+
   local cause_desc
   case "$check_rc" in
     2)
@@ -5320,6 +5361,28 @@ detect_blocked_marker() {
   # 先頭 `BLOCKED: `（10 文字）を剥がして reason のみ stdout に出す。
   # reason 部に `:` が含まれても破壊されないよう、置換ではなく substring 切り出しを行う。
   printf '%s\n' "${line#BLOCKED: }"
+  return 0
+}
+
+# ─── detect_needs_decision_marker <impl_notes_path> ───
+#
+# impl-notes.md の **行頭固定** で `NEEDS_DECISION: <text>` 行を検出し、text 部を stdout に出す。
+# Implementer が「task の実装に必要な人間の（製品）判断が未決」と宣言するための marker。
+# 技術ブロッカー（`BLOCKED:` → Debugger）とは別軸で、人間判断待ち（codex-needs-decisions）への
+# ルーティングに使う（per-task ループの no-progress 誤失敗化を防ぐ）。
+#
+# 戻り値: 0 = marker あり（text を stdout）/ 1 = marker 無し or ファイル不在
+detect_needs_decision_marker() {
+  local impl_notes="$1"
+  if [ ! -f "$impl_notes" ]; then
+    return 1
+  fi
+  local line
+  line=$(grep -E '^NEEDS_DECISION: .+$' "$impl_notes" 2>/dev/null | head -n 1 || true)
+  if [ -z "$line" ]; then
+    return 1
+  fi
+  printf '%s\n' "${line#NEEDS_DECISION: }"
   return 0
 }
 
