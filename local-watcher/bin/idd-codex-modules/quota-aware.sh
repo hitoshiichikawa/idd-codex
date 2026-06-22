@@ -10,6 +10,7 @@
 #   通常 pickup ループに戻す。
 #   - qa_detect_rate_limit  : stream-json を fold して quota 枯渇イベントを検出
 #   - qa_detect_rate_limit_rollout : session rollout の rate_limits から quota reached を検出（#79 / codex 本筋）
+#   - qa_log_token_usage    : turn.completed.usage を集計して per-stage token サマリをログ（#83 観測性）
 #   - qa_detect_collab_spawn_failures : collab subagent spawn failure を検出
 #   - qa_run_codex_stage   : Stage 実行 wrapper（tee + 検出 + exit 99 sentinel）
 #   - qa_persist_reset_time : reset 時刻の永続化（Issue 番号 keyed JSON）
@@ -453,6 +454,39 @@ qa_detect_rate_limit_rollout() {
   ' 2>/dev/null
 }
 
+# codex の `--json` stream（turn.completed.usage）を集計し、per-stage token サマリを
+# qa_log でログする（#83 観測性 / behavior 影響なし）。idd-claude の token-usage.sh 相当を
+# codex の usage スキーマ（input_tokens / cached_input_tokens / output_tokens /
+# reasoning_output_tokens）向けに再導入する。複数 turn / retry 分は合算する。
+# stream には 2>&1 で stderr も混ざるため、各行を try fromjson で堅牢に parse する。
+qa_log_token_usage() {
+  local stage_label="$1"
+  local stream_file="$2"
+  [ -n "${stream_file:-}" ] && [ -f "$stream_file" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+
+  local summary
+  summary=$(jq -R -r '
+      . as $l
+      | (try ($l | fromjson) catch null)
+      | select(type == "object")
+      | select(.type? == "turn.completed")
+      | .usage? // empty
+      | [ (.input_tokens? // 0), (.cached_input_tokens? // 0),
+          (.output_tokens? // 0), (.reasoning_output_tokens? // 0) ]
+      | @tsv
+    ' "$stream_file" 2>/dev/null \
+    | awk -F '\t' '
+        { i += $1; c += $2; o += $3; r += $4; n += 1 }
+        END {
+          if (n > 0)
+            printf "input=%d cached_input=%d output=%d reasoning=%d total=%d turns=%d", i, c, o, r, i + o, n
+        }')
+
+  [ -n "$summary" ] && qa_log "stage tokens label=$stage_label $summary"
+  return 0
+}
+
 # 既存 6 stage の codex 呼び出しを横断ラップする Stage Wrapper（Req 1.1, 1.2,
 # 2.1, NFR 2.1）。
 #
@@ -535,6 +569,9 @@ qa_run_codex_stage() {
       qa_warn "collab-spawn fallback result=failed stage=$(qa_sanitize_summary_token "$stage_label") reason=bounded-retry degraded=yes codex_rc=${codex_rc}"
     fi
   fi
+
+  # per-stage token テレメトリ（#83 観測性）。codex の turn.completed.usage を集計してログする。
+  qa_log_token_usage "$stage_label" "$stream_file"
 
   # 検出 TSV を解釈する。
   # 優先順位:

@@ -504,6 +504,11 @@ CODEX_SANDBOX="${CODEX_SANDBOX:-danger-full-access}"
 CODEX_APPROVAL_POLICY="${CODEX_APPROVAL_POLICY:-never}"
 CODEX_UNSAFE_BYPASS="${CODEX_UNSAFE_BYPASS:-true}"
 CODEX_EPHEMERAL="${CODEX_EPHEMERAL:-true}"
+# 各 codex exec の最終メッセージを stage 別タイムスタンプ付きファイルに保存する先（#83）。
+# これは `codex exec --output-last-message` の出力先で、**意図的な per-stage デバッグ artifact**
+# である（成果取得の正本ではない）。成果は各 agent が repo に書くファイル（review-notes.md /
+# triage JSON 等）から取得する設計で、本ファイルは「あの stage は最後に何を返したか」を運用者が
+# 事後に grep/inspect するための補助。不要なら本ディレクトリを定期削除してよい。
 CODEX_LAST_MESSAGE_DIR="${CODEX_LAST_MESSAGE_DIR:-$LOG_DIR/codex-last-messages}"
 
 # ─── 暴走ループ / ハング上限 (#16 runaway bound) ───
