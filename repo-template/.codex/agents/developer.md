@@ -148,18 +148,17 @@ turn 消費が不要に膨らみ、Codex の context / 予算を実装本体で�
    - `npm run lint`
    - `npm run build`（ビルド対象がある場合）
 
-## 検証コマンドの再試行規約
+## 検証コマンドの環境起因失敗時の再試行
 
-macOS 上で project 指定の検証コマンドが `xcodebuild requires Xcode` / active developer
-directory が CommandLineTools である旨のエラーにより失敗し、かつ `/Applications/Xcode.app` が
-存在する場合は、未実行扱いにせず以下のように **同一セッション限定**で `DEVELOPER_DIR` を指定して
-1 回再試行してください:
+プロジェクト固有の検証コマンド（ビルド / テスト / lint 等）が、**コードの不備ではなく環境設定**
+（toolchain の未選択、必要な環境変数の未設定、SDK / ツールパスの誤り等）が原因で失敗し、かつ
+**対象リポジトリに既知の修正手順が文書化されている**場合は、未実行扱いにせず、その修正を適用して
+**1 回だけ**再試行してください。再試行しても失敗する場合のみ、エラーと制約を `impl-notes.md` に
+記録します。
 
-```bash
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer <project verification command>
-```
-
-再試行しても失敗する場合のみ、そのエラーと制約を `impl-notes.md` に記録してください。
+言語・ツールチェーン固有の修正手順（特定 toolchain の指定方法・環境変数等）は本テンプレートに
+焼き込まず、対象リポジトリの `AGENTS.md` / 開発者ドキュメントの規約に従ってください
+（本テンプレートは特定言語・特定 IDE に依存しません）。
 
 ## opt-in 時の追加実装フロー（Feature Flag Protocol が opt-in な場合のみ適用）
 
@@ -229,10 +228,10 @@ watcher は注入セクション自体を出力しないため、Developer は�
 
 - **AC 起点**: 新規テストは requirements.md の numeric ID と 1 対 1 で紐付ける。AC が無い挙動のテストを書かない
 - **異常系・境界値の必須化**: 各 AC に対し、最低 1 ケースの異常系（If パターンの AC）または境界値・空入力を追加する
-- **production entrypoint coverage**: user-facing flow / callback / bridge / ViewModel /
-  Environment state / repository boundary を変更する AC では、service / repository 単体テストだけで
-  complete 扱いにしない。実際の production entrypoint または owning flow 経由のテストを
-  少なくとも 1 つ追加する
+- **production entrypoint coverage**: user-facing flow / 公開 API・エンドポイント /
+  イベントハンドラ・コールバック / UI・プレゼンテーション層の状態 / 永続化・リポジトリ境界 を
+  変更する AC では、内部 service / 下位レイヤの単体テストだけで complete 扱いにしない。実際の
+  production entrypoint または owning flow 経由のテストを少なくとも 1 つ追加する
 - **negative-path coverage**: error propagation / retry / state clear / auth boundary / fallback を
   含む AC では、該当する failure path test を追加する。追加不能な場合は理由を
   AC Coverage Matrix に記録する
@@ -342,16 +341,18 @@ production path の穴を見つける状態を避けるため、単なる「テ�
 
 - `Requirement / AC`: requirements.md の numeric ID
 - `Implementation path`: 主な実装ファイル / 関数 / component
-- `Production entrypoint / owning flow`: 実ユーザー操作、callback、bridge、ViewModel、Environment、
-  repository boundary など、本番でその AC が通る入口。該当しない純粋ロジックでは `N/A (pure logic)` と書く
+- `Production entrypoint / owning flow`: 実ユーザー操作 / 公開 API・エンドポイント /
+  イベントハンドラ・コールバック / UI・プレゼンテーション層の状態 / 永続化・リポジトリ境界 など、
+  本番でその AC が通る入口。該当しない純粋ロジックでは `N/A (pure logic)` と書く
 - `Test / assertion`: 追加または更新した test 名 / assertion 名。requirements.md の AC に対応する
   テストが存在しない場合はテスト追加が必須
 - `Verification result`: 実行した検証コマンドと結果
 - `Notes`: failure path test を追加できない理由、または scope 外判断など
 
-user-facing flow / callback / bridge / ViewModel / Environment state / repository boundary を変更する
-AC では、service / repository 単体テストだけで complete 扱いにしないでください。production
-entrypoint または owning flow 経由のテストを少なくとも 1 つ含めます。
+user-facing flow / 公開 API・エンドポイント / イベントハンドラ・コールバック /
+UI・プレゼンテーション層の状態 / 永続化・リポジトリ境界 を変更する AC では、内部 service / 下位
+レイヤの単体テストだけで complete 扱いにしないでください。production entrypoint または owning flow
+経由のテストを少なくとも 1 つ含めます。
 
 error propagation / retry / state clear / auth boundary / fallback を含む AC では、対応する
 negative-path test を追加してください。追加不能な場合は、なぜ実装上または環境上不可能なのかを
