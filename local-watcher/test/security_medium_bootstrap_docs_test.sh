@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# 用途: Issue #52 task 1 の bootstrap pinned reference / docs 同期を検証する。
+# 用途: Issue #52 task 1 / 7 の bootstrap pinned reference / docs 同期を検証する。
 # 配置先: local-watcher/test/security_medium_bootstrap_docs_test.sh
 # 依存: bash 4+, git, grep, sed
 # 実行: bash local-watcher/test/security_medium_bootstrap_docs_test.sh
@@ -105,6 +105,22 @@ assert_contains_file "README documents checksum verification path when artifacts
   "$README_MD" 'sha256sum -c SHA256SUMS'
 assert_contains_file "QUICK-HOWTO documents checksum verification path when artifacts exist (Req 1.5)" \
   "$QUICK_HOWTO_MD" 'sha256sum -c SHA256SUMS'
+assert_contains_file "README documents local runtime .bak recovery policy (Req 2.3 / NFR 2.1)" \
+  "$README_MD" 'local runtime file recovery policy'
+assert_contains_file "README documents local runtime dry-run actions (Req 2.3 / NFR 2.1)" \
+  "$README_MD" 'DRY-RUN local runtime actions'
+assert_contains_file "README documents Guard profile exact path handling (NFR 2.1 / NFR 2.2)" \
+  "$README_MD" 'Guard profile exact path handling'
+assert_contains_file "README documents secure tempfile fail-closed policy (Req 5.3 / NFR 2.1)" \
+  "$README_MD" 'secure tempfile policy'
+assert_contains_file "README documents generic PR Reviewer exec-failed comments (Req 4.2 / Req 4.4 / NFR 2.1)" \
+  "$README_MD" 'generic exec-failed public comment'
+assert_contains_file "README documents unchanged env labels and watcher paths migration note (NFR 1.1 / NFR 1.2 / NFR 1.3 / NFR 1.4)" \
+  "$README_MD" 'Security hardening migration note'
+assert_contains_file "QUICK-HOWTO documents mutable branch override as explicit override (Req 1.4)" \
+  "$QUICK_HOWTO_MD" 'IDD_CODEX_BRANCH=main'
+assert_contains_file "QUICK-HOWTO documents local runtime recovery summary (Req 2.3 / NFR 2.1)" \
+  "$QUICK_HOWTO_MD" 'local runtime file recovery policy'
 
 fixture_repo="$TMPROOT/fixture-src"
 fixture_bare="$TMPROOT/fixture.git"
