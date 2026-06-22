@@ -318,6 +318,50 @@ copy_local_runtime_file() {
   esac
 }
 
+# render_guard_profile_config <template> <hook_path>
+#   Codex Guard profile template の placeholder を hook path に literal replacement する。
+#   sed delimiter / replacement syntax を通さず、# / \ / & / space を path data として扱う。
+render_guard_profile_config() {
+  local template_path="$1"
+  local hook_path="$2"
+  local placeholder="__IDD_CODEX_GUARD_HOOK_PATH__"
+
+  if [ ! -f "$template_path" ]; then
+    echo "Error: guard profile template not found: $template_path" >&2
+    return 1
+  fi
+
+  case "$hook_path" in
+    *"'"*|*$'\n'*)
+      echo "Error: guard hook path contains characters unsupported by TOML literal string" >&2
+      return 1
+      ;;
+  esac
+
+  local template_content
+  if ! template_content="$(cat "$template_path")"; then
+    echo "Error: failed to read guard profile template: $template_path" >&2
+    return 1
+  fi
+
+  if [[ "$template_content" != *"$placeholder"* ]]; then
+    echo "Error: guard profile template missing $placeholder" >&2
+    return 1
+  fi
+
+  awk -v placeholder="$placeholder" -v replacement="$hook_path" '
+    {
+      line = $0
+      rendered = ""
+      while ((pos = index(line, placeholder)) > 0) {
+        rendered = rendered substr(line, 1, pos - 1) replacement
+        line = substr(line, pos + length(placeholder))
+      }
+      print rendered line
+    }
+  ' "$template_path"
+}
+
 # copy_glob_to_homebin <src_dir> <pattern> <dest_dir> [--executable]
 #   `<src_dir>/<pattern>` にマッチする全ファイルを <dest_dir> に配置する。
 #   nullglob を一時的に有効化し、マッチ 0 件は SKIP ログを出して exit 0 で継続する。
@@ -1371,14 +1415,13 @@ if $INSTALL_LOCAL; then
     _guard_config_template="$LOCAL_WATCHER_DIR/hooks/idd-codex-guard.config.toml"
     _guard_config_dest="$CODEX_CONFIG_DIR/${IDD_CODEX_HOOKS_PROFILE_NAME}.config.toml"
     _guard_hook_dest="$IDD_CODEX_HOOKS_INSTALL_DIR/idd-codex-guard.sh"
-    _guard_hook_dest_sed="${_guard_hook_dest//\\/\\\\}"
-    _guard_hook_dest_sed="${_guard_hook_dest_sed//&/\\&}"
     if [ -f "$_guard_config_template" ]; then
-      _guard_action="$(classify_action "$_guard_config_template" "$_guard_config_dest" || echo "OVERWRITE")"
+      if ! _guard_expected="$(render_guard_profile_config "$_guard_config_template" "$_guard_hook_dest")"; then
+        exit 1
+      fi
       # template と generated config は placeholder 展開の分だけ内容が異なるため、既存 dest が
       # generated 内容と一致するかは後段で直接比較する。ここではログ分類用に使う。
       if [ -f "$_guard_config_dest" ]; then
-        _guard_expected="$(sed "s#__IDD_CODEX_GUARD_HOOK_PATH__#$_guard_hook_dest_sed#g" "$_guard_config_template")"
         if [ "$_guard_expected" = "$(cat "$_guard_config_dest")" ]; then
           _guard_action="SKIP"
         else
@@ -1394,12 +1437,12 @@ if $INSTALL_LOCAL; then
         NEW|OVERWRITE)
           log_action "$_guard_action" "$_guard_config_dest" "(generated Codex profile)"
           if [ "$DRY_RUN" = "false" ]; then
-            sed "s#__IDD_CODEX_GUARD_HOOK_PATH__#$_guard_hook_dest_sed#g" "$_guard_config_template" >"$_guard_config_dest"
+            printf '%s\n' "$_guard_expected" >"$_guard_config_dest"
           fi
           ;;
       esac
     fi
-    unset _guard_config_template _guard_config_dest _guard_hook_dest _guard_hook_dest_sed _guard_action _guard_expected
+    unset _guard_config_template _guard_config_dest _guard_hook_dest _guard_action _guard_expected
   fi
 
   # macOS: launchd

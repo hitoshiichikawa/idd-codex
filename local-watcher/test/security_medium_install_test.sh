@@ -54,6 +54,48 @@ assert_file_not_exists() {
   fi
 }
 
+assert_file_not_contains() {
+  local label="$1" path="$2" needle="$3"
+  if [ -f "$path" ] && ! grep -Fq -- "$needle" "$path"; then
+    echo "PASS: $label"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    echo "FAIL: $label"
+    echo "  path: $path"
+    echo "  unexpected needle: $needle"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  fi
+}
+
+assert_command_fails() {
+  local label="$1"
+  shift
+  if "$@"; then
+    echo "FAIL: $label"
+    echo "  command unexpectedly succeeded: $*"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  else
+    echo "PASS: $label"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  fi
+}
+
+extract_function() {
+  local file="$1" fn="$2"
+  awk -v fn="$fn" '
+    $0 ~ "^" fn "\\(\\) \\{" { in_fn=1 }
+    in_fn {
+      print
+      opens = gsub(/\{/, "{")
+      closes = gsub(/\}/, "}")
+      depth += opens - closes
+      if (depth == 0) {
+        exit
+      }
+    }
+  ' "$file"
+}
+
 run_install_local() {
   local home_dir="$1"
   local output_path="$2"
@@ -75,6 +117,8 @@ FAKE_UNAME
   HOME="$home_dir" PATH="$fake_bin:$PATH" "$INSTALL_SH" --local "$@" >"$output_path"
 }
 
+eval "$(extract_function "$INSTALL_SH" "render_guard_profile_config")"
+
 TMPROOT=$(mktemp -d)
 trap 'rm -rf "$TMPROOT"' EXIT
 
@@ -88,6 +132,12 @@ assert_true "created watcher is executable (NFR 1.3)" \
   test -x "$home_new/bin/idd-codex-issue-watcher.sh"
 assert_file_contains "normal install reports watcher creation (Req 2.5)" \
   "$TMPROOT/new.log" "NEW       $home_new/bin/idd-codex-issue-watcher.sh"
+guard_profile_new="$home_new/.codex/idd-codex-guard.config.toml"
+guard_hook_new="$home_new/.idd-codex/hooks/idd-codex-guard.sh"
+assert_file_contains "guard profile normal install preserves exact hook path (Req 3.1)" \
+  "$guard_profile_new" "command = '$guard_hook_new'"
+assert_file_not_contains "guard profile normal install removes placeholder (Req 3.1)" \
+  "$guard_profile_new" "__IDD_CODEX_GUARD_HOOK_PATH__"
 
 # Changed existing watcher: backup is visible and target is refreshed.
 home_changed="$TMPROOT/home-changed"
@@ -159,6 +209,44 @@ assert_file_contains "launchd plist backup is operator-visible (Req 2.3 / Req 2.
   "$TMPROOT/plist.log" "BACKUP    $plist_dest"
 assert_file_contains "launchd plist overwrite action is reported (Req 2.5)" \
   "$TMPROOT/plist.log" "OVERWRITE $plist_dest"
+
+# Guard profile: special path characters are rendered literally without sed delimiter corruption.
+home_guard="$TMPROOT/home-guard"
+special_hooks_dir="$TMPROOT/hooks #dir/with & slash\\ space"
+guard_profile_special="$home_guard/.codex/idd-codex-guard.config.toml"
+guard_hook_special="$special_hooks_dir/idd-codex-guard.sh"
+mkdir -p "$home_guard"
+HOME="$home_guard" IDD_CODEX_HOOKS_INSTALL_DIR="$special_hooks_dir" \
+  "$INSTALL_SH" --local >"$TMPROOT/guard-special.log"
+assert_file_contains "guard profile keeps #, &, backslash, and spaces in hook path (Req 3.2)" \
+  "$guard_profile_special" "command = '$guard_hook_special'"
+assert_file_not_contains "guard profile special path leaves no placeholder behind (Req 3.2)" \
+  "$guard_profile_special" "__IDD_CODEX_GUARD_HOOK_PATH__"
+
+# Guard profile: render failures are visible and do not produce malformed output.
+malformed_template="$TMPROOT/malformed-guard.config.toml"
+malformed_output="$TMPROOT/malformed-rendered.toml"
+malformed_error="$TMPROOT/malformed-render.err"
+printf "command = 'missing placeholder'\n" >"$malformed_template"
+run_malformed_guard_render() {
+  render_guard_profile_config "$malformed_template" "$guard_hook_special" >"$malformed_output" 2>"$malformed_error"
+}
+assert_command_fails "guard renderer fails closed when template lacks placeholder (Req 3.3)" \
+  run_malformed_guard_render
+assert_true "guard renderer does not emit malformed profile content on failure (Req 3.3)" \
+  test ! -s "$malformed_output"
+assert_file_contains "guard renderer failure is operator-visible (Req 3.3 / NFR 2.2)" \
+  "$malformed_error" "missing __IDD_CODEX_GUARD_HOOK_PATH__"
+
+# Guard profile: dry-run reports the generated profile action but does not write it.
+home_guard_dry="$TMPROOT/home-guard-dry"
+mkdir -p "$home_guard_dry"
+HOME="$home_guard_dry" IDD_CODEX_HOOKS_INSTALL_DIR="$special_hooks_dir" \
+  "$INSTALL_SH" --local --dry-run >"$TMPROOT/guard-dry.log"
+assert_file_not_exists "guard profile dry-run does not create generated profile (Req 3.4)" \
+  "$home_guard_dry/.codex/idd-codex-guard.config.toml"
+assert_file_contains "guard profile dry-run reports profile action (Req 3.4)" \
+  "$TMPROOT/guard-dry.log" "[DRY-RUN] NEW       $home_guard_dry/.codex/idd-codex-guard.config.toml (generated Codex profile)"
 
 echo ""
 echo "==========================================="

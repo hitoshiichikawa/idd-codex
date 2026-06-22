@@ -6,6 +6,6 @@ matcher = "^(Bash|Shell|shell|apply_patch|ApplyPatch|Edit|Write|NotebookEdit)$"
 
 [[hooks.PreToolUse.hooks]]
 type = "command"
-command = "__IDD_CODEX_GUARD_HOOK_PATH__"
+command = '__IDD_CODEX_GUARD_HOOK_PATH__'
 timeout = 30
 statusMessage = "Checking idd-codex guard hook"
