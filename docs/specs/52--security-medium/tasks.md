@@ -33,7 +33,7 @@
   - _Requirements:_ 5.1, 5.2, 5.3, 5.4, 5.5, NFR 2.2, NFR 2.3
   - _Boundary:_ Secure Tempfile Helper, Watcher Core Tempfile Call Sites
 
-- [ ] 5. processor modules の temp file 作成を secure tempfile helper に統一する
+- [x] 5. processor modules の temp file 作成を secure tempfile helper に統一する
   - `auto-rebase.sh` の result file / dismissal stderr temp から predictable fallback を除去する。
   - `pr-reviewer.sh` の prompt / stdout / stderr / result / approval body / approval stderr temp を helper に置き換える。
   - `pr-iteration.sh` の usage-limit / soft-fail / recovery handoff temp と、`quota-aware.sh` の quota reset state atomic update temp を owner-only creation に合わせる。
