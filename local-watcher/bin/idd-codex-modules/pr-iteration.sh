@@ -1537,10 +1537,25 @@ pi_run_iteration() {
   # Issue #122 Req 3: subshell <-> 親 で SHA 比較用に before/after の 2 行も tmpfile に書き出す。
   #   - $pi_sha_file : 1 行目=before_sha, 2 行目=after_sha
   local pi_soft_fail_file pi_recover_file pi_sha_file pi_usage_fatal_file
-  pi_soft_fail_file=$(mktemp -t "pi-softfail-${pr_number}-XXXXXX" 2>/dev/null || mktemp)
-  pi_recover_file=$(mktemp -t "pi-recover-${pr_number}-XXXXXX" 2>/dev/null || mktemp)
-  pi_sha_file=$(mktemp -t "pi-sha-${pr_number}-XXXXXX" 2>/dev/null || mktemp)
-  pi_usage_fatal_file=$(mktemp -t "pi-usage-fatal-${pr_number}-XXXXXX" 2>/dev/null || mktemp)
+  if ! pi_soft_fail_file=$(idd_secure_mktemp "pi-softfail-${pr_number}"); then
+    pi_warn "PR #${pr_number}: soft-fail secure tempfile の作成に失敗"
+    return 1
+  fi
+  if ! pi_recover_file=$(idd_secure_mktemp "pi-recover-${pr_number}"); then
+    rm -f "$pi_soft_fail_file"
+    pi_warn "PR #${pr_number}: recovery secure tempfile の作成に失敗"
+    return 1
+  fi
+  if ! pi_sha_file=$(idd_secure_mktemp "pi-sha-${pr_number}"); then
+    rm -f "$pi_soft_fail_file" "$pi_recover_file"
+    pi_warn "PR #${pr_number}: SHA secure tempfile の作成に失敗"
+    return 1
+  fi
+  if ! pi_usage_fatal_file=$(idd_secure_mktemp "pi-usage-fatal-${pr_number}"); then
+    rm -f "$pi_soft_fail_file" "$pi_recover_file" "$pi_sha_file"
+    pi_warn "PR #${pr_number}: usage-limit secure tempfile の作成に失敗"
+    return 1
+  fi
   : > "$pi_soft_fail_file"
   : > "$pi_recover_file"
   : > "$pi_sha_file"

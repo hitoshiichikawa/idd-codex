@@ -166,7 +166,10 @@ ar_run_codex_rebase() {
   log_file="${LOG_DIR}/auto-rebase-${pr_number}-$(date +%Y%m%d-%H%M%S).log"
 
   local result_file
-  result_file=$(mktemp 2>/dev/null || echo "/tmp/ar-result-$$")
+  if ! result_file=$(idd_secure_mktemp "auto-rebase-result-${pr_number}"); then
+    ar_warn "PR #${pr_number}: auto-rebase result secure tempfile の作成に失敗"
+    return 1
+  fi
 
   (
     set +e
@@ -423,7 +426,11 @@ ar_dismiss_all_approvals() {
   while IFS= read -r id; do
     [ -z "$id" ] && continue
     local stderr_file
-    stderr_file=$(mktemp 2>/dev/null || echo "/tmp/ar-dismiss-stderr-$$")
+    if ! stderr_file=$(idd_secure_mktemp "auto-rebase-dismiss-stderr-${pr_number}-${id}"); then
+      ar_warn "PR #${pr_number}: review id=${id} dismissal stderr secure tempfile の作成に失敗"
+      rc=1
+      continue
+    fi
     if ! timeout "$AUTO_REBASE_GIT_TIMEOUT" \
         gh api -X PUT "/repos/${REPO}/pulls/${pr_number}/reviews/${id}/dismissals" \
         -f message="Phase D semantic rebase: re-review required" >/dev/null 2>"$stderr_file"; then

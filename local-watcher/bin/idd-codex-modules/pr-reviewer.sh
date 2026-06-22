@@ -346,7 +346,7 @@ PR_REVIEWER_DEFAULT_PROMPT_EOF
 # pr_build_prompt_file: レビュー prompt を解決し一時ファイルに書き出す（task 5.1）
 #   入力: $1 = pr_number, $2 = base_ref, $3 = head_ref
 #   出力: stdout に一時ファイルパス（呼び出し元が trap で削除）
-#   戻り値: 0 = ok / 1 = mktemp 失敗
+#   戻り値: 0 = ok / 1 = secure tempfile 作成失敗
 #   AC: 4.3
 #
 #   - 解決順序: PR_REVIEWER_PROMPT が非空 → それ。空なら内蔵 default（Decision 9 で
@@ -372,7 +372,7 @@ pr_build_prompt_file() {
   prompt="${prompt//\{PR\}/$pr_number}"
 
   local tmpfile
-  if ! tmpfile=$(mktemp -t idd-codex-pr-reviewer.XXXXXX 2>/dev/null); then
+  if ! tmpfile=$(idd_secure_mktemp "pr-reviewer-prompt-${pr_number}"); then
     pr_warn "PR #${pr_number}: prompt 一時ファイルの作成に失敗"
     return 1
   fi
@@ -393,7 +393,7 @@ pr_build_prompt_file() {
 #   - 注入値（GitHub 由来の branch 名 / PR 番号）に shell metacharacter
 #     （`;` `|` `&` `` ` `` `$(`）が混入していないか検査し、検出時は WARN + skip
 #     （GitHub branch 命名規約では発生しないが防御的設計 / Security Considerations）。
-#   - prompt_file_path は mktemp 由来の自前パスのため検査対象外。cmd_template は
+#   - prompt_file_path は secure tempfile helper 由来の自前パスのため検査対象外。cmd_template は
 #     運用者入力（信頼境界内）かつ正当な `$(cat '...')` を含むため検査しない。
 #   - stdout に結果を返す契約のため pr_log は使わず pr_warn（stderr）のみ使用。
 # ─────────────────────────────────────────────────────────────────────────────
@@ -841,11 +841,11 @@ pr_try_post_formal_approval() {
   local tool="${4:-none}"
 
   local body_file err_file
-  if ! body_file=$(mktemp -t idd-codex-pr-review-approve.XXXXXX 2>/dev/null); then
+  if ! body_file=$(idd_secure_mktemp "pr-reviewer-approval-body-${pr_number}"); then
     pr_warn "PR #${pr_number}: formal approval body 一時ファイルの作成に失敗（marker approval fallback を継続）"
     return 1
   fi
-  if ! err_file=$(mktemp -t idd-codex-pr-review-approve-err.XXXXXX 2>/dev/null); then
+  if ! err_file=$(idd_secure_mktemp "pr-reviewer-approval-stderr-${pr_number}"); then
     rm -f "$body_file"
     pr_warn "PR #${pr_number}: formal approval stderr 一時ファイルの作成に失敗（marker approval fallback を継続）"
     return 1
@@ -943,11 +943,25 @@ pr_run_review_for_pr() {
     pr_warn "PR #${pr_number}: prompt 生成に失敗、skip"
     return 1
   fi
-  out_file=$(mktemp -t idd-codex-pr-reviewer-out.XXXXXX 2>/dev/null || mktemp)
-  err_file=$(mktemp -t idd-codex-pr-reviewer-err.XXXXXX 2>/dev/null || mktemp)
-  result_file=$(mktemp -t idd-codex-pr-reviewer-res.XXXXXX 2>/dev/null || mktemp)
-  # shellcheck disable=SC2064
-  trap "rm -f '${prompt_file}' '${out_file}' '${err_file}' '${result_file}'" RETURN
+  if ! out_file=$(idd_secure_mktemp "pr-reviewer-out-${pr_number}"); then
+    rm -f "$prompt_file"
+    pr_warn "PR #${pr_number}: stdout secure tempfile の作成に失敗、skip"
+    return 1
+  fi
+  if ! err_file=$(idd_secure_mktemp "pr-reviewer-stderr-${pr_number}"); then
+    rm -f "$prompt_file" "$out_file"
+    pr_warn "PR #${pr_number}: stderr secure tempfile の作成に失敗、skip"
+    return 1
+  fi
+  if ! result_file=$(idd_secure_mktemp "pr-reviewer-result-${pr_number}"); then
+    rm -f "$prompt_file" "$out_file" "$err_file"
+    pr_warn "PR #${pr_number}: result secure tempfile の作成に失敗、skip"
+    return 1
+  fi
+  local cleanup_cmd
+  printf -v cleanup_cmd 'rm -f %q %q %q %q' "$prompt_file" "$out_file" "$err_file" "$result_file"
+  # shellcheck disable=SC2064  # secure tempfile paths are shell-escaped into a fixed cleanup command.
+  trap "$cleanup_cmd" RETURN
 
   # プレースホルダ置換（{BASE}/{HEAD}/{PR}/{PROMPT_FILE}）+ metachar 検査（AC 4.3）
   local resolved_cmd
