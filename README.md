@@ -1385,6 +1385,9 @@ idd-codex は基本フロー（Triage → 実装 → PR 作成）以外の機能
 | **Stage A Verify Gate**（tasks.md 末尾 verify タスク（build/test/lint）の独立再実行で自己申告ガード） | `STAGE_A_VERIFY_ENABLED` | `true` | `=false` 厳密一致のみ無効。それ以外（空文字 / `0` / `False` / typo）はすべて有効 | 推奨: `STAGE_A_VERIFY_TIMEOUT`（既定 `600` 秒）、`STAGE_A_VERIFY_COMMAND`（構造化ブロック不在時に参照する operator 固定 escape hatch / 未対応言語向け）、`STAGE_A_VERIFY_SANDBOX_PROFILE`（tasks.md 由来 verify 用 Codex permission profile / 既定 `:workspace`）、`STAGE_A_VERIFY_STATE_DIR`（round counter 永続化先 / 既定 `$HOME/.idd-codex/issue-watcher/state/<repo_slug>` / 通常変更不要 / #246） | [Stage A Verify Gate (#125)](#stage-a-verify-gate-125) | #125, #246, #51 |
 | **Tasks Count Gate**（Architect 完了直後の tasks.md 件数を harness で再評価し、8〜10 件で警告コメント / ≥11 件で `codex-needs-decisions` + Developer 自動起動抑止） | `TC_ENABLED` | `true` | `=false` 厳密一致のみ無効。それ以外（空文字 / `0` / `False` / typo）はすべて有効 | 推奨: `TC_WARN_LOWER`（既定 `8`）、`TC_WARN_UPPER`（既定 `10`）、`TC_ESCALATE_LOWER`（既定 `11`）。非整数は warning ログ + 既定値にフォールバック | [Tasks Count Gate (#147)](#tasks-count-gate-147) | #147 |
 | **Per-Run Evidence Summary**（1 サイクルの stage/gate 実行実態を `run-summary:` 1 行で機械可読出力。前述「複数リポ運用時の cron.log grep 例」節参照） | `RUN_SUMMARY_ENABLED` | `true` | lowercase の `false` / `0` / `no` / `off` のいずれかで無効。それ以外（空文字 / `False` / `OFF` / typo）はすべて有効（#112 系 8 種の「`=false` 厳密一致のみ無効」とは正規化規則が異なる点に注意） | — | Issue #239（専用詳細セクションなし。grep 例・enum 表は本節の上記参照） | #239 |
+| **役割定義の prompt 注入**（Codex には Claude の subagent 機構が無いため `.codex/agents/<role>.md` を各 stage の prompt へ注入する。Developer 出力品質のキーストーン） | `CODEX_INJECT_ROLE_DEFS` | `true` | `=false` で注入なし（移植直後の挙動に戻す） | — | 下記「Codex CLI 移植固有の harness 設計」節 | #74 |
+| **Stage A の PM / Developer 分離**（impl mode で PM 要件定義と Developer 実装を別 `codex exec` に分離し context bleed を防ぐ。**impl 1 件あたり codex exec が +1 回**） | `STAGE_A_PM_SPLIT_ENABLED` | `true` | `=false` で従来の単一 exec（PM+Developer 同居）に戻る | — | 下記「Codex CLI 移植固有の harness 設計」節 | #82 |
+| **Debugger の live web search**（Debugger stage のみ `codex --search`（native `web_search` tool）を有効化） | `CODEX_DEBUGGER_WEB_SEARCH` | `true` | `=false` で検索なし | — | 下記「Codex CLI 移植固有の harness 設計」節 | #78 |
 
 ### opt-in（既定 OFF、明示的に有効化が必要）
 
@@ -1512,6 +1515,85 @@ IDD_CODEX_HOOKS_ENABLED=true
 | `--dry-run` | 無効 | ファイルシステムを変更せず予定操作のみ表示 |
 | `--force` | 無効 | `.codex/agents/` / `.codex/rules/` の `.bak` ガードを飛び越えて差分ありファイルを上書き（既存 `.bak` は温存）。`AGENTS.md` には触れない（#208） |
 | `--force-codex-md` | 無効 | `AGENTS.md` を `.bak` once-only 退避してから template で上書き（#208）。`--force` と併用すると agents/rules も AGENTS.md も上書き |
+
+---
+
+## Codex CLI 移植固有の harness 設計（役割注入 / 暴走上限 / write-scope / 人間判断ルート）
+
+idd-codex は idd-claude（Claude Code 版）の移植であり、**Codex CLI には Claude Code の subagent 機構が
+無い**（`.claude/agents/<role>.md` を Task ツールで隔離 context に spawn する仕組み）。この差を埋めるための
+harness 設計と env var を以下にまとめる。いずれも既定で有効で、`=false` 等で移植直後の挙動へ戻せる。
+
+### 役割定義の prompt 注入（#74 / キーストーン）
+
+Codex は `.codex/agents/*.md` を自動ロードしない（自動ロードするのは `AGENTS.md` のみ）。そのため各 stage の
+prompt 先頭に、対応する役割定義（`developer.md` / `reviewer.md` 等。frontmatter は除去）を **watcher が注入**
+する。これが無いと Developer が役割プレイブック（実装フロー / テスト規律 / 出力契約 / BLOCKED 規約）を持た
+ずに動き、出力品質が落ちて Reviewer に頻繁に差し戻される（移植直後の症状）。
+
+| 変数 | 既定 | 用途 |
+|---|---|---|
+| `CODEX_INJECT_ROLE_DEFS` | `true` | 各 stage の role に対応する `.codex/agents/<role>.md` を prompt 注入する。`=false` で注入なし |
+
+### 暴走ループ上限（#75）
+
+Codex CLI には Claude の `--max-turns` 相当の turn 上限が無い。各 `codex exec` に wall-clock の既定 timeout を
+課し、stuck / loop した codex が flock を保持したまま watcher サイクルを無制限に塞ぐのを防ぐ。
+
+| 変数 | 既定 | 用途 |
+|---|---|---|
+| `CODEX_DEFAULT_TIMEOUT_SEC` | `1800` | 全 codex exec の既定 wall-clock 上限（秒）。`0` で無効。呼び出し側が明示する `CODEX_EXEC_TIMEOUT_SEC`（auto-rebase 等）が優先される |
+
+### Stage A の PM / Developer 分離（#82 / 既定 ON・挙動変更）
+
+impl mode（Architect を経ない単純経路）は、従来 1 回の `codex exec` で PM 要件定義 → Developer 実装を兼任
+していた（PM の文脈が Developer に bleed し、`requirements.md` が独立 cold input にならない）。既定で
+**PM exec（`requirements.md` 生成）と Developer exec（fresh に読んで実装）の 2 段に分離**する。出力は人間
+ゲート無しで自動 Reviewer に直行するため、この分離は実害の低減になる。**impl 1 件あたり codex exec が +1 回**
+（コスト / レイテンシ trade-off）。impl-resume / per-task ループは元から分離済みのため影響なし。design path
+（PM+Architect+PjM）は design-PR の人間ゲートを通るため対象外。
+
+| 変数 | 既定 | 用途 |
+|---|---|---|
+| `STAGE_A_PM_SPLIT_ENABLED` | `true` | impl mode で PM/Developer を別 exec に分離。`=false` で従来の単一 exec（PM+Developer 同居）に戻る |
+
+### Debugger の live web search（#78）
+
+Debugger stage のみ `codex --search`（live web search / native `web_search` tool）を有効化する。外部
+ライブラリの ABI / known issue 等、Reviewer の差し戻しでは詰まる root-cause 分析に使う。`--search` は
+Codex の **global 位置（`exec` の前）専用**フラグのため、Debugger stage 起動時のみ付与する。
+
+| 変数 | 既定 | 用途 |
+|---|---|---|
+| `CODEX_DEBUGGER_WEB_SEARCH` | `true` | Debugger stage で live web search を有効化。`=false` で検索なし |
+
+### Reviewer / Debugger の write-scope 強制（#80 / Guard Hook 連動）
+
+Codex は role 別の tool 制限（Claude の `tools:` frontmatter）を runtime で強制しない。`IDD_CODEX_HOOKS_ENABLED=true`
+（opt-in の Codex Guard Hook）時、watcher が各 stage の role を `IDD_HOOK_ROLE` env で hook に渡し、
+**reviewer / debugger role は許可 notes（`review-notes.md` / `debugger-notes.md`）以外への repo 書き込み
+（Edit / Write / apply_patch 等）を deny** する（独立レビューの境界を prose 頼みから hard 化）。git commit/push
+自体は deny しない（per-task reviewer が `review-notes.md` を commit するため）。Guard Hook 無効時は
+`IDD_HOOK_ROLE` の export は無害な env 設定にすぎず挙動不変。
+
+### per-task ループの人間判断ルート（#90）
+
+per-task Implementer が「対象 task の実装に必要な人間の製品 / 運用判断が未決」と判断し、`impl-notes.md` に
+**行頭固定で `NEEDS_DECISION: <1行>`** を出力した場合、watcher は当該 Issue を `codex-failed` ではなく
+**`codex-needs-decisions`**（人間判断待ち）へルートする。これは「人間が決める前提の task」を機械的失敗化
+しないための分類で、技術的に詰まった場合の `BLOCKED:` 宣言（→ Debugger）とは用途が異なる。marker が
+無い場合は従来どおり `codex-failed`（後方互換）。
+
+### quota 検出 / token telemetry（#79 / #83）
+
+- **quota 検出**: Codex の rate-limit 情報は `codex exec --json` の stdout には出ず（stdout は
+  `thread.started` / `turn.completed` 等のみ）、`CODEX_HOME/sessions` の session rollout に
+  `token_count.rate_limits`（`primary`=5h / `secondary`=weekly 窓、`used_percent` + `resets_at`）として出る。
+  watcher は exec の `thread_id` から対応 rollout を特定し、reached を検出して `codex-needs-quota-wait` へ
+  ルートする（旧 stdout 解析の Claude スキーマでは発火しなかった移植不備の修正）。
+- **token telemetry**: 各 stage の `turn.completed.usage`（`input_tokens` / `output_tokens` /
+  `reasoning_output_tokens` / `cached_input_tokens`）を集計し、`stage tokens label=... input=N output=N total=N`
+  を `qa_log` にログ出力する（コスト可視化 / behavior 影響なし）。
 
 ---
 
