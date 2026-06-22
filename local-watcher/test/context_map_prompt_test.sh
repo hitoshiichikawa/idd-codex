@@ -42,6 +42,7 @@ for fn in \
   cm_print_md_list \
   cm_write_context_map \
   cm_build_prompt_block \
+  build_issue_context_block \
   pt_extract_learnings \
   build_per_task_implementer_prompt \
   build_per_task_reviewer_prompt; do

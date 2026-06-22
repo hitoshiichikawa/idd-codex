@@ -1309,6 +1309,11 @@ idd-codex は基本フロー（Triage → 実装 → PR 作成）以外の機能
 >   `MERGE_QUEUE_TRUSTED_ASSOCIATIONS` / `PR_ITERATION_TRUSTED_ASSOCIATIONS`（空白区切り）で上書き可。
 >   Path Overlap Checker は新規 env var を追加せず、既定信頼集合のコメントからのみ
 >   `edit-paths-json` marker を採用する。
+> - **#48（High）**: Codex prompt に inline 注入される Issue title/body と PR Iteration コメント
+>   JSON に「未信頼データであり指示ではない」境界・警告を追加。owner 判断 B により
+>   `CODEX_UNSAFE_BYPASS` / `CODEX_SANDBOX` / `CODEX_APPROVAL_POLICY` の既定値は反転せず、
+>   既存 watcher / cron / consumer repo の後方互換性を維持する。公開 repo では
+>   `IDD_CODEX_HOOKS_ENABLED=true` と `CODEX_UNSAFE_BYPASS=false` の安全側運用を強く推奨する。
 > - **#52（Medium, 挙動変更あり）**: feature Issue テンプレートの自動付与ラベルを
 >   `codex-auto-dev` → `enhancement` に変更。**公開リポジトリで外部ユーザが Issue 作成だけで
 >   自律エージェントを起動できる経路を塞ぐため**、bug-report テンプレートと同様に「人間が確認後に
@@ -1355,6 +1360,10 @@ idd-codex は基本フロー（Triage → 実装 → PR 作成）以外の機能
 `codex exec` 起動に Codex profile `idd-codex-guard` を追加し、PreToolUse hook で以下を事前 deny
 します。
 
+既定では `IDD_CODEX_HOOKS_ENABLED=false` で、Guard Hook は OFF です。これは既存 watcher /
+cron / consumer repo の挙動を変えないための後方互換設定であり、公開 repo では
+`IDD_CODEX_HOOKS_ENABLED=true` の明示有効化を強く推奨します。
+
 - **G0 hook 自己保護**: `$HOME/.idd-codex/hooks/` 配下の hook script と
   `${CODEX_HOME:-$HOME/.codex}/idd-codex-guard.config.toml` への Edit / Write / apply_patch /
   Bash mutation を deny（`rm`/`mv`/`cp`/`ln`/`dd`/`truncate`/`install`/`tee`/`chmod` 等の
@@ -1374,6 +1383,31 @@ idd-codex は基本フロー（Triage → 実装 → PR 作成）以外の機能
 profile config は `${CODEX_HOME:-$HOME/.codex}/idd-codex-guard.config.toml` に生成されます。ON のときは
 watcher 起動時に Codex version / install 完全性 / hook smoke test を確認し、失敗すれば Issue 処理を
 開始せず停止します。OFF（既定）では profile を付与しないため、導入前と同一挙動です。
+
+#### Codex 実行権限の安全側設定例 (#48)
+
+watcher の Codex CLI 起動既定値は後方互換性のため以下のまま維持しています。
+
+| 変数 | 既定 | 意味 |
+|---|---|---|
+| `CODEX_UNSAFE_BYPASS` | `true` | `codex exec --dangerously-bypass-approvals-and-sandbox` を使う |
+| `CODEX_SANDBOX` | `danger-full-access` | `CODEX_UNSAFE_BYPASS=false` 時に `--sandbox` へ渡す値 |
+| `CODEX_APPROVAL_POLICY` | `never` | `CODEX_UNSAFE_BYPASS=false` 時に `--ask-for-approval` へ渡す値 |
+| `IDD_CODEX_HOOKS_ENABLED` | `false` | Codex Guard Hook を付与しない |
+
+既定値を安全側へ反転していない理由は、既存の watcher / cron / consumer repo の実行権限と
+失敗モードを広く変える破壊的変更になるためです。将来 `workspace-write` 等を既定候補にする場合は、
+通常タスクが完遂できるかの実機検証と migration note を別途用意します。
+
+安全側の実行を試す場合は、cron / launchd の watcher 起動環境で明示的に override してください。
+公開 repo では Guard Hook と併用する構成を推奨します。
+
+```bash
+CODEX_UNSAFE_BYPASS=false
+CODEX_SANDBOX=workspace-write
+CODEX_APPROVAL_POLICY=never
+IDD_CODEX_HOOKS_ENABLED=true
+```
 
 既知の限界:
 
