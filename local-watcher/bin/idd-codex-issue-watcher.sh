@@ -322,6 +322,40 @@ DESIGN_REVIEW_RELEASE_HEAD_PATTERN="${DESIGN_REVIEW_RELEASE_HEAD_PATTERN:-^codex
 # Phase A の MERGE_QUEUE_GIT_TIMEOUT を流用してデフォルト 60 秒。
 DRR_GH_TIMEOUT="${DRR_GH_TIMEOUT:-${MERGE_QUEUE_GIT_TIMEOUT:-60}}"
 
+# ─── full-auto kill switch 設定 (#97) ───
+# 完全自動化系 processor の単一 kill switch。`=true` 厳密一致のときのみ ON。
+# それ以外（未設定 / 空 / `false` / `0` / `True` / `TRUE` / `1` / `on` / typo 等）はすべて
+# OFF に正規化し、本機能導入前と完全に等価な挙動を保つ。本フラグは個別 gate と **AND**
+# 関係で動作し、`FULL_AUTO_ENABLED=true` かつ個別 gate=true の場合のみ full-auto 系
+# processor が発火する（二重 opt-in）。
+#
+# 配下に置くのは「実装済みの full-auto 系」のみ。本 Issue (#97) 時点では full-auto 系
+# processor は未実装のため配線対象は無く、後続（#99 auto-merge / #100 design auto-merge /
+# #101 failed-recovery / #102 needs-decisions auto / #103 semantic conflict /
+# #104 blocked cascade）が追加時に本フラグ（full_auto_enabled）を AND 条件として参照する設計。
+#
+# 既存 opt-in 機能（merge-queue / auto-rebase / promote-pipeline / pr-iteration /
+# pr-reviewer / design-review-release / stage-checkpoint / stage-a-verify / quota-aware /
+# debugger / hooks の個別 gate 自体）の解釈は変更しない（後方互換）。
+FULL_AUTO_ENABLED="${FULL_AUTO_ENABLED:-false}"
+# 値正規化: `true` 厳密一致のみ通し、それ以外はすべて `false` に固定する。既定 OFF の
+# opt-in 制のため、`=false` 既定の opt-out 系とは別扱い（既存の正規化ループには加えない）。
+case "$FULL_AUTO_ENABLED" in
+  true) : ;;
+  *)    FULL_AUTO_ENABLED="false" ;;
+esac
+
+# full_auto_enabled — full-auto kill switch の述語 (#97)
+# 戻り値: 0 = ON（full-auto 許可） / 1 = OFF（全 full-auto 抑止）。副作用なし（純粋関数）。
+# すべての full-auto 系 processor の入口で AND 条件として参照する。Config ブロックで
+# 正規化済みだが、万一 unset のまま評価される経路でも安全側へ倒すため :-false で fallback。
+full_auto_enabled() {
+  case "${FULL_AUTO_ENABLED:-false}" in
+    true) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # ─── Stage Checkpoint 設定 (#68) ───
 # impl / impl-resume の Stage A/B/C 単位で完了 checkpoint を成果物
 # （impl-notes.md / review-notes.md / 既存 impl PR）の有無で観測し、失敗 Stage 以降
@@ -939,7 +973,7 @@ mkdir -p "$LOG_DIR"
 # 解決済み base branch を起動時 log に出力（Req 1.7 / NFR 4.1）。
 # 運用者が cron mailer / log で `base-branch=...` を grep できるよう、
 # 既定値（main）でも明示的に出力する。
-echo "[$(date '+%F %T')] base-branch=${BASE_BRANCH} merge-queue-base=${MERGE_QUEUE_BASE_BRANCH} auto-rebase=${AUTO_REBASE_MODE}"
+echo "[$(date '+%F %T')] base-branch=${BASE_BRANCH} merge-queue-base=${MERGE_QUEUE_BASE_BRANCH} auto-rebase=${AUTO_REBASE_MODE} full-auto=${FULL_AUTO_ENABLED}"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # doctor サブコマンド dispatch (#238 / Decision 2)
