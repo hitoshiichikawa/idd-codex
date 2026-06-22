@@ -47,6 +47,20 @@
   - placeholder 不在や TOML literal string で安全に表現できない path は malformed profile を書かず、operator-visible error で fail closed する。
 - 残存課題: なし（single quote / newline を含む hook path は fail closed。通常の `$HOME/.idd-codex/hooks` 系 path には影響なし）。
 
+#### Reviewer Round 1 Closure
+
+- 採用方針: `render_guard_profile_config` の hook path は `awk -v` assignment を通さず、process environment から読み込ませることで `\n` / `\t` などの literal backslash sequence を path data として保持した。
+- 重要な判断:
+  - `placeholder` は固定 ASCII sentinel のため `awk -v` のまま維持し、未信頼 data である hook path だけを `ENVIRON` 経由に分離した。
+  - TOML single-line literal string で表現できない real newline / carriage return / single quote は生成前に拒否し、malformed profile を stdout / dest に出さない regression を追加した。
+- 残存課題: なし。
+
+#### Finding Closure Matrix
+
+| Target requirement | Category | Required Action | Fix commit | Test/assertion | Verification result | Notes / no-change reason |
+|--------------------|----------|-----------------|------------|----------------|---------------------|--------------------------|
+| 3.2, 3.3 | AC 未カバー | hook path を `awk -v replacement=...` で渡さず、literal backslash sequence の exact preservation と real newline の fail-closed regression を追加する | `18d2f24 fix(install): preserve guard path backslashes literally` | `security_medium_install_test.sh`: guard profile keeps literal backslash n/t sequences in hook path; guard renderer fails closed before writing real newline paths | `bash local-watcher/test/security_medium_install_test.sh` pass; `shellcheck install.sh local-watcher/test/security_medium_install_test.sh` pass | Reviewer 指摘どおり hook path は `ENVIRON` 経由で読み、`awk -v` の escape 解釈対象から外した。 |
+
 ## 確認事項
 
 （task 1 の人間判断は確定済み。残存する確認事項なし）
@@ -66,8 +80,8 @@
 | 2.4 | `install.sh`: existing `.bak` branch in `copy_local_runtime_file` | Reinstall 時に既存 recovery file がある local runtime overwrite flow | `security_medium_install_test.sh`: existing recovery prevents overwrite without force / force preserves `.bak` | `bash local-watcher/test/security_medium_install_test.sh` pass | `--force` は target overwrite の opt-in。既存 `.bak` は温存 |
 | 2.5 | `install.sh`: dry-run-aware `copy_local_runtime_file` logging | `install.sh --dry-run --local` / `--dry-run --all` の action preview flow | `security_medium_install_test.sh`: dry-run reports BACKUP and OVERWRITE without modifying files | `bash local-watcher/test/security_medium_install_test.sh` pass | `--local` 経路で検証。`--all` でも同じ `INSTALL_LOCAL` branch を通る |
 | 3.1 | `install.sh`: `render_guard_profile_config`; `local-watcher/hooks/idd-codex-guard.config.toml` | `install.sh --local` が `${CODEX_HOME:-$HOME/.codex}/idd-codex-guard.config.toml` を生成する flow | `security_medium_install_test.sh`: guard profile normal install preserves exact hook path / removes placeholder | `bash local-watcher/test/security_medium_install_test.sh` pass | 通常 path の production install 経路で検証 |
-| 3.2 | `install.sh`: `render_guard_profile_config` literal replacement; Guard template TOML literal string | Operator が `IDD_CODEX_HOOKS_INSTALL_DIR` に特殊文字を含む path を指定して `install.sh --local` を実行する flow | `security_medium_install_test.sh`: guard profile keeps `#`, `&`, backslash, and spaces / leaves no placeholder | `bash local-watcher/test/security_medium_install_test.sh` pass | `sed` delimiter / replacement syntax を通さない regression |
-| 3.3 | `install.sh`: guard renderer validation before write | Guard profile template が壊れている場合の local install failure path | `security_medium_install_test.sh`: renderer fails closed when template lacks placeholder / emits no malformed profile content / error is visible | `bash local-watcher/test/security_medium_install_test.sh` pass | malformed template は helper 単位で検証。install path は helper failure で `exit 1` |
+| 3.2 | `install.sh`: `render_guard_profile_config` literal replacement; Guard template TOML literal string | Operator が `IDD_CODEX_HOOKS_INSTALL_DIR` に特殊文字を含む path を指定して `install.sh --local` を実行する flow | `security_medium_install_test.sh`: guard profile keeps `#`, `&`, backslash, and spaces / guard profile keeps literal backslash n/t sequences / leaves no placeholder | `bash local-watcher/test/security_medium_install_test.sh` pass | `sed` delimiter / replacement syntax と `awk -v` escape 解釈を通さない regression |
+| 3.3 | `install.sh`: guard renderer validation before write | Guard profile template または hook path が single-line TOML literal string として安全に生成できない場合の local install failure path | `security_medium_install_test.sh`: renderer fails closed when template lacks placeholder / emits no malformed profile content / fails closed before writing real newline paths / error is visible | `bash local-watcher/test/security_medium_install_test.sh` pass | malformed template と real newline path は helper 単位で検証。install path は helper failure で `exit 1` |
 | 3.4 | `install.sh`: dry-run guard profile branch | `install.sh --dry-run --local` の Guard profile action preview flow | `security_medium_install_test.sh`: dry-run reports generated profile action and does not create profile | `bash local-watcher/test/security_medium_install_test.sh` pass | dry-run でも action は表示、dest は未作成 |
 | NFR 1.1 | `setup.sh`, `README.md` env var table | Existing bootstrap env override flow | `security_medium_bootstrap_docs_test.sh`: env var names maintained | `bash local-watcher/test/security_medium_bootstrap_docs_test.sh` pass | `IDD_CODEX_BRANCH` default 値のみ変更 |
 | NFR 1.3 | `install.sh`: watcher target path and launchd target path unchanged | Existing cron / launchd command path flow | `security_medium_install_test.sh`: watcher installed at `$HOME/bin/idd-codex-issue-watcher.sh`; plist installed at `$HOME/Library/LaunchAgents/com.local.idd-codex-issue-watcher.plist` | `bash local-watcher/test/security_medium_install_test.sh` pass | command path は変更なし |
@@ -85,6 +99,8 @@
 - `shellcheck setup.sh local-watcher/test/security_medium_bootstrap_docs_test.sh` — pass
 - `shellcheck install.sh local-watcher/test/security_medium_install_test.sh local-watcher/test/install_local_namespace_test.sh` — pass
 - `shellcheck install.sh local-watcher/test/security_medium_install_test.sh` — pass
+- `bash local-watcher/test/security_medium_install_test.sh` — pass (Reviewer Round 1 closure: literal `\n` / `\t` path preservation and real newline fail-closed regression)
+- `shellcheck install.sh local-watcher/test/security_medium_install_test.sh` — pass (Reviewer Round 1 closure)
 - `git fetch --depth 1 origin 9f8e9cea7df960f5be14849edcbac03dea55162e` against `https://github.com/hitoshiichikawa/idd-codex.git` — pass
 
 STATUS: complete
