@@ -1,0 +1,48 @@
+name: shellcheck
+
+# idd-codex は本体が bash（watcher 8000+ 行 + modules）であり、移植由来の回帰を
+# 機械的に止めるゲートが無かった（調査②: CI 無し＝自己申告のみ）。
+# 本 workflow は production シェルを warning 厳格・テストを error で静的検査する。
+#
+# NOTE: テストスイート（local-watcher/test/*_test.sh）の実行はまだ CI に載せていない。
+#   quota 検出系テストが Claude スキーマの fixture で false-green になっている問題
+#   （別 Issue: codex --json / session rollout への再ターゲット）を解消してから、
+#   `run-tests` job として拡張する。
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Lint production shell (severity=warning)
+        run: |
+          shellcheck --severity=warning \
+            local-watcher/bin/idd-codex-issue-watcher.sh \
+            local-watcher/bin/idd-codex-modules/*.sh \
+            install.sh setup.sh
+
+      - name: Lint test scripts (severity=error)
+        run: |
+          # テストは eval 抽出した関数が global を読む都合で SC2034 警告が出るため
+          # error 重大度のみをゲートする（プロジェクト運用に合わせる）。
+          shellcheck --severity=error local-watcher/test/*.sh
+
+      - name: Syntax check (bash -n) all tracked shell scripts
+        run: |
+          rc=0
+          while IFS= read -r f; do
+            bash -n "$f" || { echo "syntax error: $f"; rc=1; }
+          done < <(git ls-files '*.sh')
+          exit "$rc"
