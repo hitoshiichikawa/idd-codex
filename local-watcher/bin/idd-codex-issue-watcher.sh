@@ -200,6 +200,29 @@ AUTO_REBASE_MAX_PRS="${AUTO_REBASE_MAX_PRS:-3}"
 # Prompt template の配置先（install.sh が `*.tmpl` glob で自動配置）。
 AUTO_REBASE_TEMPLATE="${AUTO_REBASE_TEMPLATE:-$HOME/bin/idd-codex-auto-rebase-prompt.tmpl}"
 
+# ─── semantic conflict 自動解決 設定 (#103 / D-12) ───
+# 既定の auto-rebase は semantic 判定の diff を dismiss + ready-for-review で「人間待ち」へ
+# 戻す。本フラグ `on` のとき（かつ `FULL_AUTO_ENABLED=true`）、semantic 解決を完全自動化
+# する: codex 解決 commit を push したまま approve を dismiss し（無検証 merge を防ぐ）、
+# **Issue 02 の二重ゲート（`codex-review`（+2nd gate `claude-review`））を新 SHA で再発火**
+# させて再レビュー→auto-merge へ流す。解決不能（rebase 失敗 / budget 超過）は `codex-failed`
+# ではなく **`codex-needs-decisions`** で人間へフォールバックする（D-12 安全策）。
+# `AUTO_REBASE_MODE=codex` 起動下の追加 opt-in。`on` 厳密一致のみ有効、それ以外は `off`。
+# OFF（既定）では従来どおり ar_apply_semantic（dismiss + ready = 人間待ち）で導入前と等価。
+AUTO_REBASE_SEMANTIC="${AUTO_REBASE_SEMANTIC:-off}"
+case "$AUTO_REBASE_SEMANTIC" in
+  on) : ;;
+  *)  AUTO_REBASE_SEMANTIC="off" ;;
+esac
+# 同一 PR を semantic 自動解決できる通算回数の上限（audit marker 数でカウント）。
+# failed-recovery(#101) / needs-decisions-auto(#102) と同じ単一カウンタ思想（掛け算しない）。
+# 超過で `codex-needs-decisions` フォールバック。非整数 / 0 以下は 3 に正規化。
+AUTO_REBASE_SEMANTIC_MAX="${AUTO_REBASE_SEMANTIC_MAX:-3}"
+case "$AUTO_REBASE_SEMANTIC_MAX" in
+  ''|*[!0-9]*) AUTO_REBASE_SEMANTIC_MAX=3 ;;
+  *) [ "$AUTO_REBASE_SEMANTIC_MAX" -le 0 ] && AUTO_REBASE_SEMANTIC_MAX=3 ;;
+esac
+
 # ─── 実装 PR auto-merge 設定 (#99) ───
 # `codex-ready-for-review` 実装 PR に GitHub native auto-merge を有効化する gate。
 # `=true` 厳密一致のみ ON。`FULL_AUTO_ENABLED`（#97 kill switch）との AND 二重 opt-in で動き、
@@ -1060,7 +1083,7 @@ mkdir -p "$LOG_DIR"
 # 解決済み base branch を起動時 log に出力（Req 1.7 / NFR 4.1）。
 # 運用者が cron mailer / log で `base-branch=...` を grep できるよう、
 # 既定値（main）でも明示的に出力する。
-echo "[$(date '+%F %T')] base-branch=${BASE_BRANCH} merge-queue-base=${MERGE_QUEUE_BASE_BRANCH} auto-rebase=${AUTO_REBASE_MODE} auto-merge=${AUTO_MERGE_ENABLED} auto-merge-design=${AUTO_MERGE_DESIGN_ENABLED} failed-recovery=${FAILED_RECOVERY_ENABLED} needs-decisions-mode=${NEEDS_DECISIONS_MODE} full-auto=${FULL_AUTO_ENABLED}"
+echo "[$(date '+%F %T')] base-branch=${BASE_BRANCH} merge-queue-base=${MERGE_QUEUE_BASE_BRANCH} auto-rebase=${AUTO_REBASE_MODE} auto-rebase-semantic=${AUTO_REBASE_SEMANTIC} auto-merge=${AUTO_MERGE_ENABLED} auto-merge-design=${AUTO_MERGE_DESIGN_ENABLED} failed-recovery=${FAILED_RECOVERY_ENABLED} needs-decisions-mode=${NEEDS_DECISIONS_MODE} full-auto=${FULL_AUTO_ENABLED}"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # doctor サブコマンド dispatch (#238 / Decision 2)
