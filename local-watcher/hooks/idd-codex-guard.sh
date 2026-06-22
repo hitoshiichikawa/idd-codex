@@ -11,6 +11,10 @@
 #             または generated profile config (`$IDD_CODEX_HOOKS_CONFIG_FILE`) への
 #             Edit / Write / NotebookEdit / apply_patch、および Bash 経由の mutation
 #             コマンド（`rm` / `mv` / `sed -i` / `chmod` / リダイレクト / `tee`）。
+#       - G3: read-only-writer role の書き込みスコープ強制（#80）。`$IDD_HOOK_ROLE` が
+#             `reviewer` / `debugger` のとき、許可 notes（reviewer→`review-notes.md` /
+#             debugger→`debugger-notes.md`）以外への repo 書き込み（Edit / Write /
+#             NotebookEdit / apply_patch）を deny する。temp 配下（/tmp 等）と他 role は無制限。
 #
 # 配置先: $IDD_CODEX_HOOKS_DIR/idd-codex-guard.sh
 #          （install.sh が user-scope `$HOME/.idd-codex/hooks/` 既定で配置）
@@ -21,6 +25,8 @@
 #   IDD_HOOK_BASE_BRANCH          base ブランチ名。未設定で `main` フォールバック
 #   IDD_CODEX_HOOKS_DIR           guard install dir。未設定で `$HOME/.idd-codex/hooks`
 #   IDD_CODEX_HOOKS_CONFIG_FILE   generated Codex profile config
+#   IDD_HOOK_ROLE                 当該 stage の role（watcher が export / #80 G3）。
+#                                 `reviewer` / `debugger` のとき書き込みスコープを強制。未設定/他値で無制限
 #   IDD_HOOK_LOG                  設定時は 1 行 append（任意）
 #
 # stdin / stdout:
@@ -166,6 +172,73 @@ check_g0_patch_payload() {
   local payload="$1"
   command_mentions_protected_path "$payload" || return 0
   emit_deny "guard self-mutation denied: protected path mentioned in apply_patch payload"
+}
+
+# ── G3: read-only-writer role の書き込みスコープ強制 (#80) ──
+# Codex には Claude のような per-role tool 制限が無く、全 stage が同一 sandbox で走るため、
+# Reviewer / Debugger の「成果物 notes 以外を書かない」境界が prose 頼みだった。本 hook は
+# watcher が export する $IDD_HOOK_ROLE を見て、reviewer/debugger role のとき、許可された
+# notes ファイル（reviewer→review-notes.md / debugger→debugger-notes.md）以外への repo 書き込みを
+# deny する。$IDD_HOOK_ROLE が未設定 / 他 role のときは無制限（後方互換）。
+# 注: git commit/push 自体は deny しない（per-task reviewer は review-notes.md を commit するため）。
+#     書き込み先を notes に限定することで、commit してもソース改変が混入しないことを担保する。
+
+is_temp_path() {
+  local n
+  n="$(normalize_path "$1")"
+  case "$n" in
+    /tmp/*|/var/tmp/*|/private/tmp/*) return 0 ;;
+  esac
+  if [ -n "${TMPDIR:-}" ]; then
+    local t
+    t="$(normalize_path "$TMPDIR")"
+    case "$n" in "$t"/*|"$t") return 0 ;; esac
+  fi
+  return 1
+}
+
+# $1 = role, $2 = basename。許可されていれば 0、そうでなければ 1。
+role_allowed_write_basename() {
+  case "$1" in
+    reviewer) [ "$2" = "review-notes.md" ] ;;
+    debugger) [ "$2" = "debugger-notes.md" ] ;;
+    *) return 1 ;;
+  esac
+}
+
+# read-only-writer role が対象パスへ書き込もうとしている場合、許可 notes 以外なら deny。
+check_g3_write() {
+  local target_path="$1"
+  local role="${IDD_HOOK_ROLE:-}"
+  case "$role" in
+    reviewer|debugger) ;;
+    *) return 0 ;;
+  esac
+  # repo 外の scratch（/tmp 等）は許容（ソース改変ではないため）。
+  is_temp_path "$target_path" && return 0
+  local normalized base
+  normalized="$(normalize_path "$target_path")"
+  base="${normalized##*/}"
+  if ! role_allowed_write_basename "$role" "$base"; then
+    local allowed
+    if [ "$role" = "reviewer" ]; then allowed="review-notes.md"; else allowed="debugger-notes.md"; fi
+    emit_deny "role write-scope denied: role=$role は $allowed 以外への書き込みが禁止です: path=$target_path (#80)"
+  fi
+}
+
+# apply_patch payload のヘッダ（*** Update/Add/Delete File: <path>）から対象パスを抽出し各々 check。
+check_g3_patch_payload() {
+  local payload="$1"
+  local role="${IDD_HOOK_ROLE:-}"
+  case "$role" in
+    reviewer|debugger) ;;
+    *) return 0 ;;
+  esac
+  local path
+  while IFS= read -r path; do
+    [ -z "$path" ] && continue
+    check_g3_write "$path"
+  done < <(printf '%s\n' "$payload" | sed -nE 's/^\*\*\* (Update|Add|Delete) File: (.+)$/\2/p')
 }
 
 extract_push_tokens() {
@@ -609,20 +682,24 @@ main() {
       local file_path
       file_path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty')"
       [ -n "$file_path" ] && check_g0_path "$file_path"
+      [ -n "$file_path" ] && check_g3_write "$file_path"
       emit_allow "$tool_name file_path ok"
       ;;
     NotebookEdit)
       local notebook_path
       notebook_path="$(printf '%s' "$input" | jq -r '.tool_input.notebook_path // .tool_input.file_path // empty')"
       [ -n "$notebook_path" ] && check_g0_path "$notebook_path"
+      [ -n "$notebook_path" ] && check_g3_write "$notebook_path"
       emit_allow "NotebookEdit path ok"
       ;;
     apply_patch|ApplyPatch)
       local file_path patch_payload
       file_path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty')"
       [ -n "$file_path" ] && check_g0_path "$file_path"
+      [ -n "$file_path" ] && check_g3_write "$file_path"
       patch_payload="$(printf '%s' "$input" | jq -r '.tool_input.command // .tool_input.patch // .tool_input.input // empty')"
       [ -n "$patch_payload" ] && check_g0_patch_payload "$patch_payload"
+      [ -n "$patch_payload" ] && check_g3_patch_payload "$patch_payload"
       emit_allow "apply_patch ok"
       ;;
     Bash|Shell|shell)
