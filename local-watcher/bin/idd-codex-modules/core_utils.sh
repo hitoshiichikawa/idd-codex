@@ -154,6 +154,18 @@ pr_error() {
   echo "[$(date '+%F %T')] [$REPO] pr-reviewer: ERROR: $*" >&2
 }
 
+# failed-recovery 専用ロガー（識別用 prefix と timestamp 形式を Issue Watcher と揃える）
+# Issue #101: 時刻 prefix と processor prefix の間に `[$REPO]` を挿入。
+fr_log() {
+  echo "[$(date '+%F %T')] [$REPO] failed-recovery: $*"
+}
+fr_warn() {
+  echo "[$(date '+%F %T')] [$REPO] failed-recovery: WARN: $*" >&2
+}
+fr_error() {
+  echo "[$(date '+%F %T')] [$REPO] failed-recovery: ERROR: $*" >&2
+}
+
 # secure tempfile helper（Issue #52 Req 5）
 #
 # prompt / JSON / stderr / quota reset state などを置く一時ファイルを、repo ごとに

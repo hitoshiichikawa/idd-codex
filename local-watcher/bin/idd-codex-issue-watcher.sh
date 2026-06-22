@@ -229,6 +229,33 @@ AUTO_MERGE_DESIGN_MAX_PRS="${AUTO_MERGE_DESIGN_MAX_PRS:-10}"
 AUTO_MERGE_DESIGN_GIT_TIMEOUT="${AUTO_MERGE_DESIGN_GIT_TIMEOUT:-60}"
 AUTO_MERGE_DESIGN_HEAD_PATTERN="${AUTO_MERGE_DESIGN_HEAD_PATTERN:-^codex/issue-.*-design}"
 
+# ─── Failed Recovery Processor 設定 (#101 / D-19) ───
+# `codex-failed` Issue（reviewer-reject 由来含む）と auto-merge 待ちで CI 失敗の PR を
+# 解析 → fresh codex で自動復旧する gate。`=true` 厳密一致のみ ON。`FULL_AUTO_ENABLED`
+# （#97 kill switch）との AND 二重 opt-in で動き、OFF（既定）では外部副作用ゼロで no-op
+# （`codex-failed` は人間対応のまま＝導入前と等価）。
+FAILED_RECOVERY_ENABLED="${FAILED_RECOVERY_ENABLED:-false}"
+case "$FAILED_RECOVERY_ENABLED" in
+  true) : ;;
+  *)    FAILED_RECOVERY_ENABLED="false" ;;
+esac
+# 通算 attempt budget = work-unit（Issue / PR）単位の唯一カウンタ（D-19b）。
+# Reviewer 内部 2/2・pr-iteration 3R とは掛け算しない。非整数 / 0 以下は 4 に正規化。
+# StageA PM/Dev 分割(#82) の +1 exec/issue を踏まえた既定値。
+FAILED_RECOVERY_MAX_ATTEMPTS="${FAILED_RECOVERY_MAX_ATTEMPTS:-4}"
+case "$FAILED_RECOVERY_MAX_ATTEMPTS" in
+  ''|*[!0-9]*) FAILED_RECOVERY_MAX_ATTEMPTS=4 ;;
+  *) [ "$FAILED_RECOVERY_MAX_ATTEMPTS" -le 0 ] && FAILED_RECOVERY_MAX_ATTEMPTS=4 ;;
+esac
+# 1 サイクルで処理する CI 失敗 PR 数の上限（超過分は次サイクルへ持ち越し）。
+FAILED_RECOVERY_MAX_PRS="${FAILED_RECOVERY_MAX_PRS:-3}"
+# 各 gh / git 操作の個別タイムアウト（秒）。
+FAILED_RECOVERY_GIT_TIMEOUT="${FAILED_RECOVERY_GIT_TIMEOUT:-60}"
+# 復旧 codex 実行に使うモデル ID（既存 DEV_MODEL とは独立に上書き可能）。
+FAILED_RECOVERY_DEV_MODEL="${FAILED_RECOVERY_DEV_MODEL:-${DEV_MODEL:-gpt-5.5}}"
+# 通算 attempt budget / no-progress baseline を work-unit 単位で永続化する state dir。
+FAILED_RECOVERY_STATE_DIR="${FAILED_RECOVERY_STATE_DIR:-$HOME/.idd-codex/failed-recovery/$REPO_SLUG}"
+
 # ─── PR Iteration Processor 設定 (#26) ───
 # `codex-needs-iteration` ラベル付き PR をレビューコメントに基づいて自動で iterate する。
 # 標準機能としてデフォルト有効化（#112）。無効化したい場合は cron / launchd 側で
@@ -961,7 +988,7 @@ IDD_MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)/id
 # 3 プロセッサ（quota-aware / merge-queue / auto-rebase）、#181 Part 3 で切り出した
 # 3 プロセッサ（promote-pipeline / pr-iteration / stage-a-verify）を並べ、末尾に
 # #238 の scaffolding-health.sh と #239 の per-run evidence サマリ（run-summary.sh）を置く。
-REQUIRED_MODULES=( "core_utils.sh" "guard-hook.sh" "quota-aware.sh" "merge-queue.sh" "auto-rebase.sh" "auto-merge.sh" "auto-merge-design.sh" "promote-pipeline.sh" "pr-iteration.sh" "pr-reviewer.sh" "stage-a-verify.sh" "scaffolding-health.sh" "context-map.sh" "run-summary.sh" )
+REQUIRED_MODULES=( "core_utils.sh" "guard-hook.sh" "quota-aware.sh" "merge-queue.sh" "auto-rebase.sh" "auto-merge.sh" "auto-merge-design.sh" "failed-recovery.sh" "promote-pipeline.sh" "pr-iteration.sh" "pr-reviewer.sh" "stage-a-verify.sh" "scaffolding-health.sh" "context-map.sh" "run-summary.sh" )
 for _idd_mod in "${REQUIRED_MODULES[@]}"; do
   _idd_mod_path="$IDD_MODULE_DIR/$_idd_mod"
   if [ ! -f "$_idd_mod_path" ]; then
@@ -1011,7 +1038,7 @@ mkdir -p "$LOG_DIR"
 # 解決済み base branch を起動時 log に出力（Req 1.7 / NFR 4.1）。
 # 運用者が cron mailer / log で `base-branch=...` を grep できるよう、
 # 既定値（main）でも明示的に出力する。
-echo "[$(date '+%F %T')] base-branch=${BASE_BRANCH} merge-queue-base=${MERGE_QUEUE_BASE_BRANCH} auto-rebase=${AUTO_REBASE_MODE} auto-merge=${AUTO_MERGE_ENABLED} auto-merge-design=${AUTO_MERGE_DESIGN_ENABLED} full-auto=${FULL_AUTO_ENABLED}"
+echo "[$(date '+%F %T')] base-branch=${BASE_BRANCH} merge-queue-base=${MERGE_QUEUE_BASE_BRANCH} auto-rebase=${AUTO_REBASE_MODE} auto-merge=${AUTO_MERGE_ENABLED} auto-merge-design=${AUTO_MERGE_DESIGN_ENABLED} failed-recovery=${FAILED_RECOVERY_ENABLED} full-auto=${FULL_AUTO_ENABLED}"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # doctor サブコマンド dispatch (#238 / Decision 2)
@@ -1429,6 +1456,11 @@ process_pr_iteration || pi_warn "process_pr_iteration が想定外のエラー�
 
 # Design Review Release Processor を Issue 処理ループの直前に実行（#40 AC 1.3 / 1.5）
 process_design_review_release || drr_warn "process_design_review_release が想定外のエラーで終了しました（後続 Issue 処理は継続）"
+
+# Failed Recovery Processor (#101 / D-19) を PR Iteration / Design Review Release の直後に実行。
+# 同一サイクルで pi_escalate_to_failed 等が付けた codex-failed を最速で拾える位置。
+# gate（FULL_AUTO_ENABLED AND FAILED_RECOVERY_ENABLED）OFF 時は外部副作用ゼロで no-op。
+process_failed_recovery || fr_warn "process_failed_recovery が想定外のエラーで終了しました（後続 Issue 処理は継続）"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Stage A Verify Module (#125) — idd-codex-modules/stage-a-verify.sh へ切り出し済み（#181 Part 3）
