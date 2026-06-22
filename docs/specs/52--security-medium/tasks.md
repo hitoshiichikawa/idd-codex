@@ -1,6 +1,6 @@
 # Implementation Plan
 
-- [ ] 1. 確定済み pinned reference / checksum 方針を setup / docs へ反映する
+- [x] 1. 確定済み pinned reference / checksum 方針を setup / docs へ反映する
   - **人間決定は確定済み（#52 owner 判断 / 本 task は実装可能）**:
     - 既定 pinned reference は **commit SHA**（mutable `main` ではなく）を採用する。初期値は実装時点の
       `origin/main` HEAD の commit SHA（`git rev-parse origin/main` 等で取得した 40 桁 / 短縮でも可）を
