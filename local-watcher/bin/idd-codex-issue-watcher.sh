@@ -479,6 +479,16 @@ CODEX_UNSAFE_BYPASS="${CODEX_UNSAFE_BYPASS:-true}"
 CODEX_EPHEMERAL="${CODEX_EPHEMERAL:-true}"
 CODEX_LAST_MESSAGE_DIR="${CODEX_LAST_MESSAGE_DIR:-$LOG_DIR/codex-last-messages}"
 
+# ─── 役割定義（.codex/agents/*.md）の prompt 注入 (#15 harness fix) ───
+# Claude Code 版は `.claude/agents/<role>.md` を Task サブエージェントの system prompt として
+# **ネイティブにロード**するが、Codex CLI には subagent 機構が無く `.codex/agents/*.md` を
+# 自動ロードしない。そのため移植時に Developer / Reviewer 等の役割定義（実装フロー / テスト
+# 規律 / 出力契約 / BLOCKED 規約 等）が一切 context に入らず、出力品質が低下していた。
+# 本フラグ有効時（既定 true）は、各 stage の role に対応する `.codex/agents/<role>.md` を
+# frontmatter を除去したうえで prompt 先頭に注入し、Codex 自身がその役割として振る舞うよう
+# framing する。`=false` 明示で従来挙動（注入なし）に戻せる（後方互換のエスケープハッチ）。
+CODEX_INJECT_ROLE_DEFS="${CODEX_INJECT_ROLE_DEFS:-true}"
+
 # ─── Codex Guard Hook 設定 (#294) ───
 # Codex CLI の PreToolUse hook を使い、base branch push / 無条件 force push / guard 自己改変を
 # opt-in で deny する。`=true` 完全一致時のみ有効化し、未設定・typo・false では Codex 起動引数を
@@ -632,6 +642,93 @@ codex_reasoning_effort_for_stage() {
   esac
 }
 
+# ─── stage_label → 注入する役割定義ファイル名（.codex/agents/<role>.md の <role>）───
+# 役割（role）でマップする。reasoning-effort の grouping とは別軸（例: StageA-prime-blocked は
+# effort 上は Debugger 群だが role は Developer 再実行）なので独立に定義する。
+# 空文字を返した stage（Triage 等）は役割定義を注入しない。複数 role はスペース区切りで返す
+# （標準 impl path の StageA は 1 回の codex exec で PM→Developer を担うため両方を注入）。
+codex_agent_roles_for_stage() {
+  local stage_label="${1:-}"
+  case "$stage_label" in
+    PerTask-Rev-*|Reviewer-*|Reviewer*|reviewer*|per-task-reviewer-*|StageB*)
+      printf '%s\n' "reviewer" ;;
+    Debugger-*|Debugger*|debugger*)
+      printf '%s\n' "debugger" ;;
+    design|PR-iteration-design-*)
+      printf '%s\n' "architect" ;;
+    StageC|stageC|PjM*)
+      printf '%s\n' "project-manager" ;;
+    StageA)
+      # 標準 impl path は 1 回の codex exec で PM→Developer を担うため両ロールを注入する。
+      # ただし impl-resume（設計 PR merge 済み = requirements/design/tasks 確定済み）では PM
+      # 役割は不要（むしろ「requirements を書け」という矛盾ノイズになる）ため Developer のみ。
+      if [ "${MODE:-}" = "impl-resume" ]; then
+        printf '%s\n' "developer"
+      else
+        printf '%s\n' "product-manager developer"
+      fi
+      ;;
+    PerTask-Impl-*|StageA-*|AutoRebase-*|PR-iteration-impl-*)
+      printf '%s\n' "developer" ;;
+    Triage|triage)
+      printf '%s\n' "" ;;
+    *)
+      printf '%s\n' "developer" ;;
+  esac
+}
+
+# ─── 役割定義 markdown の先頭 YAML frontmatter（--- ... ---）を除去して body のみ出力 ───
+# frontmatter（name / description / tools / model）は Claude Code subagent 機構向けメタで
+# Codex には無関係なため注入前に剥がす。frontmatter が無いファイルは丸ごと出力する。
+codex_strip_frontmatter() {
+  awk '
+    NR==1 && $0=="---" { fm=1; next }
+    fm==1 && $0=="---" { fm=0; next }
+    fm==0 { print }
+  ' "$1"
+}
+
+# ─── stage_label に対応する役割定義 preamble を stdout に組み立てる ───
+# CODEX_INJECT_ROLE_DEFS=false / 対象 role 無し / ファイル欠落（全 role）のとき空文字を返し、
+# 呼び出し側は従来どおり素の prompt を渡す（後方互換 / fail-open）。ファイル欠落は silent fail を
+# 避けるため stderr に loud WARN を出す（AGENTS.md「silent fail を作らない」）。
+codex_build_role_preamble() {
+  local stage_label="${1:-}"
+  [ "${CODEX_INJECT_ROLE_DEFS:-true}" = "true" ] || return 0
+
+  local roles
+  roles="$(codex_agent_roles_for_stage "$stage_label")"
+  [ -n "$roles" ] || return 0
+
+  local agents_dir="$REPO_DIR/.codex/agents"
+  local role role_file body emitted=0
+  for role in $roles; do
+    role_file="$agents_dir/$role.md"
+    if [ ! -f "$role_file" ]; then
+      printf 'WARN: 役割定義が見つかりません（注入 skip）: %s （stage=%s）\n' "$role_file" "$stage_label" >&2
+      continue
+    fi
+    body="$(codex_strip_frontmatter "$role_file")"
+    [ -n "$body" ] || continue
+    emitted=1
+    cat <<EOF
+========================================================================
+【役割定義 / ROLE DEFINITION（厳守）— ${role}】
+あなたは Codex CLI の単一エージェントとして起動されています。以下は本 stage で
+あなたが担う **${role}** ロールの役割定義です。移植元（Claude Code 版）の prompt 本文には
+「${role} サブエージェントを起動」等の表現が残りますが、Codex に別 context の subagent 起動
+機構はありません。**あなた自身がこのロールとして振る舞い、以下の定義を厳守してください**
+（別プロセスの起動は不要）。役割定義と後続のタスク指示が矛盾する場合は、Issue 個別の
+タスク指示を優先します。
+------------------------------------------------------------------------
+${body}
+========================================================================
+
+EOF
+  done
+  [ "$emitted" = "1" ] || return 0
+}
+
 codex_exec_prompt() {
   local stage_label="$1"
   local model="$2"
@@ -642,6 +739,17 @@ codex_exec_prompt() {
   safe_stage="$(printf '%s' "$stage_label" | tr -c 'A-Za-z0-9_.-' '-')"
   mkdir -p "$CODEX_LAST_MESSAGE_DIR"
   last_message_file="$CODEX_LAST_MESSAGE_DIR/${NUMBER:-unknown}-${safe_stage}-$(date +%Y%m%d-%H%M%S).txt"
+
+  # Codex には subagent 自動ロードが無いため、本 stage の役割定義（.codex/agents/<role>.md）を
+  # prompt 先頭に注入する。空（注入なし / Triage 等）なら素の prompt をそのまま使う。
+  local role_preamble
+  role_preamble="$(codex_build_role_preamble "$stage_label")"
+  if [ -n "$role_preamble" ]; then
+    prompt="${role_preamble}
+（以下、本 stage の具体タスク指示）
+
+${prompt}"
+  fi
 
   local -a args codex_global_args
   args=(exec -C "$REPO_DIR" -m "$model" --json --output-last-message "$last_message_file" -c "model_reasoning_effort=\"$effort\"")
