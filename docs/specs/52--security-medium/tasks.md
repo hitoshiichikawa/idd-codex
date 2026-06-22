@@ -42,7 +42,7 @@
   - _Requirements:_ 5.1, 5.2, 5.3, 5.4, 5.5, NFR 2.2, NFR 2.3
   - _Depends:_ 4
 
-- [ ] 6. PR Reviewer の placeholder validation と public error redaction を実装する
+- [x] 6. PR Reviewer の placeholder validation と public error redaction を実装する
   - `{BASE}`, `{HEAD}`, `{PR}` に入る PR-derived value を field ごとに検証し、newline、redirection、glob、command substitution、shell separator、leading option-like form、非 numeric PR number を拒否する。
   - unsafe value は当該 PR を skip し、operator-visible warning には PR number / field / reason category を出す。raw value は public comment に出さない。
   - non-quota execution failure の public `exec-failed` comment から raw stdout / stderr excerpt を除去し、PR number、head SHA、tool、exit code、local log correlation token だけを含める。
