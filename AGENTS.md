@@ -253,6 +253,15 @@ Reviewer / PjM）は、以下の方針で **内部思考言語と出力言語を
 - 破壊的操作（force push / hook 自己改変）を新たに招きうる変更では、Codex Guard Hook
   （`local-watcher/hooks/idd-codex-guard.sh`）の deny 規則と回帰テストも併せて更新する（Issue #49）。
 
+**Security Review Processor（idd-claude #279）は idd-codex では未移植（意図的 scope-out / #81）**:
+idd-claude の opt-in PR セキュリティレビュー（`claude --permission-mode plan` で Claude Code 公式
+`/security-review` skill を起動し PR diff を advisory レビュー）は **Claude skill 依存**で codex に
+等価物が無く、汎用プロンプトに置換すると品質が大きく落ちるため移植しない。idd-codex のセキュリティは
+本節の規約 ＋ Codex Guard Hook（base push / force push / guard 自己改変 deny ＋ Reviewer/Debugger
+write-scope / #80）＋ 未信頼入力境界（#70）＋ Stage A Verify の `codex sandbox` 実行（#51）で
+多層に担保する。PR 単位のセキュリティレビューが欲しい運用者は、Claude Code の `/security-review`
+skill や `gh` を **手動で**実行する（watcher の自動処理としては提供しない）。
+
 ### 7. ドキュメント同期
 
 - 挙動を変えたら **同一 PR で** README の該当節 + AGENTS.md + 該当 rule を更新する（二重管理規約）。
