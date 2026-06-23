@@ -101,6 +101,17 @@ LABEL_BLOCKED="codex-blocked"
 # 明示 opt-in (`DEPENDENCY_AUTO_UNBLOCK_ENABLED=true`) のときだけ起動する。
 DEPENDENCY_AUTO_UNBLOCK_ENABLED="${DEPENDENCY_AUTO_UNBLOCK_ENABLED:-false}"
 DEPENDENCY_AUTO_UNBLOCK_LIMIT="${DEPENDENCY_AUTO_UNBLOCK_LIMIT:-20}"
+# Issue #104 / D-16: auto-unblock 評価時に依存グラフの循環（A→B→A 等）を検出し、
+# デッドロックする `codex-blocked` Issue を `codex-needs-decisions` で人間へ
+# フォールバックする pre-pass。`=true` 厳密一致のみ ON。`FULL_AUTO_ENABLED`（#97）との
+# AND 二重 opt-in で動き、かつ `DEPENDENCY_AUTO_UNBLOCK_ENABLED=true`（#56 processor が
+# 起動する）が前提。OFF（既定）では cycle 検出を一切行わず #56 の挙動と完全に等価。
+# 循環は自動解除不能（相互に永久 still_blocked）なため、人間判断へ確実に終端させる。
+BLOCKED_CYCLE_DETECTION_ENABLED="${BLOCKED_CYCLE_DETECTION_ENABLED:-false}"
+case "$BLOCKED_CYCLE_DETECTION_ENABLED" in
+  true) : ;;
+  *)    BLOCKED_CYCLE_DETECTION_ENABLED="false" ;;
+esac
 # Issue #200: codex-hotfix 優先ティアを示すラベル。Dispatcher の候補処理順を
 # FIFO（Issue 番号昇順）にしたうえで、本ラベル付き Issue を非 codex-hotfix Issue より
 # 先に投入する 2 段優先のキー。人間が手動付与する運用前提（自動付与なし）。
@@ -1083,7 +1094,7 @@ mkdir -p "$LOG_DIR"
 # 解決済み base branch を起動時 log に出力（Req 1.7 / NFR 4.1）。
 # 運用者が cron mailer / log で `base-branch=...` を grep できるよう、
 # 既定値（main）でも明示的に出力する。
-echo "[$(date '+%F %T')] base-branch=${BASE_BRANCH} merge-queue-base=${MERGE_QUEUE_BASE_BRANCH} auto-rebase=${AUTO_REBASE_MODE} auto-rebase-semantic=${AUTO_REBASE_SEMANTIC} auto-merge=${AUTO_MERGE_ENABLED} auto-merge-design=${AUTO_MERGE_DESIGN_ENABLED} failed-recovery=${FAILED_RECOVERY_ENABLED} needs-decisions-mode=${NEEDS_DECISIONS_MODE} full-auto=${FULL_AUTO_ENABLED}"
+echo "[$(date '+%F %T')] base-branch=${BASE_BRANCH} merge-queue-base=${MERGE_QUEUE_BASE_BRANCH} auto-rebase=${AUTO_REBASE_MODE} auto-rebase-semantic=${AUTO_REBASE_SEMANTIC} auto-merge=${AUTO_MERGE_ENABLED} auto-merge-design=${AUTO_MERGE_DESIGN_ENABLED} failed-recovery=${FAILED_RECOVERY_ENABLED} needs-decisions-mode=${NEEDS_DECISIONS_MODE} blocked-cycle-detection=${BLOCKED_CYCLE_DETECTION_ENABLED} full-auto=${FULL_AUTO_ENABLED}"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # doctor サブコマンド dispatch (#238 / Decision 2)
@@ -10335,6 +10346,114 @@ dr_auto_unblock_one() {
   return 0
 }
 
+# ─── Issue #104 / D-16: blocked 依存グラフの cycle 検出 ───
+# 相互依存（A→B→A 等）の `codex-blocked` Issue は依存先が永久に解決しないため
+# auto-unblock では永久 still_blocked になりデッドロックする。これを検出して
+# `codex-needs-decisions` で人間へ確実に終端させる。
+
+# dr_node_reaches_self: start ノードが（1 ステップ以上で）自分自身へ到達するか（= cycle 上か）
+#   入力: $1=start（Issue 番号）, $2=edges（"FROM TO" 改行区切り。TO は blocked set 内のみ）
+#   戻り値: 0 = 自分に戻る経路あり（cycle 上）/ 1 = 無し
+#   BFS。visited で再訪を抑止し有限終了。self-loop（A→A）も cycle として 0 を返す。
+dr_node_reaches_self() {
+  local start="$1" edges="$2"
+  local visited=" " frontier cur succ next
+  frontier=$(printf '%s\n' "$edges" | awk -v s="$start" '$1==s {print $2}')
+  while [ -n "$frontier" ]; do
+    next=""
+    while IFS= read -r cur; do
+      [ -z "$cur" ] && continue
+      if [ "$cur" = "$start" ]; then
+        return 0
+      fi
+      case "$visited" in *" $cur "*) continue ;; esac
+      visited="${visited}${cur} "
+      succ=$(printf '%s\n' "$edges" | awk -v s="$cur" '$1==s {print $2}')
+      [ -n "$succ" ] && next="${next}${succ}"$'\n'
+    done <<< "$frontier"
+    frontier="$next"
+  done
+  return 1
+}
+
+# dr_find_cycle_members: cycle 上にある全ノードを返す（純粋関数）
+#   入力: $1=nodes_csv（blocked Issue 番号のカンマ区切り）, $2=edges（"FROM TO" 改行区切り）
+#   出力: stdout に cycle 上の Issue 番号（カンマ区切り。昇順・重複なし。無ければ空）
+dr_find_cycle_members() {
+  local nodes_csv="$1" edges="$2"
+  local node result=""
+  local oldifs="$IFS"
+  IFS=','
+  # shellcheck disable=SC2086
+  set -- $nodes_csv
+  IFS="$oldifs"
+  for node in "$@"; do
+    [ -z "$node" ] && continue
+    if dr_node_reaches_self "$node" "$edges"; then
+      result="${result}${node}"$'\n'
+    fi
+  done
+  printf '%s' "$result" | grep -E '^[0-9]+$' | sort -u -n | paste -sd ',' - 2>/dev/null || true
+}
+
+# dr_escalate_cycle: cycle 上の 1 Issue を needs-decisions へフォールバック（D-16 終端）
+#   入力: $1=issue_num, $2=cycle_csv（同 cycle の全 Issue 番号・コメント表示用）
+#   `codex-blocked` 除去 + `codex-needs-decisions` 付与（auto-unblock 候補から外れ終端）。
+#   marker `<!-- idd-codex:dependency-cycle:#N -->` で冪等化（再エスカレーションしない）。
+#   戻り値: 0 = 成功 / 1 = ラベル mutation 失敗
+dr_escalate_cycle() {
+  local issue_num="$1"
+  local cycle_csv="$2"
+
+  # 冪等: 既に cycle escalation コメントがあれば再処理しない。
+  local marker
+  marker=$(printf '<!-- idd-codex:dependency-cycle:#%s -->' "$issue_num")
+  local exists_rc=0
+  dr_auto_unblock_comment_exists "$issue_num" "$marker" || exists_rc=$?
+  if [ "$exists_rc" -eq 0 ]; then
+    dr_log "cycle issue=#${issue_num} comment=skip_existing_marker"
+    return 0
+  fi
+
+  if ! gh issue edit "$issue_num" --repo "$REPO" \
+      --remove-label "$LABEL_BLOCKED" \
+      --add-label "$LABEL_NEEDS_DECISIONS" >/dev/null 2>&1; then
+    dr_warn "cycle issue=#${issue_num} gh issue edit (codex-blocked 解除 / codex-needs-decisions 付与) に失敗"
+    return 1
+  fi
+
+  local body
+  body="${marker}"$'\n'"$(cat <<EOF_DR_CYCLE
+## 自動: 依存の循環（デッドロック）を検出しました（#104 / D-16）
+
+本 Issue は他の \`codex-blocked\` Issue と **相互に依存**しており、依存先が永久に解決しない
+循環（デッドロック）を形成しています。auto-unblock では自動解除できないため、
+\`codex-needs-decisions\` を付与して人間判断にエスカレーションしました。
+
+### 検出された循環の構成 Issue
+
+${cycle_csv}
+
+### 推奨対応
+
+循環している依存宣言（\`Depends on:\` / \`前提依存:\` / \`Blocked by:\`）のいずれかを
+見直し、循環を断ち切ってください。解消後に本 Issue から \`codex-needs-decisions\` を
+外すと通常フローに合流します。
+
+---
+
+_本コメントは Dependency Resolver の cycle 検出 (#104) が自動投稿しました。
+cycle 検出を止めたい場合は \`BLOCKED_CYCLE_DETECTION_ENABLED=false\` に切り替えてください。_
+EOF_DR_CYCLE
+)"
+
+  if ! gh issue comment "$issue_num" --repo "$REPO" --body "$body" >/dev/null 2>&1; then
+    dr_warn "cycle issue=#${issue_num} エスカレーションコメント投稿に失敗（ラベルは適用済み）"
+  fi
+  dr_log "cycle issue=#${issue_num} action=escalate-needs-decisions members=${cycle_csv}"
+  return 0
+}
+
 # `codex-blocked` Issue の依存状態を cycle 冒頭で再評価し、すべて解決済みなら
 # `codex-blocked` を外して `codex-auto-dev` に戻す。新規 GitHub mutation を含むため
 # `DEPENDENCY_AUTO_UNBLOCK_ENABLED=true` の明示 opt-in 時のみ起動する。
@@ -10372,10 +10491,52 @@ dr_process_auto_unblock() {
   fi
 
   dr_log "auto-unblock candidates=${count}"
+
+  # ── Issue #104 / D-16: cycle 検出 pre-pass ──
+  # full_auto + BLOCKED_CYCLE_DETECTION_ENABLED の AND opt-in 時のみ。blocked set 内で
+  # 相互依存する Issue（= デッドロック）を検出し needs-decisions へ終端させてから、
+  # 残りを通常の per-issue auto-unblock に流す。OFF（既定）では完全に #56 の挙動。
+  local cycle_members=""
+  if [ "${BLOCKED_CYCLE_DETECTION_ENABLED:-false}" = "true" ] && full_auto_enabled; then
+    local blocked_csv edges="" _cyc_issue _cyc_num _cyc_body _cyc_dep
+    blocked_csv=$(printf '%s' "$issues" | jq -r '[.[].number | tostring] | join(",")' 2>/dev/null || echo "")
+    while IFS= read -r _cyc_issue; do
+      [ -z "$_cyc_issue" ] && continue
+      _cyc_num=$(printf '%s' "$_cyc_issue" | jq -r '.number')
+      _cyc_body=$(printf '%s' "$_cyc_issue" | jq -r '.body // ""')
+      # edge は dep が blocked set 内のものだけ（相互ブロックのみ cycle 形成しうる）。
+      while IFS= read -r _cyc_dep; do
+        [ -z "$_cyc_dep" ] && continue
+        case ",${blocked_csv}," in
+          *",${_cyc_dep},"*) edges="${edges}${_cyc_num} ${_cyc_dep}"$'\n' ;;
+        esac
+      done <<< "$(dr_extract_deps "$_cyc_body")"
+    done <<< "$(printf '%s' "$issues" | jq -c '.[]')"
+
+    cycle_members=$(dr_find_cycle_members "$blocked_csv" "$edges")
+    if [ -n "$cycle_members" ]; then
+      dr_log "auto-unblock cycle detected members=${cycle_members}"
+      local _cm
+      local oldifs="$IFS"
+      IFS=','
+      # shellcheck disable=SC2086
+      set -- $cycle_members
+      IFS="$oldifs"
+      for _cm in "$@"; do
+        [ -z "$_cm" ] && continue
+        dr_escalate_cycle "$_cm" "$cycle_members"
+      done
+    fi
+  fi
+
   local issue issue_num issue_body issue_labels
   while IFS= read -r issue; do
     [ -z "$issue" ] && continue
     issue_num=$(printf '%s' "$issue" | jq -r '.number')
+    # cycle で needs-decisions へ終端した Issue は通常 auto-unblock の対象外。
+    case ",${cycle_members}," in
+      *",${issue_num},"*) continue ;;
+    esac
     issue_body=$(printf '%s' "$issue" | jq -r '.body // ""')
     issue_labels=$(printf '%s' "$issue" | jq -r '.labels[].name')
     dr_auto_unblock_one "$issue_num" "$issue_body" "$issue_labels"
