@@ -74,6 +74,7 @@ LOGGER_FUNCS=(
   qa_log qa_warn qa_error
   fr_log fr_warn fr_error
   nda_log nda_warn nda_error
+  sn_log sn_warn sn_error
 )
 
 for fn in "${LOGGER_FUNCS[@]}"; do
@@ -241,6 +242,17 @@ assert_contains "Req 1.7 nda_warn: prefix 維持" \
 OUT=$(nda_error "unexpected" 2>&1)
 assert_contains "Req 1.7 nda_error: prefix 維持" \
   "[owner/test-repo] needs-decisions-auto: ERROR: unexpected" "$OUT"
+
+# Req 1.9: sn_log（#105 slack-notify）
+OUT=$(sn_log "notified event=blocked-cycle" 2>&1)
+assert_contains "Req 1.9 sn_log: [owner/test-repo] slack-notify:" \
+  "[owner/test-repo] slack-notify: notified event=blocked-cycle" "$OUT"
+OUT=$(sn_warn "Slack 通知に失敗" 2>&1)
+assert_contains "Req 1.9 sn_warn: prefix 維持" \
+  "[owner/test-repo] slack-notify: WARN: Slack 通知に失敗" "$OUT"
+OUT=$(sn_error "unexpected" 2>&1)
+assert_contains "Req 1.9 sn_error: prefix 維持" \
+  "[owner/test-repo] slack-notify: ERROR: unexpected" "$OUT"
 
 # Req 1.8: REPO がデフォルト値 (owner/your-repo) のままでもそのまま出力される
 REPO_BACKUP="$REPO"

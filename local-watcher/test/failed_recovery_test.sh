@@ -92,6 +92,8 @@ fr_collect_pr_ci_context() { printf '%s' "$COLLECT_CONTEXT"; }
 fr_post_attempt_comment() { printf '%s|%s|%s\n' "$1" "$2" "${3:0:40}" >>"$COMMENT_LOG"; return 0; }
 qa_handle_quota_exceeded() { QUOTA_EXCEEDED_COUNT=$((QUOTA_EXCEEDED_COUNT + 1)); return 0; }
 qa_persist_reset_time() { PERSIST_RESET_COUNT=$((PERSIST_RESET_COUNT + 1)); return 0; }
+# #105: fr_terminate_* が呼ぶ Slack 介入通知（本テストでは no-op stub）。
+sn_notify_intervention() { :; }
 
 reset_state() {
   GH_CALL_LOG="$(mktemp)"; SET_RESULT_LOG="$(mktemp)"; COMMENT_LOG="$(mktemp)"

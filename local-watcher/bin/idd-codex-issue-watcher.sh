@@ -312,6 +312,23 @@ esac
 # 自動続行時の gh 操作の個別タイムアウト（秒）。
 NEEDS_DECISIONS_GIT_TIMEOUT="${NEEDS_DECISIONS_GIT_TIMEOUT:-60}"
 
+# ─── Slack 外部通知 設定 (#105 / D-18) ───
+# 完全自動化下で「人間の介入が必要になった瞬間」（failed-recovery budget 超過 /
+# needs-decisions 据え置き / blocked cycle 検出）を Slack incoming webhook へ push する。
+# `=true` 厳密一致のみ ON。`FULL_AUTO_ENABLED`（#97）との AND 二重 opt-in、かつ
+# `SLACK_WEBHOOK_URL` 設定時のみ通知。いずれか欠ける場合（既定）は no-op（run-summary +
+# ログのみ＝導入前と等価）。通常進行（介入不要）では通知しない（ノイズ抑制）。
+SLACK_NOTIFY_ENABLED="${SLACK_NOTIFY_ENABLED:-false}"
+case "$SLACK_NOTIFY_ENABLED" in
+  true) : ;;
+  *)    SLACK_NOTIFY_ENABLED="false" ;;
+esac
+# Slack incoming webhook URL（秘匿情報）。ログ / コメント / エラーに**一切出力しない**
+# （slack-notify.sh は curl 引数としてのみ使用）。未設定なら通知は no-op。
+SLACK_WEBHOOK_URL="${SLACK_WEBHOOK_URL:-}"
+# webhook POST の最大経過秒数。
+SLACK_NOTIFY_TIMEOUT="${SLACK_NOTIFY_TIMEOUT:-10}"
+
 # ─── PR Iteration Processor 設定 (#26) ───
 # `codex-needs-iteration` ラベル付き PR をレビューコメントに基づいて自動で iterate する。
 # 標準機能としてデフォルト有効化（#112）。無効化したい場合は cron / launchd 側で
@@ -1044,7 +1061,7 @@ IDD_MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)/id
 # 3 プロセッサ（quota-aware / merge-queue / auto-rebase）、#181 Part 3 で切り出した
 # 3 プロセッサ（promote-pipeline / pr-iteration / stage-a-verify）を並べ、末尾に
 # #238 の scaffolding-health.sh と #239 の per-run evidence サマリ（run-summary.sh）を置く。
-REQUIRED_MODULES=( "core_utils.sh" "guard-hook.sh" "quota-aware.sh" "merge-queue.sh" "auto-rebase.sh" "auto-merge.sh" "auto-merge-design.sh" "failed-recovery.sh" "needs-decisions-auto.sh" "promote-pipeline.sh" "pr-iteration.sh" "pr-reviewer.sh" "stage-a-verify.sh" "scaffolding-health.sh" "context-map.sh" "run-summary.sh" )
+REQUIRED_MODULES=( "core_utils.sh" "guard-hook.sh" "quota-aware.sh" "merge-queue.sh" "auto-rebase.sh" "auto-merge.sh" "auto-merge-design.sh" "failed-recovery.sh" "needs-decisions-auto.sh" "slack-notify.sh" "promote-pipeline.sh" "pr-iteration.sh" "pr-reviewer.sh" "stage-a-verify.sh" "scaffolding-health.sh" "context-map.sh" "run-summary.sh" )
 for _idd_mod in "${REQUIRED_MODULES[@]}"; do
   _idd_mod_path="$IDD_MODULE_DIR/$_idd_mod"
   if [ ! -f "$_idd_mod_path" ]; then
@@ -1094,7 +1111,7 @@ mkdir -p "$LOG_DIR"
 # 解決済み base branch を起動時 log に出力（Req 1.7 / NFR 4.1）。
 # 運用者が cron mailer / log で `base-branch=...` を grep できるよう、
 # 既定値（main）でも明示的に出力する。
-echo "[$(date '+%F %T')] base-branch=${BASE_BRANCH} merge-queue-base=${MERGE_QUEUE_BASE_BRANCH} auto-rebase=${AUTO_REBASE_MODE} auto-rebase-semantic=${AUTO_REBASE_SEMANTIC} auto-merge=${AUTO_MERGE_ENABLED} auto-merge-design=${AUTO_MERGE_DESIGN_ENABLED} failed-recovery=${FAILED_RECOVERY_ENABLED} needs-decisions-mode=${NEEDS_DECISIONS_MODE} blocked-cycle-detection=${BLOCKED_CYCLE_DETECTION_ENABLED} full-auto=${FULL_AUTO_ENABLED}"
+echo "[$(date '+%F %T')] base-branch=${BASE_BRANCH} merge-queue-base=${MERGE_QUEUE_BASE_BRANCH} auto-rebase=${AUTO_REBASE_MODE} auto-rebase-semantic=${AUTO_REBASE_SEMANTIC} auto-merge=${AUTO_MERGE_ENABLED} auto-merge-design=${AUTO_MERGE_DESIGN_ENABLED} failed-recovery=${FAILED_RECOVERY_ENABLED} needs-decisions-mode=${NEEDS_DECISIONS_MODE} blocked-cycle-detection=${BLOCKED_CYCLE_DETECTION_ENABLED} slack-notify=${SLACK_NOTIFY_ENABLED} full-auto=${FULL_AUTO_ENABLED}"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # doctor サブコマンド dispatch (#238 / Decision 2)
@@ -10450,6 +10467,9 @@ EOF_DR_CYCLE
   if ! gh issue comment "$issue_num" --repo "$REPO" --body "$body" >/dev/null 2>&1; then
     dr_warn "cycle issue=#${issue_num} エスカレーションコメント投稿に失敗（ラベルは適用済み）"
   fi
+  # Slack 介入通知（#105）。gate OFF（既定）では no-op。
+  sn_notify_intervention "blocked-cycle" "issue" "$issue_num" \
+    "依存の循環（デッドロック）検出で needs-decisions（人間が循環を断つ必要）" || true
   dr_log "cycle issue=#${issue_num} action=escalate-needs-decisions members=${cycle_csv}"
   return 0
 }
@@ -10927,6 +10947,10 @@ _slot_run_issue() {
         --remove-label "$LABEL_CLAIMED" \
         --add-label "$LABEL_NEEDS_DECISIONS" >/dev/null 2>&1 || true
       echo "🟡 #$NUMBER: $DECISION_COUNT 件の決定事項を起票しました" | tee -a "$LOG"
+      # Slack 介入通知（#105）。gate OFF（既定）では no-op。needs-decisions-auto(#102) が
+      # 自動続行できず人間判断に据え置いた瞬間（human-only / all-human / budget 超過 等）。
+      sn_notify_intervention "needs-decisions" "issue" "$NUMBER" \
+        "人間判断待ち（codex-needs-decisions / ${DECISION_COUNT} 件の決定事項）" || true
       slot_log "Triage 結果: codex-needs-decisions（codex-claimed 取り消し済）"
       return 0
     fi
