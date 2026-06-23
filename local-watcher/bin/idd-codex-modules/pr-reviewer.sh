@@ -1103,6 +1103,140 @@ pr_publish_codex_status() {
   pr_publish_commit_status "$pr_number" "$sha" "codex-review" "$state" "$description" "$pr_url"
 }
 
+# ═════════════════════════════════════════════════════════════════════════════
+# Issue #108 / D-04: 2nd gate（claude-review commit status / claude CLI shell-out）
+#   1st gate（codex-review）と同じ SHA を、独立に `claude` CLI でレビューし
+#   `claude-review` status を publish する feature toggle。`PR_REVIEWER_SECOND_GATE=claude`
+#   かつ status-check gate（PR_REVIEWER_STATUS_CHECK_ENABLED + FULL_AUTO_ENABLED）ON 時のみ。
+#   OFF（既定）では claude-review を一切 publish しない（未 publish status での永久 pending 回避）。
+# ═════════════════════════════════════════════════════════════════════════════
+
+# pr_second_gate_enabled: 2nd gate（claude）が有効かを判定する（副作用なし）
+#   戻り値: 0 = PR_REVIEWER_SECOND_GATE=claude かつ pr_status_check_enabled / 1 = それ以外
+pr_second_gate_enabled() {
+  [ "${PR_REVIEWER_SECOND_GATE:-off}" = "claude" ] || return 1
+  pr_status_check_enabled || return 1
+  return 0
+}
+
+# pr_check_claude_installed: `claude` CLI が PATH 上にあるか
+#   戻り値: 0 = あり / 1 = 不在
+pr_check_claude_installed() {
+  if command -v claude >/dev/null 2>&1; then
+    pr_log "2nd gate: claude installed check result=ok"
+    return 0
+  fi
+  pr_log "2nd gate: claude installed check result=not-installed"
+  return 1
+}
+
+# pr_check_claude_authenticated: claude の認証チェック（PR_REVIEWER_CLAUDE_AUTH_CMD）
+#   戻り値: 0 = ok / 1 = not-authenticated / 2 = check 無効（env 空 = 既定 skip）
+#   auth コマンドの stdout/stderr は完全破棄（auth token 流出防止）。eval 不使用。
+pr_check_claude_authenticated() {
+  local auth_cmd="${PR_REVIEWER_CLAUDE_AUTH_CMD:-}"
+  if [ -z "$auth_cmd" ]; then
+    pr_log "2nd gate: claude authenticated check result=skipped (auth cmd unset)"
+    return 2
+  fi
+  if bash -c "$auth_cmd" >/dev/null 2>&1; then
+    pr_log "2nd gate: claude authenticated check result=ok"
+    return 0
+  fi
+  pr_log "2nd gate: claude authenticated check result=not-authenticated"
+  return 1
+}
+
+# pr_publish_claude_status: claude verdict を claude-review status へ写す（#98 publish を再利用）
+#   入力: $1=pr_number $2=sha $3=verdict(approve|iteration|conflict|none) $4=pr_url
+#   approve → success / それ以外 → failure。context は `claude-review`。
+pr_publish_claude_status() {
+  local pr_number="$1" sha="$2" verdict="$3" pr_url="${4:-}"
+  local state description
+  case "$verdict" in
+    approve) state="success"; description="claude: approve" ;;
+    *)       state="failure"; description="claude: ${verdict}" ;;
+  esac
+  pr_publish_commit_status "$pr_number" "$sha" "claude-review" "$state" "$description" "$pr_url"
+}
+
+# pr_run_claude_second_gate: 1 PR の 2nd gate（claude）レビュー + claude-review publish
+#   入力: $1=pr_number $2=sha $3=head_ref $4=base_ref $5=pr_url
+#   戻り値: 0 固定（本体パイプラインを阻害しない / best-effort hardening）
+#   claude 不在 / 未認証 / 実行失敗 / 空出力 → WARN + **claude-review を publish しない**
+#   （保守的: required check 化されていれば pending 維持＝未検証 merge を防ぐ）。
+pr_run_claude_second_gate() {
+  local pr_number="$1" sha="$2" head_ref="$3" base_ref="$4" pr_url="${5:-}"
+
+  if ! pr_check_claude_installed; then
+    pr_warn "2nd gate: claude CLI が見つかりません（claude-review は publish せず skip / 本体継続）"
+    return 0
+  fi
+  local auth_rc=0
+  pr_check_claude_authenticated || auth_rc=$?
+  if [ "$auth_rc" -eq 1 ]; then
+    pr_warn "2nd gate: claude CLI 認証チェックに失敗（claude-review は publish せず skip / 本体継続）"
+    return 0
+  fi
+
+  local prompt_file out_file err_file result_file
+  if ! prompt_file=$(pr_build_prompt_file "$pr_number" "$base_ref" "$head_ref"); then
+    pr_warn "2nd gate: prompt 構築に失敗（PR #${pr_number}・skip）"
+    return 0
+  fi
+  out_file=$(idd_secure_mktemp "pr-claude-out-${pr_number}" 2>/dev/null || true)
+  err_file=$(idd_secure_mktemp "pr-claude-err-${pr_number}" 2>/dev/null || true)
+  result_file=$(idd_secure_mktemp "pr-claude-res-${pr_number}" 2>/dev/null || true)
+  if [ -z "$out_file" ] || [ -z "$err_file" ] || [ -z "$result_file" ]; then
+    pr_warn "2nd gate: 一時ファイル作成に失敗（PR #${pr_number}・skip）"
+    rm -f "$prompt_file" "$out_file" "$err_file" "$result_file" 2>/dev/null || true
+    return 0
+  fi
+
+  local resolved_cmd
+  if ! resolved_cmd=$(pr_substitute_placeholders "$PR_REVIEWER_CLAUDE_CMD" "$base_ref" "$head_ref" "$pr_number" "$prompt_file"); then
+    pr_warn "2nd gate: コマンド placeholder 置換に失敗（unsafe 値・PR #${pr_number}・skip）"
+    rm -f "$prompt_file" "$out_file" "$err_file" "$result_file" 2>/dev/null || true
+    return 0
+  fi
+
+  pr_execute_review_command "$head_ref" "$resolved_cmd" "claude" "$out_file" "$err_file" "$result_file"
+  local result exec_rc wsmod
+  result=$(cat "$result_file" 2>/dev/null || echo "")
+  case "$result" in
+    fetch-fail|checkout-fail)
+      pr_warn "2nd gate: head '${head_ref}' の取得に失敗 (${result})・PR #${pr_number}・claude-review は publish せず skip"
+      rm -f "$prompt_file" "$out_file" "$err_file" "$result_file" 2>/dev/null || true
+      return 0
+      ;;
+  esac
+  exec_rc=$(printf '%s' "$result" | awk -F: '{print $2}')
+  wsmod=$(printf '%s' "$result" | awk -F: '{print $3}')
+  exec_rc="${exec_rc:-1}"
+
+  if [ "$wsmod" = "modified" ] || [ "$exec_rc" -ne 0 ]; then
+    pr_warn "2nd gate: claude レビュー実行に失敗 (result=${result})・PR #${pr_number}・claude-review は publish せず skip（本体継続）"
+    rm -f "$prompt_file" "$out_file" "$err_file" "$result_file" 2>/dev/null || true
+    return 0
+  fi
+
+  local review_text
+  review_text=$(cat "$out_file" 2>/dev/null || echo "")
+  if [ -z "$review_text" ]; then
+    pr_warn "2nd gate: claude レビュー出力が空・PR #${pr_number}・claude-review は publish せず skip"
+    rm -f "$prompt_file" "$out_file" "$err_file" "$result_file" 2>/dev/null || true
+    return 0
+  fi
+
+  local verdict
+  verdict=$(pr_resolve_review_verdict "$pr_number" "$review_text")
+  pr_log "PR #${pr_number}: 2nd gate (claude) verdict=${verdict} sha=${sha}"
+  pr_publish_claude_status "$pr_number" "$sha" "$verdict" "$pr_url" || true
+
+  rm -f "$prompt_file" "$out_file" "$err_file" "$result_file" 2>/dev/null || true
+  return 0
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # pr_run_review_for_pr: 1 PR 分のレビューを統括する（task 4〜6 の orchestration）
 #   入力: $1 = pr_json（pr_fetch_candidate_prs の単一要素）, $2 = tool
@@ -1278,6 +1412,12 @@ pr_run_review_for_pr() {
   # auto-merge(#99) の required status check の source になる。publish 失敗は
   # パイプラインを止めない（best-effort / pr_publish_commit_status が WARN 済み）。
   pr_publish_codex_status "$pr_number" "$sha" "$verdict" "$pr_url" || true
+
+  # 2nd gate（claude-review / #108）。toggle OFF（既定）では no-op。同一 SHA を claude で
+  # 独立レビューし claude-review status を publish する。best-effort（本体を止めない）。
+  if pr_second_gate_enabled; then
+    pr_run_claude_second_gate "$pr_number" "$sha" "$head_ref" "$base_ref" "$pr_url" || true
+  fi
 
   return 0
 }
