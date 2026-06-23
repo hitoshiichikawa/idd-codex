@@ -329,6 +329,39 @@ SLACK_WEBHOOK_URL="${SLACK_WEBHOOK_URL:-}"
 # webhook POST の最大経過秒数。
 SLACK_NOTIFY_TIMEOUT="${SLACK_NOTIFY_TIMEOUT:-10}"
 
+# ─── Stale Pickup Reaper 設定（idd-claude #379/F6 移植）───
+# watcher セッションのクラッシュ / OOM / 再起動で `codex-picked-up` / `codex-claimed` が
+# 残り、dispatcher が「処理中」と誤認して永久除外する停止状態を、3 観点（marker 経過時間 /
+# slot ロック保持 / セッション存在）の AND で「非アクティブ」と確定した Issue のみ
+# `codex-auto-dev` へ自動復帰させる。failed-recovery(#101) が codex-failed のみ扱う gap を埋める。
+# **単独 opt-in**: `=true` 厳密一致のみ ON（FULL_AUTO_ENABLED は要求しない / セッション喪失
+# 復旧は低リスクで full-auto 非利用環境でも有用）。それ以外（既定 / typo）は OFF に正規化。
+STALE_PICKUP_REAPER_ENABLED="${STALE_PICKUP_REAPER_ENABLED:-false}"
+case "$STALE_PICKUP_REAPER_ENABLED" in
+  true) : ;;
+  *)    STALE_PICKUP_REAPER_ENABLED="false" ;;
+esac
+# pickup ラベル滞留を「stale」とみなす経過分数の閾値（誤検出回避のため長め既定）。非整数/0以下は45。
+STALE_PICKUP_REAPER_THRESHOLD_MINUTES="${STALE_PICKUP_REAPER_THRESHOLD_MINUTES:-45}"
+case "$STALE_PICKUP_REAPER_THRESHOLD_MINUTES" in
+  ''|*[!0-9]*) STALE_PICKUP_REAPER_THRESHOLD_MINUTES=45 ;;
+  *) [ "$STALE_PICKUP_REAPER_THRESHOLD_MINUTES" -le 0 ] && STALE_PICKUP_REAPER_THRESHOLD_MINUTES=45 ;;
+esac
+# marker JSON（first_seen_at 等）を Issue 単位で永続化する state dir。
+STALE_PICKUP_REAPER_STATE_DIR="${STALE_PICKUP_REAPER_STATE_DIR:-$HOME/.idd-codex/stale-pickup/$REPO_SLUG}"
+# 1 サイクルで評価する候補 Issue 数の上限。非整数 / 0 以下は 20。
+STALE_PICKUP_REAPER_MAX_ISSUES="${STALE_PICKUP_REAPER_MAX_ISSUES:-20}"
+case "$STALE_PICKUP_REAPER_MAX_ISSUES" in
+  ''|*[!0-9]*) STALE_PICKUP_REAPER_MAX_ISSUES=20 ;;
+  *) [ "$STALE_PICKUP_REAPER_MAX_ISSUES" -le 0 ] && STALE_PICKUP_REAPER_MAX_ISSUES=20 ;;
+esac
+# 各 gh 操作の個別タイムアウト（秒）。非整数 / 0 以下は 60。
+STALE_PICKUP_REAPER_GH_TIMEOUT="${STALE_PICKUP_REAPER_GH_TIMEOUT:-60}"
+case "$STALE_PICKUP_REAPER_GH_TIMEOUT" in
+  ''|*[!0-9]*) STALE_PICKUP_REAPER_GH_TIMEOUT=60 ;;
+  *) [ "$STALE_PICKUP_REAPER_GH_TIMEOUT" -le 0 ] && STALE_PICKUP_REAPER_GH_TIMEOUT=60 ;;
+esac
+
 # ─── PR Iteration Processor 設定 (#26) ───
 # `codex-needs-iteration` ラベル付き PR をレビューコメントに基づいて自動で iterate する。
 # 標準機能としてデフォルト有効化（#112）。無効化したい場合は cron / launchd 側で
@@ -1091,7 +1124,7 @@ IDD_MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)/id
 # 3 プロセッサ（quota-aware / merge-queue / auto-rebase）、#181 Part 3 で切り出した
 # 3 プロセッサ（promote-pipeline / pr-iteration / stage-a-verify）を並べ、末尾に
 # #238 の scaffolding-health.sh と #239 の per-run evidence サマリ（run-summary.sh）を置く。
-REQUIRED_MODULES=( "core_utils.sh" "guard-hook.sh" "quota-aware.sh" "merge-queue.sh" "auto-rebase.sh" "auto-merge.sh" "auto-merge-design.sh" "failed-recovery.sh" "needs-decisions-auto.sh" "slack-notify.sh" "promote-pipeline.sh" "pr-iteration.sh" "pr-reviewer.sh" "stage-a-verify.sh" "scaffolding-health.sh" "context-map.sh" "run-summary.sh" )
+REQUIRED_MODULES=( "core_utils.sh" "guard-hook.sh" "quota-aware.sh" "merge-queue.sh" "auto-rebase.sh" "auto-merge.sh" "auto-merge-design.sh" "failed-recovery.sh" "needs-decisions-auto.sh" "slack-notify.sh" "stale-pickup-reaper.sh" "promote-pipeline.sh" "pr-iteration.sh" "pr-reviewer.sh" "stage-a-verify.sh" "scaffolding-health.sh" "context-map.sh" "run-summary.sh" )
 for _idd_mod in "${REQUIRED_MODULES[@]}"; do
   _idd_mod_path="$IDD_MODULE_DIR/$_idd_mod"
   if [ ! -f "$_idd_mod_path" ]; then
@@ -1564,6 +1597,10 @@ process_design_review_release || drr_warn "process_design_review_release が想�
 # 同一サイクルで pi_escalate_to_failed 等が付けた codex-failed を最速で拾える位置。
 # gate（FULL_AUTO_ENABLED AND FAILED_RECOVERY_ENABLED）OFF 時は外部副作用ゼロで no-op。
 process_failed_recovery || fr_warn "process_failed_recovery が想定外のエラーで終了しました（後続 Issue 処理は継続）"
+# Stale Pickup Reaper（idd-claude #379/F6 移植）。セッション喪失で取り残された
+# codex-picked-up / codex-claimed Issue を 3 観点 AND 判定で codex-auto-dev へ復帰。
+# 単独 opt-in（STALE_PICKUP_REAPER_ENABLED）OFF（既定）では gh を一切呼ばず no-op。
+process_stale_pickup_reaper || sr_warn "process_stale_pickup_reaper が想定外のエラーで終了しました（後続 Issue 処理は継続）"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Stage A Verify Module (#125) — idd-codex-modules/stage-a-verify.sh へ切り出し済み（#181 Part 3）

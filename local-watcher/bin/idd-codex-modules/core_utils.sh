@@ -191,6 +191,18 @@ sn_error() {
   echo "[$(date '+%F %T')] [$REPO] slack-notify: ERROR: $*" >&2
 }
 
+# stale-pickup-reaper 専用ロガー（識別用 prefix と timestamp 形式を Issue Watcher と揃える）
+# Issue F6(#379 port): 時刻 prefix と processor prefix の間に `[$REPO]` を挿入。
+sr_log() {
+  echo "[$(date '+%F %T')] [$REPO] stale-pickup-reaper: $*"
+}
+sr_warn() {
+  echo "[$(date '+%F %T')] [$REPO] stale-pickup-reaper: WARN: $*" >&2
+}
+sr_error() {
+  echo "[$(date '+%F %T')] [$REPO] stale-pickup-reaper: ERROR: $*" >&2
+}
+
 # secure tempfile helper（Issue #52 Req 5）
 #
 # prompt / JSON / stderr / quota reset state などを置く一時ファイルを、repo ごとに
