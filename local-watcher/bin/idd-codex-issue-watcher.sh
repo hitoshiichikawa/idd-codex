@@ -9617,6 +9617,97 @@ _stage_checkpoint_assert_slug_match() {
   return 1
 }
 
+# ─── _stage_checkpoint_has_resumable_state（idd-claude #383 移植）───
+# spec dir 検出時の slug 照合ガード（_stage_checkpoint_assert_slug_match）は、fork / mirror
+# 由来の番号衝突による誤 resume を防ぐ目的で導入された（#114）。しかし umbrella spec を共有する
+# sub-issue では、resume できる実状態（impl PR / impl branch / impl-notes / review-notes）が
+# 一切無い **fresh issue** の番号が umbrella spec dir と衝突しただけで slug guard が発火し、
+# needs-decisions へ誤エスカレーション → 永久ループする。本関数は「resumable state が実在
+# するか」を read-only に観測し、実在する場合のみ guard を発火させるための判定を提供する。
+#
+#   引数: $1 = 検出した spec dir 絶対パス
+#   戻り値:
+#     0 = resumable state 実在（呼出元は従来どおり slug guard を発火）
+#     1 = 4 観点すべてが確定的に不在（呼出元は guard を skip し fresh として続行してよい）
+#     2 = 観測失敗が 1 件でもあり実在不明（safe-side: 呼出元は guard を発火）
+#   観点（OR）: (a) 既存 impl PR / (b) origin の codex/issue-<N>-impl-* ブランチ /
+#               (c) impl-notes.md tracked@HEAD / (d) review-notes.md tracked@HEAD。
+#   副作用なし（gh / git の read のみ。ラベル変更や escalate はしない）。
+_stage_checkpoint_has_resumable_state() {
+  local spec_dir="$1"
+  local issue_num="${NUMBER:-}"
+
+  case "$issue_num" in
+    ''|*[!0-9]*)
+      echo "stage-checkpoint: WARN resumable-state-detection issue=#${issue_num:-?} reason=invalid-issue-number" >&2
+      return 2
+      ;;
+  esac
+
+  local detection_failed="false"
+
+  # (a) 既存 impl PR（OPEN/MERGED）。stage_checkpoint_find_impl_pr: 0=あり / 1=なし / 2=API エラー
+  local pr_info pr_rc=0
+  pr_info=$(stage_checkpoint_find_impl_pr 2>/dev/null) || pr_rc=$?
+  case "$pr_rc" in
+    0)
+      echo "stage-checkpoint: resumable-state-found issue=#${issue_num} observation=impl-pr detail=${pr_info}" | tee -a "$LOG"
+      return 0
+      ;;
+    1) : ;;
+    *)
+      echo "stage-checkpoint: WARN resumable-state-detection issue=#${issue_num} observation=impl-pr reason=gh-api-failure rc=${pr_rc}" >&2
+      detection_failed="true"
+      ;;
+  esac
+
+  # (b) origin 上に codex/issue-<N>-impl-* ブランチが 1 本でも存在するか（slug 不問の prefix）。
+  local prefix="codex/issue-${issue_num}-impl-"
+  local remote_refs ls_rc=0
+  remote_refs=$(timeout 30 git ls-remote --heads origin -- "refs/heads/${prefix}*" 2>/dev/null) || ls_rc=$?
+  if [ "$ls_rc" -eq 0 ]; then
+    if [ -n "$remote_refs" ]; then
+      echo "stage-checkpoint: resumable-state-found issue=#${issue_num} observation=impl-branch detail=${prefix}*" | tee -a "$LOG"
+      return 0
+    fi
+  else
+    echo "stage-checkpoint: WARN resumable-state-detection issue=#${issue_num} observation=impl-branch reason=ls-remote-failure rc=${ls_rc}" >&2
+    detection_failed="true"
+  fi
+
+  # (c)/(d) spec dir 配下の impl-notes.md / review-notes.md が worktree HEAD で tracked か。
+  # REPO_DIR は呼出元 _slot_run_issue が worktree path に設定済（同一 worktree を指す）。
+  local rel
+  rel="docs/specs/$(basename "$spec_dir")"
+
+  local impl_tracked review_tracked
+  if impl_tracked=$(git -C "$REPO_DIR" ls-tree --name-only HEAD -- "$rel/impl-notes.md" 2>/dev/null); then
+    if [ -n "$impl_tracked" ]; then
+      echo "stage-checkpoint: resumable-state-found issue=#${issue_num} observation=impl-notes detail=${rel}/impl-notes.md" | tee -a "$LOG"
+      return 0
+    fi
+  else
+    echo "stage-checkpoint: WARN resumable-state-detection issue=#${issue_num} observation=impl-notes reason=git-ls-tree-failure" >&2
+    detection_failed="true"
+  fi
+
+  if review_tracked=$(git -C "$REPO_DIR" ls-tree --name-only HEAD -- "$rel/review-notes.md" 2>/dev/null); then
+    if [ -n "$review_tracked" ]; then
+      echo "stage-checkpoint: resumable-state-found issue=#${issue_num} observation=review-notes detail=${rel}/review-notes.md" | tee -a "$LOG"
+      return 0
+    fi
+  else
+    echo "stage-checkpoint: WARN resumable-state-detection issue=#${issue_num} observation=review-notes reason=git-ls-tree-failure" >&2
+    detection_failed="true"
+  fi
+
+  # 全観点不在 / 観測失敗。観測失敗が 1 件でもあれば safe-side で 2（実在不明）。
+  if [ "$detection_failed" = "true" ]; then
+    return 2
+  fi
+  return 1
+}
+
 # origin の `codex/issue-<N>-impl-*` ブランチを resume 候補として検出した際に
 # 行うスラグ照合（Req 2.1, 2.2, 2.3）。origin の全 impl-* ブランチを ls-remote で
 # 列挙し、expected-slug と一致するブランチが 1 つでも見つかれば match、見つからず
@@ -10858,17 +10949,32 @@ _slot_run_issue() {
       SLUG=$(basename "$EXISTING_SPEC_DIR" | sed "s/^${NUMBER}-//")
       echo "📂 既存 spec 検出: $EXISTING_SPEC_DIR (slug=$SLUG)" | tee -a "$LOG"
     else
-      # Req 1.4, 1.5: docs/specs/<N>-* は存在するが expected-slug と一致するものがない
-      # → 先頭候補を mismatch 対象として LOG/escalate し、当該 Issue を skip する。
+      # Req 1.4, 1.5: docs/specs/<N>-* は存在するが expected-slug と一致するものがない。
+      # #383 移植: ただし resumable state（impl PR / impl branch / impl-notes / review-notes）が
+      # 一切無い fresh issue（umbrella spec の番号衝突等）を slug guard で誤 block し
+      # needs-decisions 誤爆ループへ落とさない。resumable state を観測してから発火可否を決める。
       local _first="${SPEC_CANDIDATES[0]}"
-      if ! _stage_checkpoint_assert_slug_match "$EXPECTED_SLUG" "$_first"; then
-        return 1
-      fi
-      # 防御: _stage_checkpoint_assert_slug_match が 0 を返した（一致した）場合の
-      # フォールバック（実装上は到達しないが silent fail を作らないため）
-      HAS_EXISTING_SPEC=true
-      EXISTING_SPEC_DIR="$_first"
-      SLUG=$(basename "$EXISTING_SPEC_DIR" | sed "s/^${NUMBER}-//")
+      local _resumable_rc=0
+      _stage_checkpoint_has_resumable_state "$_first" || _resumable_rc=$?
+      case "$_resumable_rc" in
+        1)
+          # 4 観点すべて不在確定 → slug guard を skip し fresh として続行（新規スラグは
+          # expected を採用。needs-decisions 付与・escalate コメントは行わない / #383）。
+          echo "stage-checkpoint: slug-guard-skipped issue=#${NUMBER} expected=${EXPECTED_SLUG} found=$(basename "$_first") reason=no-resumable-state" | tee -a "$LOG"
+          SLUG="$EXPECTED_SLUG"
+          ;;
+        *)
+          # resumable state 実在(0) / 観測失敗(2) / 想定外 → 従来どおり slug guard を発火（safe-side）。
+          if ! _stage_checkpoint_assert_slug_match "$EXPECTED_SLUG" "$_first"; then
+            return 1
+          fi
+          # 防御: _stage_checkpoint_assert_slug_match が 0 を返した（一致した）場合の
+          # フォールバック（実装上は到達しないが silent fail を作らないため）
+          HAS_EXISTING_SPEC=true
+          EXISTING_SPEC_DIR="$_first"
+          SLUG=$(basename "$EXISTING_SPEC_DIR" | sed "s/^${NUMBER}-//")
+          ;;
+      esac
     fi
   else
     # Req 1.6: `docs/specs/<N>-*/` が存在しないとき → 本要件のスラグ照合は発火させず
