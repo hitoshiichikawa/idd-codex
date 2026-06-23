@@ -553,6 +553,10 @@ STAGE_A_VERIFY_ENABLED="${STAGE_A_VERIFY_ENABLED:-true}"
 STAGE_A_VERIFY_TIMEOUT="${STAGE_A_VERIFY_TIMEOUT:-600}"
 STAGE_A_VERIFY_COMMAND="${STAGE_A_VERIFY_COMMAND:-}"
 STAGE_A_VERIFY_SANDBOX_PROFILE="${STAGE_A_VERIFY_SANDBOX_PROFILE:-:workspace}"
+# Issue F5(#377 port): verify cmd timeout 後 SIGTERM→SIGKILL の猶予秒。timeout の
+# `--kill-after` 値。既定 10 は従来ハードコード値と同一（後方互換）。setsid + pgid 全体
+# SIGKILL で孤児 grandchild を確実回収し flock 占有デッドロックを防ぐ（NFR 5.2）。
+STAGE_A_VERIFY_KILL_AFTER="${STAGE_A_VERIFY_KILL_AFTER:-10}"
 
 # ─── Scaffolding Health Gate 設定 (#238) ───
 # worktree reset ＋ `.codex` 注入（#237）完了直後・最初の agent stage 起動前に、worktree 内の
