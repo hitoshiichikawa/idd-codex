@@ -82,6 +82,29 @@ Architect が出力する `tasks.md` は、Developer が迷わず実装を進め
 - `- [ ]*` は既存の optional / deferrable なテストタスク表記として扱い、未完了の deferred test
   task を先行 task の per-task review の `missing test` 判定対象へ混ぜない
 
+### 判断の具体例（同 task にテストを含めるか / 後続へ回すか）
+
+抽象原則を具体化するための例です。迷ったら「先行 task 完了時点で Reviewer が `missing test` と
+判定するのが自然か」で考えます（自然なら同 task にテストを置く）。
+
+**原則として同 task にテストを含める**（実行時挙動 / 受入基準に直結するため）:
+
+- 依存解決などで `gh` API 失敗時に unresolved 扱いへ倒す、`jq` parse 失敗時に WARN を出して
+  誤判定しない等の **failure path / safety fallback** を変える
+- **exit code / 戻り値の語義**を変える
+- **ラベルの追加 / 削除 / 遷移条件**を変える
+- GitFlow / single-branch など **mode ごとに分岐する本体ロジック**を変える
+- 既存 env var の **default / 後方互換**に関わる分岐を追加する
+
+**後続の dedicated test task へ defer してよい**（実挙動をまだ変えない / 単独では検証対象が無い）:
+
+- テスト helper / fixture の抽出だけを先に行い、実挙動は変更しない
+- 複数 task の部品が揃って初めて意味を持つ E2E smoke を最後にまとめる
+- README / 設計メモのみを更新し、実行時挙動を変えない
+
+defer する場合は、上記 boundary 規約（先行 task の `_Requirements:_` から未実施 coverage AC を外し、
+task 本文と `_Depends:_` で「このタスクは部分実装でテストは task N」と明示）を必ず併用します。
+
 ## 並列マーカー `(P)`
 
 - **並列実行可能**なタスクのみ末尾に ` (P)` を付ける
