@@ -1382,18 +1382,65 @@ idd-codex は基本フロー（Triage → 実装 → PR 作成）以外の機能
 | **impl-resume Branch Protection**（既存 origin branch resume + force-push 抑制 + tasks.md 進捗追跡） | `IMPL_RESUME_PRESERVE_COMMITS` | `true` | `=false` 厳密一致のみ無効。それ以外（`Yes` / `1` / 空文字 / typo / 不正値）はすべて有効 | 推奨: `IMPL_RESUME_PROGRESS_TRACKING`（既定 `true`。`=false` で進捗追跡指示の注入のみ抑制。`IMPL_RESUME_PRESERVE_COMMITS=false` 時は値に関わらず注入されない） | [impl-resume Branch Protection (#67)](#impl-resume-branch-protection-67) | #67, #112 |
 | **impl-resume tasks.md 進捗追跡**（Developer がタスク完了ごとに `- [ ]` → `- [x]` を専用 commit） | `IMPL_RESUME_PROGRESS_TRACKING` | `true` | `=false` 厳密一致のみ無効。それ以外（空文字含む）は有効 | 必須前提: `IMPL_RESUME_PRESERVE_COMMITS=true`（既定）。`IMPL_RESUME_PRESERVE_COMMITS=false` の状態では本機能は **常に未注入**（サイレント no-op） | [impl-resume Branch Protection (#67)](#impl-resume-branch-protection-67) | #67 |
 | **Stage Checkpoint Resume**（impl 系 Stage 単位の checkpoint で Reviewer / PjM 失敗時の Developer 再実行回避。#212 Stage C 直前冪等ガード / #219 Stage A 越境観測・spec 成果物完全性保証を相乗りで内包） | `STAGE_CHECKPOINT_ENABLED` | `true` | `=false` 厳密一致のみ無効。それ以外（空文字 / `0` / `False` / typo）はすべて有効 | — | [Stage Checkpoint (#68)](#stage-checkpoint-68) | #68, #112, #212, #219 |
-| **Stage A Verify Gate**（tasks.md 末尾 verify タスク（build/test/lint）の独立再実行で自己申告ガード） | `STAGE_A_VERIFY_ENABLED` | `true` | `=false` 厳密一致のみ無効。それ以外（空文字 / `0` / `False` / typo）はすべて有効 | 推奨: `STAGE_A_VERIFY_TIMEOUT`（既定 `600` 秒）、`STAGE_A_VERIFY_COMMAND`（構造化ブロック不在時に参照する operator 固定 escape hatch / 未対応言語向け）、`STAGE_A_VERIFY_SANDBOX_PROFILE`（tasks.md 由来 verify 用 Codex permission profile / 既定 `:workspace`）、`STAGE_A_VERIFY_STATE_DIR`（round counter 永続化先 / 既定 `$HOME/.idd-codex/issue-watcher/state/<repo_slug>` / 通常変更不要 / #246） | [Stage A Verify Gate (#125)](#stage-a-verify-gate-125) | #125, #246, #51 |
+| **Stage A Verify Gate**（tasks.md 末尾 verify タスク（build/test/lint）の独立再実行で自己申告ガード） | `STAGE_A_VERIFY_ENABLED` | `true` | `=false` 厳密一致のみ無効。それ以外（空文字 / `0` / `False` / typo）はすべて有効 | 推奨: `STAGE_A_VERIFY_TIMEOUT`（既定 `600` 秒）、`STAGE_A_VERIFY_KILL_AFTER`（既定 `10` 秒 / timeout 到達後 SIGTERM → SIGKILL までの猶予。setsid + pgid 全体 SIGKILL で孤児 grandchild を回収し flock 占有デッドロックを防ぐ / 通常変更不要 / idd-claude #377/F5 移植）、`STAGE_A_VERIFY_COMMAND`（構造化ブロック不在時に参照する operator 固定 escape hatch / 未対応言語向け）、`STAGE_A_VERIFY_SANDBOX_PROFILE`（tasks.md 由来 verify 用 Codex permission profile / 既定 `:workspace`）、`STAGE_A_VERIFY_STATE_DIR`（round counter 永続化先 / 既定 `$HOME/.idd-codex/issue-watcher/state/<repo_slug>` / 通常変更不要 / #246） | [Stage A Verify Gate (#125)](#stage-a-verify-gate-125) | #125, #246, #51, #377 |
 | **Tasks Count Gate**（Architect 完了直後の tasks.md 件数を harness で再評価し、8〜10 件で警告コメント / ≥11 件で `codex-needs-decisions` + Developer 自動起動抑止） | `TC_ENABLED` | `true` | `=false` 厳密一致のみ無効。それ以外（空文字 / `0` / `False` / typo）はすべて有効 | 推奨: `TC_WARN_LOWER`（既定 `8`）、`TC_WARN_UPPER`（既定 `10`）、`TC_ESCALATE_LOWER`（既定 `11`）。非整数は warning ログ + 既定値にフォールバック | [Tasks Count Gate (#147)](#tasks-count-gate-147) | #147 |
 | **Per-Run Evidence Summary**（1 サイクルの stage/gate 実行実態を `run-summary:` 1 行で機械可読出力。前述「複数リポ運用時の cron.log grep 例」節参照） | `RUN_SUMMARY_ENABLED` | `true` | lowercase の `false` / `0` / `no` / `off` のいずれかで無効。それ以外（空文字 / `False` / `OFF` / typo）はすべて有効（#112 系 8 種の「`=false` 厳密一致のみ無効」とは正規化規則が異なる点に注意） | — | Issue #239（専用詳細セクションなし。grep 例・enum 表は本節の上記参照） | #239 |
 | **役割定義の prompt 注入**（Codex には Claude の subagent 機構が無いため `.codex/agents/<role>.md` を各 stage の prompt へ注入する。Developer 出力品質のキーストーン） | `CODEX_INJECT_ROLE_DEFS` | `true` | `=false` で注入なし（移植直後の挙動に戻す） | — | 下記「Codex CLI 移植固有の harness 設計」節 | #74 |
 | **Stage A の PM / Developer 分離**（impl mode で PM 要件定義と Developer 実装を別 `codex exec` に分離し context bleed を防ぐ。**impl 1 件あたり codex exec が +1 回**） | `STAGE_A_PM_SPLIT_ENABLED` | `true` | `=false` で従来の単一 exec（PM+Developer 同居）に戻る | — | 下記「Codex CLI 移植固有の harness 設計」節 | #82 |
 | **Debugger の live web search**（Debugger stage のみ `codex --search`（native `web_search` tool）を有効化） | `CODEX_DEBUGGER_WEB_SEARCH` | `true` | `=false` で検索なし | — | 下記「Codex CLI 移植固有の harness 設計」節 | #78 |
 
+### 完全自動化（full-auto）パイプライン概観
+
+idd-codex は「Issue → PR → レビュー → merge」を人手ゼロで回す完全自動化（full-auto）を、
+**全機能既定 OFF の二重 opt-in** で段階導入できる。各機能は `FULL_AUTO_ENABLED=true`（umbrella
+kill switch）**かつ** 個別 gate=true の AND でのみ発火し、どちらか OFF（既定）では外部副作用
+ゼロ＝導入前と完全に等価。下表「opt-in（既定 OFF）」の各行が個別 gate に対応する。
+
+#### 自律フロー（各 gate ON 時）
+
+1. **Triage**（PM）が Issue を精査。`codex-needs-decisions` 判定は **needs-decisions 自動続行**
+   （`NEEDS_DECISIONS_MODE`）で `safe` 分類のみ第一推奨で自動続行（`human-only` は据え置き）。
+2. **Developer** が実装 PR を作成。Architect 必要時は設計 PR → **設計 PR auto-merge**
+   （`AUTO_MERGE_DESIGN_ENABLED`）→ impl-resume。
+3. **Reviewer ゲート**: codex Reviewer の verdict を `codex-review` commit status に publish
+   （`PR_REVIEWER_STATUS_CHECK_ENABLED`）。任意で **2nd gate**（`claude-review` /
+   `PR_REVIEWER_SECOND_GATE=claude`）を独立レビューとして併設。
+4. **実装 PR auto-merge**（`AUTO_MERGE_ENABLED`）: 必須 check（CI + `codex-review`（+`claude-review`））
+   全 green + mergeable で GitHub native auto-merge が squash。CONFLICTING は merge-queue /
+   auto-rebase（+ semantic 自動解決 `AUTO_REBASE_SEMANTIC`）へ委譲。
+5. **回復系**: CI 失敗 / `codex-failed` は **Failed Recovery**（`FAILED_RECOVERY_ENABLED`・通算
+   budget=4）で自動修復。セッション喪失で残った `codex-picked-up` は **Stale Pickup Reaper**
+   （`STALE_PICKUP_REAPER_ENABLED`）で復帰。依存循環は **blocked cycle 検出**
+   （`BLOCKED_CYCLE_DETECTION_ENABLED`）で `codex-needs-decisions` へ終端。
+
+#### 人間介入が要る瞬間（確実に通知・停止＝無限ループ / 沈黙死しない）
+
+完全自動でも以下は **人間に委ねて確実に終端**する: budget 超過 / no-progress の `codex-failed`
+据え置き、`human-only` の `codex-needs-decisions` 据え置き、依存循環の検出。これらは
+**Slack 通知**（`SLACK_NOTIFY_ENABLED`）で能動 push できる（run-summary + ログは常時出力）。
+
+#### 推奨ロールアウト順（段階有効化）
+
+`FULL_AUTO_ENABLED=true` を前提に、env を 1 つずつ true にして検証する:
+
+1. `PR_REVIEWER_STATUS_CHECK_ENABLED`（#98 / `codex-review` publish 開始）→ branch protection で
+   `codex-review` を required 化（#96）。**★必ず publish 開始後に必須化する**（OFF のまま
+   required 化すると未 publish status で全 PR が永久 pending）
+2. `AUTO_MERGE_ENABLED` / `AUTO_MERGE_DESIGN_ENABLED`（#99 / #100）
+3. `FAILED_RECOVERY_ENABLED`（#101）/ `STALE_PICKUP_REAPER_ENABLED`（F6・単独 opt-in 可）
+4. `NEEDS_DECISIONS_MODE=classified`（#102）/ `AUTO_REBASE_SEMANTIC=on`（#103・要 `AUTO_REBASE_MODE=codex`）/
+   `BLOCKED_CYCLE_DETECTION_ENABLED`（#104・要 `DEPENDENCY_AUTO_UNBLOCK_ENABLED=true`）/
+   `SLACK_NOTIFY_ENABLED`（#105）
+5. 任意: `PR_REVIEWER_SECOND_GATE=claude`（#108・publish 開始後に `claude-review` を required 化）
+
+env が増えるため、crontab 行長限界を避けるには後述「per-repo env ファイル」節の env ファイルへ
+`*_ENABLED` をまとめるとよい。各機能の既定 / 正規化 / 連動 env は下表を参照。
+
 ### opt-in（既定 OFF、明示的に有効化が必要）
 
 | 機能 | 制御変数 | 既定 | 正規化規則 | 追加 env（必須/推奨） | 詳細 | 関連 |
 |---|---|---|---|---|---|---|
-| **完全自動化 kill switch**（full-auto 系 processor を一括 gate する umbrella。個別 gate と **AND** の二重 opt-in = `FULL_AUTO_ENABLED=true` かつ個別 gate=true で発火。本 Issue 時点では配下 processor 未実装で、#99 auto-merge 以降が `full_auto_enabled` を AND 条件として参照） | `FULL_AUTO_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `on` / `True` / `TRUE` / `1` / 前後空白 / typo）はすべて OFF に正規化 | — | 詳細セクションは後続 Issue（#99〜#105）で追加 | #97 |
+| **完全自動化 kill switch**（full-auto 系 processor を一括 gate する umbrella。個別 gate と **AND** の二重 opt-in = `FULL_AUTO_ENABLED=true` かつ個別 gate=true で発火。配下 processor（#98〜#105 / #108 / F6）はすべて実装・main 反映済みで、各々が `full_auto_enabled` を AND 条件として参照する（全 gate 既定 OFF のため未設定時は導入前と等価）） | `FULL_AUTO_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `on` / `True` / `TRUE` / `1` / 前後空白 / typo）はすべて OFF に正規化 | — | 上記「完全自動化（full-auto）パイプライン概観」節 + 下記各機能行を参照 | #97 |
 | **PR レビュー結果の commit status publish**（codex Reviewer の verdict を `codex-review` commit status として publish。auto-merge #99 の required status check の source。`FULL_AUTO_ENABLED` との **AND 二重 opt-in**） | `PR_REVIEWER_STATUS_CHECK_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて OFF に正規化。OFF では従来どおりコメントのみ | 連動: `FULL_AUTO_ENABLED`（#97）。`PR_REVIEWER_ENABLED`（codex レビュー本体）も別途要有効化 | approve→`success` / iteration・conflict→`failure`。2nd gate（`claude-review`）は別 Issue（toggle・既定 OFF） | #98 |
 | **実装 PR auto-merge**（`codex-ready-for-review` 実装 PR に GitHub native auto-merge を有効化。watcher は直接 merge せず、必須 check 全 green + mergeable で GitHub が squash merge。CONFLICTING は merge-queue/auto-rebase へ委譲） | `AUTO_MERGE_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて OFF に正規化 | 連動: `FULL_AUTO_ENABLED`（#97）との **AND 二重 opt-in**。推奨: `AUTO_MERGE_MAX_PRS`（既定 `10`）、`AUTO_MERGE_HEAD_PATTERN`（既定 `^codex/issue-.*-impl`）、`AUTO_MERGE_GIT_TIMEOUT`（既定 `60`）。**branch protection で required checks 設定が前提**（#96） | `gh pr merge --auto --squash --delete-branch`。既 enable は冪等 skip | #99 |
 | **設計 PR auto-merge**（設計 PR `^codex/issue-.*-design` に GitHub native auto-merge を有効化。merge 後の `codex-awaiting-design-review` 除去は既存 Design Review Release Processor が担当。設計 PR は ready ラベルを持たないため head pattern + 否定ラベルで判定） | `AUTO_MERGE_DESIGN_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて OFF に正規化 | 連動: `FULL_AUTO_ENABLED`（#97）との **AND 二重 opt-in**。推奨: `AUTO_MERGE_DESIGN_MAX_PRS`（既定 `10`）、`AUTO_MERGE_DESIGN_HEAD_PATTERN`（既定 `^codex/issue-.*-design`）、`AUTO_MERGE_DESIGN_GIT_TIMEOUT`（既定 `60`） | `codex-failed`/`codex-needs-decisions`/`codex-needs-iteration` 不在 + MERGEABLE で enable | #100 |
@@ -4184,6 +4231,7 @@ flowchart TD
 |---|---|---|---|
 | `STAGE_A_VERIFY_ENABLED` | `true` | 無効化する場合のみ `false` | Stage A Verify Gate の有効化 / 無効化 |
 | `STAGE_A_VERIFY_TIMEOUT` | `600`（秒） | 大規模 repo は延長 | verify 再実行の最大経過秒数 |
+| `STAGE_A_VERIFY_KILL_AFTER` | `10`（秒） | 通常は変更不要 | timeout 到達後、SIGTERM 送出から SIGKILL 送出までの猶予秒数（`timeout --kill-after` 相当）。verify は `setsid` で独立 process group に隔離し、timeout 強制終了経路で pgid 全体に SIGKILL を broadcast するため、build 等の孫プロセスも確実に回収され flock 占有デッドロックを防ぐ。`STAGE_A_VERIFY_TIMEOUT + STAGE_A_VERIFY_KILL_AFTER` が verify cmd と子孫の wall-clock 上限。既定値は導入前のハードコード `10` と同値（idd-claude #377/F5 移植） |
 | `STAGE_A_VERIFY_COMMAND` | （空） | 未対応言語のみ | 構造化 verify ブロックが無い場合に参照する固定 escape hatch（散文誤認回避用。構造化ブロックがある場合はそちらが優先） |
 | `STAGE_A_VERIFY_SANDBOX_PROFILE` | `:workspace` | 通常は変更不要 | `tasks.md` 由来 verify を `codex sandbox` で実行する permission profile。`:danger-full-access` / `danger-full-access` は repository 由来 verify では拒否 |
 | `STAGE_A_VERIFY_STATE_DIR` | `$HOME/.idd-codex/issue-watcher/state/<repo_slug>` | 通常は変更不要 | round counter の永続化先ベースディレクトリ（worktree 外）。テスト / 隔離用途で上書き可能（#246） |
@@ -4401,8 +4449,10 @@ opt-out したい場合:
   で Stage Checkpoint 経由 START_STAGE=B が返っても、本 gate が再評価されます
 - **2 回目失敗 (round=2)**: `codex-failed` ラベルを付与し、`mark_issue_failed` 経由で
   Issue にエスカレーションコメントを投稿します。recovery hint も自動 append
-- **TIMEOUT**: `STAGE_A_VERIFY_TIMEOUT` 超過時は `timeout --kill-after=10` で当該
-  プロセスと子孫プロセスを停止し、失敗扱い（exit=124）
+- **TIMEOUT**: `STAGE_A_VERIFY_TIMEOUT` 超過時は `setsid` + `timeout --kill-after=${STAGE_A_VERIFY_KILL_AFTER:-10}` で
+  当該プロセスを起動し、timeout 強制終了経路では process group 全体に SIGKILL を broadcast して
+  孫プロセスまで確実に停止し、失敗扱い（exit=124）。孤児 grandchild による watcher の flock 占有
+  デッドロックを防ぐ（idd-claude #377/F5 移植）
 - **SKIPPED**: `tasks.md` 内に抽出キーワード集合と一致する行が無ければ SKIPPED
   として Stage A 完了を続行（reason ログ付き）
 
