@@ -949,7 +949,13 @@ pi_build_iteration_prompt() {
       local raw_line
       if raw_line=$(timeout "$PR_ITERATION_GIT_TIMEOUT" \
           gh api "/repos/${REPO}/pulls/${pr_number}/reviews/${latest_review_id}/comments" 2>/dev/null); then
-        line_comments_json=$(echo "$raw_line" | jq '[.[] | {id, path, line, user: (.user.login // ""), body}]')
+        # #400 移植: 一般コメント側 pi_general_filter_self と同じく、PR Iteration 自身の
+        # `idd-codex:pr-iteration` marker を line コメントからも除外する（自分の出力を
+        # iteration 入力へ還流させない）。`idd-codex:pr-reviewer` の指摘は残す（actionable）。
+        line_comments_json=$(echo "$raw_line" \
+          | jq '[.[]
+                | {id, path, line, user: (.user.login // ""), body}
+                | select((.body // "") | test("<!--[[:space:]]*idd-codex:pr-iteration([[:space:]>-]|$)") | not)]')
       fi
     fi
   fi
@@ -1830,7 +1836,7 @@ pi_run_iteration() {
     success_action=$(pi_resolve_success_action "$commit_pushed" "$new_streak" "$PR_ITERATION_NO_PROGRESS_LIMIT")
     case "$success_action" in
       escalate)
-        pi_log "PR #${pr_number}: kind=${kind} round=${next_round} no-progress-streak=${new_streak} reason=no-progress escalate"
+        pi_log "PR #${pr_number}: kind=${kind} round=${next_round} no-progress-streak=${new_streak} limit=${PR_ITERATION_NO_PROGRESS_LIMIT} reason=no-progress escalate"
         pi_escalate_to_failed "$pr_number" "$next_round" "$max_rounds" "no-progress" "$new_streak" || true
         return 2
         ;;
