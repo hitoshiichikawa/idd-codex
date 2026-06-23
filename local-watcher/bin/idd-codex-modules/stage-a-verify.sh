@@ -113,7 +113,9 @@ _sav_run_repo_command_in_codex_sandbox() {
   fi
 
   sav_log "sandbox EXEC profile=$profile boundary=codex-sandbox"
-  timeout --kill-after=10 "$timeout_sec" \
+  # setsid + pgid SIGKILL で codex sandbox が生む build 等の孫プロセスも timeout 経路で
+  # 確実に回収する（#377 F5）。stdout/stderr は呼び出し側 redirect を継承。
+  _sav_exec_with_timeout "$timeout_sec" "${STAGE_A_VERIFY_KILL_AFTER:-10}" \
     "${CODEX_BIN:-codex}" sandbox -P "$profile" -C "$REPO_DIR" -- bash -c "$cmd"
 }
 
@@ -452,6 +454,42 @@ _SAV_RESOLVED_SOURCE=""
 # 既存ログ行は一切変更しない（NFR 1.1）。本変数は変数代入のみの副作用で、ラベル遷移 / exit
 # code / 既存ログ行に影響しない（NFR 1.2）。
 _SAV_LAST_OUTCOME=""
+
+# ─── _sav_exec_with_timeout（Issue F5 / #377 port）───
+#
+# verify コマンドを **新規 session（setsid）+ timeout** で起動し、timeout 強制終了経路
+# （rc=124 / SIGKILL=137）では setsid セッション配下の process group 全体へ SIGKILL を
+# broadcast して孤児 grandchild を確実に回収する。
+#
+# 背景: `timeout ... bash -c "$cmd"` は SIGTERM を直接の child（bash）にしか送らないため、
+# `$cmd` が孫プロセス（build / shellcheck の fork / `sleep` 等）を生むと、それらが生き残って
+# watcher の `wait` をブロックし、watcher が握る flock を解放できずパイプライン全体が
+# デッドロックする（#377 F5 の根本原因）。setsid で独立 pgid を確立し、timeout 経路で
+# `kill -KILL -- -<pgid>` を broadcast することで孫まで確実に終了させる。
+#
+# 入力: $1=timeout秒, $2=kill_after秒, $3...=実行する argv（そのまま exec される）
+# 出力: argv の stdout/stderr は呼び出し側の redirect（通常 `>> "$LOG" 2>&1`）を継承する。
+# 戻り値: argv の exit code（timeout=124 / SIGKILL=137）。
+#
+# 注: 出力は process substitution ではなく呼び出し側の直接 redirect で受ける（pipe deadlock
+#     を持ち込まない）。
+_sav_exec_with_timeout() {
+  local _timeout="$1" _kill_after="$2"
+  shift 2
+  local _rc=0 _child_pid
+  # setsid + timeout で新規 session に隔離して background 起動し、pid を取得する。
+  setsid timeout --kill-after="$_kill_after" --signal=TERM "$_timeout" "$@" &
+  _child_pid=$!
+  wait "$_child_pid" 2>/dev/null || _rc=$?
+  # timeout 強制終了（124）/ SIGKILL（137）の場合、setsid 配下に孫が残っていれば pgid 全体に
+  # SIGKILL を broadcast する（pgid == setsid child の pid）。best-effort（既に exit 済みなら
+  # ESRCH で no-op）。
+  if [ "$_rc" -eq 124 ] || [ "$_rc" -eq 137 ]; then
+    kill -KILL -- "-${_child_pid}" 2>/dev/null || true
+    sav_warn "verify 強制終了: process group -${_child_pid} へ SIGKILL を broadcast（孤児プロセス回収 / #377 F5）"
+  fi
+  return "$_rc"
+}
 
 # ─── _sav_source_path ───
 #
@@ -923,10 +961,10 @@ stage_a_verify_run() {
     _sav_run_repo_command_in_codex_sandbox "$cmd" "$_timeout" >> "$LOG" 2>&1 || rc=$?
   else
     # operator が明示した STAGE_A_VERIFY_COMMAND は既存 semantics を維持する。
-    # subshell `(cd && ...)` で cwd を REPO_DIR に隔離（NFR 5.1）。
-    # `timeout --kill-after=10 "$_timeout"` で暴走を時間でも遮断し、タイムアウト到達時は
-    # 子孫プロセスも SIGKILL する（NFR 5.2）。
-    (cd "$REPO_DIR" && timeout --kill-after=10 "$_timeout" bash -c "$cmd") \
+    # cwd は `bash -c "cd ... && $cmd"` で REPO_DIR に隔離（NFR 5.1）。setsid + pgid SIGKILL
+    # で暴走と孤児 grandchild を確実に遮断し flock 占有デッドロックを防ぐ（#377 F5 / NFR 5.2）。
+    _sav_exec_with_timeout "$_timeout" "${STAGE_A_VERIFY_KILL_AFTER:-10}" \
+        bash -c "cd \"$REPO_DIR\" && $cmd" \
         >> "$LOG" 2>&1 || rc=$?
   fi
 
