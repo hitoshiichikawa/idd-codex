@@ -445,6 +445,32 @@ case "$PR_REVIEWER_STATUS_CHECK_ENABLED" in
   *)    PR_REVIEWER_STATUS_CHECK_ENABLED="false" ;;
 esac
 
+# ─── PR Reviewer 2nd gate（claude-review）設定 (#108 / D-04) ───
+# 1st gate（#98 `codex-review`）に加え、真に独立した 2nd gate として `claude` CLI に PR diff を
+# レビューさせ、結果を commit status `claude-review` として publish する **feature toggle**。
+# `=claude` 厳密一致で ON。それ以外（既定 `off` / 未設定 / 空 / typo）はすべて OFF に正規化。
+# 1st gate と同じ `PR_REVIEWER_STATUS_CHECK_ENABLED` + `FULL_AUTO_ENABLED` 配下で動く
+# （pr_publish_commit_status が内部 gate）。OFF（既定）では `claude-review` を一切 publish せず
+# #98 の codex-review 単独（現行と等価）。auto-merge(#99) は codex-review 単独で成立するため
+# 本機能は critical path 外の hardening。
+#
+# ★デッドロック注意: branch protection で `claude-review` を **required check 化するのは
+# 本 toggle を `claude` にして publish が始まった後**。toggle OFF のまま required 化すると
+# 未 publish status で全 PR が永久 pending になる。
+PR_REVIEWER_SECOND_GATE="${PR_REVIEWER_SECOND_GATE:-off}"
+case "$PR_REVIEWER_SECOND_GATE" in
+  claude) : ;;
+  *)      PR_REVIEWER_SECOND_GATE="off" ;;
+esac
+# 2nd gate（claude）のレビュー実行コマンドテンプレート。{BASE}/{HEAD}/{PR}/{PROMPT_FILE} を
+# 置換後 `bash -c` で実行（eval 不使用）。codex と同じ `\"\$(cat '{PROMPT_FILE}')\"` リテラル
+# 保持イディオムで、inner bash -c が実行時に prompt を展開する。claude は codex の
+# `--sandbox read-only` 相当が無いため、read-only 不変条件は pr_execute_review_command の
+# tracked 変更破棄が担保する（review prompt 自体も VERDICT 出力のみを指示）。
+PR_REVIEWER_CLAUDE_CMD="${PR_REVIEWER_CLAUDE_CMD:-claude -p \"\$(cat '{PROMPT_FILE}')\"}"
+# claude の認証チェックコマンド（終了コード 0 で OK、空文字なら check skip）。
+PR_REVIEWER_CLAUDE_AUTH_CMD="${PR_REVIEWER_CLAUDE_AUTH_CMD:-}"
+
 # ─── Design Review Release Processor 設定 (#40) ───
 # 設計 PR が merge された Issue から `codex-awaiting-design-review` ラベルを自動除去し、
 # ステータスコメントを 1 件投稿する。標準機能としてデフォルト有効化（#112）。
@@ -1111,7 +1137,7 @@ mkdir -p "$LOG_DIR"
 # 解決済み base branch を起動時 log に出力（Req 1.7 / NFR 4.1）。
 # 運用者が cron mailer / log で `base-branch=...` を grep できるよう、
 # 既定値（main）でも明示的に出力する。
-echo "[$(date '+%F %T')] base-branch=${BASE_BRANCH} merge-queue-base=${MERGE_QUEUE_BASE_BRANCH} auto-rebase=${AUTO_REBASE_MODE} auto-rebase-semantic=${AUTO_REBASE_SEMANTIC} auto-merge=${AUTO_MERGE_ENABLED} auto-merge-design=${AUTO_MERGE_DESIGN_ENABLED} failed-recovery=${FAILED_RECOVERY_ENABLED} needs-decisions-mode=${NEEDS_DECISIONS_MODE} blocked-cycle-detection=${BLOCKED_CYCLE_DETECTION_ENABLED} slack-notify=${SLACK_NOTIFY_ENABLED} full-auto=${FULL_AUTO_ENABLED}"
+echo "[$(date '+%F %T')] base-branch=${BASE_BRANCH} merge-queue-base=${MERGE_QUEUE_BASE_BRANCH} auto-rebase=${AUTO_REBASE_MODE} auto-rebase-semantic=${AUTO_REBASE_SEMANTIC} auto-merge=${AUTO_MERGE_ENABLED} auto-merge-design=${AUTO_MERGE_DESIGN_ENABLED} failed-recovery=${FAILED_RECOVERY_ENABLED} needs-decisions-mode=${NEEDS_DECISIONS_MODE} blocked-cycle-detection=${BLOCKED_CYCLE_DETECTION_ENABLED} slack-notify=${SLACK_NOTIFY_ENABLED} pr-reviewer-2nd-gate=${PR_REVIEWER_SECOND_GATE} full-auto=${FULL_AUTO_ENABLED}"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # doctor サブコマンド dispatch (#238 / Decision 2)
