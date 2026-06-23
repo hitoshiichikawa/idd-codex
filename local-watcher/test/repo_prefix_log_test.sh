@@ -75,6 +75,7 @@ LOGGER_FUNCS=(
   fr_log fr_warn fr_error
   nda_log nda_warn nda_error
   sn_log sn_warn sn_error
+  sr_log sr_warn sr_error
 )
 
 for fn in "${LOGGER_FUNCS[@]}"; do
@@ -253,6 +254,17 @@ assert_contains "Req 1.9 sn_warn: prefix 維持" \
 OUT=$(sn_error "unexpected" 2>&1)
 assert_contains "Req 1.9 sn_error: prefix 維持" \
   "[owner/test-repo] slack-notify: ERROR: unexpected" "$OUT"
+
+# Req 1.10: sr_log（F6 stale-pickup-reaper）
+OUT=$(sr_log "candidates 0 件" 2>&1)
+assert_contains "Req 1.10 sr_log: [owner/test-repo] stale-pickup-reaper:" \
+  "[owner/test-repo] stale-pickup-reaper: candidates 0 件" "$OUT"
+OUT=$(sr_warn "marker save 失敗" 2>&1)
+assert_contains "Req 1.10 sr_warn: prefix 維持" \
+  "[owner/test-repo] stale-pickup-reaper: WARN: marker save 失敗" "$OUT"
+OUT=$(sr_error "unexpected" 2>&1)
+assert_contains "Req 1.10 sr_error: prefix 維持" \
+  "[owner/test-repo] stale-pickup-reaper: ERROR: unexpected" "$OUT"
 
 # Req 1.8: REPO がデフォルト値 (owner/your-repo) のままでもそのまま出力される
 REPO_BACKUP="$REPO"
