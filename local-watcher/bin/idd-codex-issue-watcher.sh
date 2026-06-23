@@ -56,6 +56,22 @@ REPO_DIR="${REPO_DIR:-$HOME/work/your-repo}"
 # REPO から repo-unique な slug を導出（lock / log / 一時ファイルの隔離に使う）
 REPO_SLUG="$(echo "$REPO" | tr '/' '-')"
 
+# ─── per-repo env ファイル ローダ（idd-claude #386/F8 移植）───
+# Config ブロックの `*_ENABLED` 等の `${VAR:-default}` 評価より **前** に env-loader.sh を
+# 単独 source して per-repo env ファイル（`WATCHER_ENV_FILE` 明示パス または
+# `$HOME/.idd-codex/<REPO_SLUG>.env`）から `*_ENABLED` 等を供給する。crontab 行を
+# REPO / REPO_DIR / BASE_BRANCH の最小限に保ち、行長限界（~1024 文字）での `command too
+# long` を解消する。env ファイル経由の値は inline cron env より低優先（既設定 KEY は不上書）。
+# REQUIRED_MODULES の通常ローダ（Config 後）より前に動かす必要があるため、ここで単独 source。
+# モジュール不在時は何もしない（導入前と等価）。REPO_SLUG / REPO 定義後・HOME 利用可で動作。
+IDD_ENV_LOADER_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)/idd-codex-modules/env-loader.sh"
+if [ -f "$IDD_ENV_LOADER_PATH" ]; then
+  # shellcheck source=/dev/null
+  . "$IDD_ENV_LOADER_PATH"
+  el_load
+fi
+unset IDD_ENV_LOADER_PATH
+
 LABEL_TRIGGER="codex-auto-dev"
 LABEL_CLAIMED="codex-claimed"
 LABEL_PICKED="codex-picked-up"
@@ -1124,7 +1140,7 @@ IDD_MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)/id
 # 3 プロセッサ（quota-aware / merge-queue / auto-rebase）、#181 Part 3 で切り出した
 # 3 プロセッサ（promote-pipeline / pr-iteration / stage-a-verify）を並べ、末尾に
 # #238 の scaffolding-health.sh と #239 の per-run evidence サマリ（run-summary.sh）を置く。
-REQUIRED_MODULES=( "core_utils.sh" "guard-hook.sh" "quota-aware.sh" "merge-queue.sh" "auto-rebase.sh" "auto-merge.sh" "auto-merge-design.sh" "failed-recovery.sh" "needs-decisions-auto.sh" "slack-notify.sh" "stale-pickup-reaper.sh" "promote-pipeline.sh" "pr-iteration.sh" "pr-reviewer.sh" "stage-a-verify.sh" "scaffolding-health.sh" "context-map.sh" "run-summary.sh" )
+REQUIRED_MODULES=( "core_utils.sh" "env-loader.sh" "guard-hook.sh" "quota-aware.sh" "merge-queue.sh" "auto-rebase.sh" "auto-merge.sh" "auto-merge-design.sh" "failed-recovery.sh" "needs-decisions-auto.sh" "slack-notify.sh" "stale-pickup-reaper.sh" "promote-pipeline.sh" "pr-iteration.sh" "pr-reviewer.sh" "stage-a-verify.sh" "scaffolding-health.sh" "context-map.sh" "run-summary.sh" )
 for _idd_mod in "${REQUIRED_MODULES[@]}"; do
   _idd_mod_path="$IDD_MODULE_DIR/$_idd_mod"
   if [ ! -f "$_idd_mod_path" ]; then

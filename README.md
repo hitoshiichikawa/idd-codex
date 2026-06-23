@@ -1529,6 +1529,43 @@ IDD_CODEX_HOOKS_ENABLED=true
 
 ---
 
+### per-repo env ファイル（crontab 行長の解消 / idd-claude #386/F8 移植）
+
+full-auto 系 gate（`AUTO_MERGE_ENABLED` / `FAILED_RECOVERY_ENABLED` / `NEEDS_DECISIONS_MODE` /
+`AUTO_REBASE_SEMANTIC` / `BLOCKED_CYCLE_DETECTION_ENABLED` / `SLACK_NOTIFY_ENABLED` /
+`PR_REVIEWER_SECOND_GATE` / `STALE_PICKUP_REAPER_ENABLED` 等）を有効化していくと crontab 行に
+env var が増え、**~1024 文字の行長限界で `command too long`** が起き得る。これを避けるため、
+watcher 起動時に **per-repo env ファイル**を source して `*_ENABLED` 等を供給できる。
+
+- **配置パス**（探索順）:
+  1. `WATCHER_ENV_FILE`（絶対パス・運用者明示指定。相対パスは path traversal 予防で拒否）
+  2. `$HOME/.idd-codex/<REPO_SLUG>.env`（規約パス。`<REPO_SLUG>` は `owner/repo` の `/`→`-`）
+- **書式**: `KEY=VALUE` を 1 行ずつ。空行 / `#` コメント行は無視。値には `$HOME` / `$VAR` /
+  `$(...)` を書ける（env ファイルは運用者管理ファイル＝信頼境界の内側として扱う）。
+- **優先順位**: **inline cron env > env ファイル**。crontab 行で明示した値が常に勝つ
+  （env ファイルは未設定 KEY のみ供給）。
+- **安全側**: ファイル不在なら何もしない（導入前と等価）。構文不正行 / コマンド置換失敗は
+  当該行のみ skip + WARN。**機密候補の値（webhook URL 等）はログ / WARN に出さない**。
+  推奨 perm は `600`。idd-claude とは別 namespace（`$HOME/.idd-codex/`）なので併設しても衝突しない。
+
+crontab 例（行が最小化される）:
+
+```cron
+*/5 * * * * REPO=owner/feedman-ios REPO_DIR=$HOME/work/feedman-ios BASE_BRANCH=main $HOME/bin/idd-codex-issue-watcher.sh
+```
+
+`$HOME/.idd-codex/owner-feedman-ios.env`:
+
+```sh
+FULL_AUTO_ENABLED=true
+AUTO_MERGE_ENABLED=true
+FAILED_RECOVERY_ENABLED=true
+SLACK_NOTIFY_ENABLED=true
+SLACK_WEBHOOK_URL=$(cat $HOME/.secrets/slack-webhook)
+```
+
+---
+
 ## Codex CLI 移植固有の harness 設計（役割注入 / 暴走上限 / write-scope / 人間判断ルート）
 
 idd-codex は idd-claude（Claude Code 版）の移植であり、**Codex CLI には Claude Code の subagent 機構が
