@@ -645,6 +645,9 @@ fr_terminate_max_attempts() {
   body="$(printf 'Failed Recovery Processor (#101): 通算 attempt 上限に到達したため修正試行を停止します（通算 %s 回 / 上限 %s 回 / 終端理由: max-attempts）。\n\n`codex-failed` ラベルは据え置きます。手動レビューに移行してください。' "$total" "$FAILED_RECOVERY_MAX_ATTEMPTS")"
   fr_post_attempt_comment "$kind" "$number" "$body" || true
   rs_set_result "$LABEL_FAILED" || true
+  # Slack 介入通知（#105）。gate OFF（既定）では no-op。
+  sn_notify_intervention "failed-recovery-budget" "$kind" "$number" \
+    "通算 attempt 上限到達で codex-failed 据え置き（手動レビュー必要）" || true
   fr_log "${kind}=#${number} terminated reason=max-attempts total=${total} max=${FAILED_RECOVERY_MAX_ATTEMPTS}"
   return 0
 }
@@ -660,6 +663,9 @@ fr_terminate_no_progress() {
   body="$(printf 'Failed Recovery Processor (#101): no-progress を検出したため修正試行を停止します（通算 %s 回 / 終端理由: no-progress / 直前と同一の失敗が再発・無進捗）。\n\n`codex-failed` ラベルは据え置きます。手動レビューに移行してください。' "$total")"
   fr_post_attempt_comment "$kind" "$number" "$body" || true
   rs_set_result "$LABEL_FAILED" || true
+  # Slack 介入通知（#105）。gate OFF（既定）では no-op。
+  sn_notify_intervention "failed-recovery-no-progress" "$kind" "$number" \
+    "no-progress 検出で codex-failed 据え置き（手動レビュー必要）" || true
   local sig_prefix=""
   if [ -n "$signature" ]; then
     sig_prefix=" signature=$(printf '%s' "$signature" | cut -c1-8)"

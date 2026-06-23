@@ -58,6 +58,8 @@ dr_warn() { :; }
 dr_error(){ :; }
 # dr_escalate_cycle の冪等チェック依存（既存・本 Issue 対象外）。
 dr_auto_unblock_comment_exists() { return "$COMMENT_EXISTS_RC"; }
+# #105: dr_escalate_cycle が呼ぶ Slack 介入通知（本テストでは no-op stub）。
+sn_notify_intervention() { :; }
 
 reset_state() { GH_CALL_LOG="$(mktemp)"; COMMENT_EXISTS_RC=1; }
 calls() { grep -c "$1" "$GH_CALL_LOG" 2>/dev/null || true; }
