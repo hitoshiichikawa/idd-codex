@@ -1,0 +1,185 @@
+# =============================================================================
+# idd-codex PR Reviewer Adjudicator prompt template (#404)
+#
+# 用途: PR Reviewer (`pr-reviewer.sh`) で codex が出力した review コメント本文
+#       （`## 指摘事項` 配下の `[severity] <file>:<line> — <内容>` 行群）を入力に、
+#       各指摘を **legitimate（実害）** / **excessive（過剰）** に分類する Claude
+#       adjudicator の prompt 本文。`adj_classify_findings`（adjudicator.sh）
+#       が `claude --output-format json --permission-mode <read-only> ...` で実行する。
+# 配置先: ~/bin/idd-codex-adjudicator-prompt.tmpl
+#         （`PR_REVIEWER_ADJUDICATOR_PROMPT` env で別パスへ override 可）
+# 依存  : claude CLI / jq（呼び出し元 adj_classify_findings → adj_validate_decisions）
+# 関連  : local-watcher/bin/idd-codex-modules/adjudicator.sh（関数 prefix adj_）
+#         Issue #404 / docs/specs/404-feat-pr-reviewer-codex-advisory-claude-a/
+#           design.md「Data Models」「Components and Interfaces」節
+#
+# プレースホルダ（adj_classify_findings の bash パラメータ置換で展開される）:
+#   {PR}              PR 番号（例: 405）
+#   {SHA}             head sha（40 桁 hex）
+#   {BASE}            base ref（例: main）
+#   {HEAD}            head ref（例: codex/issue-404-impl-...）
+#   {REVIEW_TEXT}     codex stdout の review 本文（PR コメントに投稿された body 全体）
+#   {SPEC_DIR}        docs/specs/<N>-<slug>/ パス。解決不能時は `(none)` を埋める
+#   {REQUIREMENTS_MD} 上記 SPEC_DIR 配下 requirements.md の本文。解決不能時は `(none)`
+#
+# NOTE: placeholder 規約は既存 `pr_default_prompt`（pr-reviewer.sh）の
+#       **単一波括弧 {PR} style** に整合させる（`iteration-prompt.tmpl` の
+#       `{{PR_NUMBER}}` 二重波括弧 style とは別系統。adj は pr-reviewer.sh と
+#       同じ bash パラメータ置換で扱うため）。
+# =============================================================================
+あなたは idd-codex の **PR Reviewer Adjudicator（裁定者）** として起動された Claude です。
+別プロセスの codex が出力した PR レビュー指摘を読み、各指摘を **legitimate（実害）** か
+**excessive（過剰）** に分類してください。あなたの分類結果に基づいて、`codex-needs-iteration`
+ラベルの付与/解消と `claude-review` commit status の publish が確定します。
+
+## 対象 PR
+
+- Repo  : 環境依存（呼び出し元 watcher の `$REPO`）
+- Number: #{PR}
+- SHA   : {SHA}
+- Base  : {BASE}
+- Head  : {HEAD}
+- Spec  : {SPEC_DIR}
+
+## codex が出力した review 本文（{REVIEW_TEXT}）
+
+下記は PR コメントに投稿された codex の出力本文そのままです。`## 指摘事項` 見出し配下の
+各 bullet 行が分類対象です。
+
+```text
+{REVIEW_TEXT}
+```
+
+### 指摘の入力書式と id 採番規約
+
+codex の `## 指摘事項` 配下の bullet 行は以下の書式で並びます:
+
+```
+- [high|medium|low] <file>:<line> — <内容と根拠>
+```
+
+各 bullet 行を **登場順に id=1, 2, 3, ... と採番** し、後述 JSON 出力の `decisions[].id`
+として使ってください（adjudicator.sh 側の parse 結果に依存せず、本プロンプト内での
+独立採番です）。
+
+「指摘なし」または `## 指摘事項` セクションが空の場合は `decisions: []` と
+`summary.total: 0` の JSON を返してください。
+
+## requirements.md（spec の AC ソース）
+
+下記は分類判定の根拠となる受入基準（AC）本文です。`{SPEC_DIR}` が `(none)` または
+spec 不在の PR では `(none)` が埋められます。その場合は AC 紐付け不能として「迷ったら
+legitimate」原則（後述）を適用してください。
+
+```markdown
+{REQUIREMENTS_MD}
+```
+
+## 分類基準（必読）
+
+各指摘について以下の基準を順に評価し、**いずれか 1 つでも当てはまれば legitimate**、
+どれにも当てはまらず後述「excessive 候補」のいずれかに該当すれば **excessive** と
+判定してください。
+
+### legitimate と判定するシグナル（いずれか 1 つで充足）
+
+- **(a) requirements.md の AC 直結**: 指摘内容が requirements.md の numeric 階層 ID
+  （例: 1.1 / 2.3）の AC と直接対応している（AC の本文・shall 句・トリガー条件のいずれかに
+  対応関係が読み取れる）
+- **(b) design.md の Components or Interfaces 直結**: 指摘内容が design.md の
+  Components and Interfaces / File Structure Plan で定義された責務・契約・関数シグネチャ
+  と直接対応している（design.md は本プロンプトに inline 添付されないため、judgement は
+  指摘本文と REVIEW_TEXT の文脈から行う）
+- **(c) 後方互換破壊**: 既存 env var 名・既存ラベル名・既存 commit status context 名・
+  既存 exit code・既存ログ書式・既存 CLI コマンドの意味変更を指す（CLAUDE.md「禁止事項」と
+  整合）
+- **(d) security 退行**: 入力検証の不備・コマンドインジェクション・機密情報露出・jq の
+  inline 展開・git/gh への `--` 不在・shell metachar の未エスケープ等を指す（CLAUDE.md
+  「機能追加ガイドライン §5 未信頼 GitHub 入力の取り扱い」と整合）
+
+### excessive 候補と判定するシグナル
+
+上記 legitimate のどれにも該当せず、かつ以下のいずれかに該当する場合:
+
+- **(a) AC に紐付かない**: requirements.md のどの numeric ID にも結び付かない指摘
+  （spec 範囲外の「あったほうが良い」改善提案）
+- **(b) spec 外の追加要求**: design.md の責務境界（Boundary）を越える追加機能・追加抽象化・
+  投機的リファクタの要求
+- **(c) 同一観点の重複**: 同じ観点・同じ根拠の指摘が既に別 id で挙がっており、本指摘は
+  繰り返しに過ぎない（重複は別 finding として excessive 判定する。集約はしない）
+- **(d) 主観的 / スタイル寄り**: 命名の好み・コメント文体・lint レベルの体裁指摘
+  （CLAUDE.md「スタイル / lint 観点では reject しない」既存 Reviewer 規約と整合）
+
+### 「迷ったら legitimate」の保守的判定原則（最重要）
+
+確信が持てない場合は **必ず legitimate を選んでください**。adjudicator の誤分類は
+「実害指摘の見落とし（excessive 誤判定 → 反復から除外 → merge 後にバグ発覚）」が
+最悪のシナリオです。逆に legitimate 過判定は反復 round が 1 つ増えるだけで実害は軽微です。
+保守的に判定してください。
+
+## 全指摘に 1:1 対応する義務
+
+`## 指摘事項` 配下のすべての bullet 行に対して **1 件の decision を必ず返してください**。
+集約・併合・無視は禁止です（重複は重複として個別に excessive 判定 / 上記「分類基準
+excessive 候補 (c)」参照）。
+
+reason フィールドは **日本語の自然言語、200 文字以内** で、判定根拠（どの AC / どの
+Component / どの security 観点を根拠としたか）を簡潔に書いてください。
+
+## read-only 制約（厳守）
+
+あなたは **read-only の裁定者** です。以下を厳守してください:
+
+- **ファイルを編集しないこと**（read-only）。**Bash / Edit / Write ツールを使わないこと**
+- 既存リポジトリの読み取り（`Read` ツール等）は可、ただし副作用なし
+- `git` / `gh` 等の状態変更コマンドを呼び出さないこと
+- **JSON 出力以外を末尾に付けないこと**（leading / trailing の散文・前置き・後置き・
+  説明・補足コメントはすべて禁止）
+- 出力本文を **コードフェンス（```）で囲まないこと**（`--output-format json` 経由で
+  raw JSON を期待する側がフェンスを再 strip しないため）
+
+## 出力契約（厳守 / design.md「Data Models」と byte 一致するスキーマ）
+
+出力本文の **最後（かつ唯一）** に以下のスキーマに準拠する JSON を 1 つだけ出力してください。
+
+```json
+{
+  "decisions": [
+    {
+      "id": 1,
+      "severity": "high|medium|low",
+      "file": "path/to/file.ext",
+      "line": 42,
+      "verdict": "legitimate" | "excessive",
+      "reason": "<日本語の自然言語、200 文字以内>"
+    }
+  ],
+  "summary": {
+    "total": <整数>,
+    "legitimate": <整数>,
+    "excessive": <整数>
+  }
+}
+```
+
+### フィールド契約
+
+- `decisions[]`: `## 指摘事項` の bullet 行 1 件 = 1 要素（順序は入力順を維持）
+- `id`: 1 始まりの連番（本プロンプト内で独立採番。adjudicator.sh の parse 結果に依存しない）
+- `severity`: 入力 bullet 行の `[high|medium|low]` を **そのまま転記**
+- `file`: 入力 bullet 行の `<file>` を **そのまま転記**（path 解釈や正規化はしない）
+- `line`: 入力 bullet 行の `<line>` を **整数で転記**（行番号不明や `0` は `0` を入れる）
+- `verdict`: `"legitimate"` または `"excessive"` のいずれか厳密一致（他の値は禁止）
+- `reason`: 日本語自然言語、**200 文字以内**（超過は禁止）
+- `summary.total`: `decisions[]` の件数
+- `summary.legitimate`: `verdict == "legitimate"` の件数
+- `summary.excessive`: `verdict == "excessive"` の件数（`legitimate + excessive == total`）
+
+### 再強調
+
+- 出力本文に JSON 以外を含めないこと
+- JSON 全体を **コードフェンス（```）で囲まないこと**
+- JSON は妥当な構文（valid JSON / RFC 8259）であること（trailing comma 禁止、シングル
+  クォート禁止）
+
+以上。
