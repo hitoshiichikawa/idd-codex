@@ -532,6 +532,74 @@ esac
 # exec-fail streak（per-PR の {sha, streak}）の永続化先（repo-slug 分離 / failed-recovery と同方針）。
 PR_REVIEWER_EXEC_FAIL_STATE_DIR="${PR_REVIEWER_EXEC_FAIL_STATE_DIR:-$HOME/.idd-codex/pr-reviewer-exec-fail/$REPO_SLUG}"
 
+# ─── PR Reviewer Adjudicator 設定 (#404) ───
+# codex Reviewer の指摘を Claude adjudicator が「legitimate（実害）」と「excessive
+# （過剰指摘）」に分類し、(1) `codex-needs-iteration` 反復を legitimate のみで駆動し、
+# (2) merge ゲートを `codex-review`（advisory）から `claude-review`（必須相当）へシフトする
+# opt-in 機能（Issue #404）。codex の過剰指摘 / nitpick / exec-failed が merge を永久 block
+# する事象を解消する。
+#
+# **完全な opt-in / 既定 OFF**（Req 5.1 / NFR 1.1）。`PR_REVIEWER_ADJUDICATOR_ENABLED=true`
+# 厳密一致以外（未設定 / 空 / `True` / `TRUE` / `1` / typo 等）はすべて `false` に正規化し、
+# 本機能導入前と完全に等価な挙動を保つ（Req 5.2）。gate OFF 時は adjudicator.sh の関数群が
+# 早期 return するため、コメント投稿 / ラベル付与 / commit status publish の既存挙動には
+# 影響を与えない（NFR 2.1 観測ログ diff ゼロ / Req 5.3 既存 env 名・既定値・意味の不変性）。
+#
+# **fallback 既定 `passthrough` の根拠**（Architecture Decision: claude-review publisher
+# contention 参照 / SPOF 緩和）: adjudicator 自身が claude exec 失敗 / rate-limit / timeout
+# 等で publish できなかった場合、`passthrough` は adjudicator 自体を実行しなかったかのように
+# 扱い、既存 2nd gate / 独立 Reviewer の verdict を尊重する。これにより「codex の SPOF を
+# Claude の SPOF に付け替えただけ」の事態を避ける。`legitimate` は claude 失敗を即 block
+# 扱いしたい運用向け明示 opt-out 値（adjudicator 失敗時に全件 legitimate に倒し
+# needs-iteration 維持 + `claude-review = failure` を publish する）。
+#
+# 関数本体は idd-codex-modules/adjudicator.sh、ロガー adj_log / adj_warn / adj_error は
+# core_utils.sh 配置済み。
+PR_REVIEWER_ADJUDICATOR_ENABLED="${PR_REVIEWER_ADJUDICATOR_ENABLED:-false}"
+# 値正規化: `true` 厳密一致のみ通し、それ以外はすべて `false` に固定する（Req 5.1 安全側）。
+case "$PR_REVIEWER_ADJUDICATOR_ENABLED" in
+  true) : ;;
+  *)    PR_REVIEWER_ADJUDICATOR_ENABLED="false" ;;
+esac
+# adjudicator 呼び出しモデル（既存命名規約踏襲）。空文字なら既定。
+PR_REVIEWER_ADJUDICATOR_MODEL="${PR_REVIEWER_ADJUDICATOR_MODEL:-claude-sonnet-4-5}"
+if [ -z "$PR_REVIEWER_ADJUDICATOR_MODEL" ]; then
+  PR_REVIEWER_ADJUDICATOR_MODEL="claude-sonnet-4-5"
+fi
+# claude 実行 timeout 秒。既存 PR_REVIEWER_EXEC_FAIL_LIMIT と同じ case パターンで非数値 /
+# 0 以下を既定 300 に正規化（Req 5.5 既存規約整合）。
+PR_REVIEWER_ADJUDICATOR_EXEC_TIMEOUT="${PR_REVIEWER_ADJUDICATOR_EXEC_TIMEOUT:-300}"
+case "$PR_REVIEWER_ADJUDICATOR_EXEC_TIMEOUT" in
+  ''|*[!0-9]*) PR_REVIEWER_ADJUDICATOR_EXEC_TIMEOUT="300" ;;
+  *)
+    if [ "$PR_REVIEWER_ADJUDICATOR_EXEC_TIMEOUT" -lt 1 ] 2>/dev/null; then
+      PR_REVIEWER_ADJUDICATOR_EXEC_TIMEOUT="300"
+    fi
+    ;;
+esac
+# プロンプトテンプレ override（空なら adjudicator.sh が内蔵 default = idd-codex-adjudicator-prompt.tmpl
+# を解決）。
+PR_REVIEWER_ADJUDICATOR_PROMPT="${PR_REVIEWER_ADJUDICATOR_PROMPT:-}"
+# claude 失敗時 fallback verdict。既定 `passthrough`（adjudicator skip / SPOF 緩和）。
+# `legitimate` / `passthrough` 以外（未設定 / 空 / typo / 大文字違い等）は
+# すべて `passthrough` に正規化する（Req 5.1 安全側 / Architecture Decision: claude-review
+# publisher contention 参照）。
+PR_REVIEWER_ADJUDICATOR_FALLBACK_ON_FAIL="${PR_REVIEWER_ADJUDICATOR_FALLBACK_ON_FAIL:-passthrough}"
+case "$PR_REVIEWER_ADJUDICATOR_FALLBACK_ON_FAIL" in
+  legitimate|passthrough) : ;;
+  *) PR_REVIEWER_ADJUDICATOR_FALLBACK_ON_FAIL="passthrough" ;;
+esac
+# 1 PR あたり処理する指摘数上限（コスト抑制）。非数値 / 0 以下は既定 50 に正規化。
+PR_REVIEWER_ADJUDICATOR_MAX_FINDINGS="${PR_REVIEWER_ADJUDICATOR_MAX_FINDINGS:-50}"
+case "$PR_REVIEWER_ADJUDICATOR_MAX_FINDINGS" in
+  ''|*[!0-9]*) PR_REVIEWER_ADJUDICATOR_MAX_FINDINGS="50" ;;
+  *)
+    if [ "$PR_REVIEWER_ADJUDICATOR_MAX_FINDINGS" -lt 1 ] 2>/dev/null; then
+      PR_REVIEWER_ADJUDICATOR_MAX_FINDINGS="50"
+    fi
+    ;;
+esac
+
 # ─── Design Review Release Processor 設定 (#40) ───
 # 設計 PR が merge された Issue から `codex-awaiting-design-review` ラベルを自動除去し、
 # ステータスコメントを 1 件投稿する。標準機能としてデフォルト有効化（#112）。
@@ -1152,7 +1220,7 @@ IDD_MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)/id
 # 3 プロセッサ（quota-aware / merge-queue / auto-rebase）、#181 Part 3 で切り出した
 # 3 プロセッサ（promote-pipeline / pr-iteration / stage-a-verify）を並べ、末尾に
 # #238 の scaffolding-health.sh と #239 の per-run evidence サマリ（run-summary.sh）を置く。
-REQUIRED_MODULES=( "core_utils.sh" "env-loader.sh" "guard-hook.sh" "quota-aware.sh" "merge-queue.sh" "auto-rebase.sh" "auto-merge.sh" "auto-merge-design.sh" "failed-recovery.sh" "needs-decisions-auto.sh" "slack-notify.sh" "stale-pickup-reaper.sh" "promote-pipeline.sh" "pr-iteration.sh" "pr-reviewer.sh" "stage-a-verify.sh" "scaffolding-health.sh" "context-map.sh" "run-summary.sh" )
+REQUIRED_MODULES=( "core_utils.sh" "env-loader.sh" "guard-hook.sh" "quota-aware.sh" "merge-queue.sh" "auto-rebase.sh" "auto-merge.sh" "auto-merge-design.sh" "failed-recovery.sh" "needs-decisions-auto.sh" "slack-notify.sh" "stale-pickup-reaper.sh" "promote-pipeline.sh" "pr-iteration.sh" "pr-reviewer.sh" "adjudicator.sh" "stage-a-verify.sh" "scaffolding-health.sh" "context-map.sh" "run-summary.sh" )
 for _idd_mod in "${REQUIRED_MODULES[@]}"; do
   _idd_mod_path="$IDD_MODULE_DIR/$_idd_mod"
   if [ ! -f "$_idd_mod_path" ]; then

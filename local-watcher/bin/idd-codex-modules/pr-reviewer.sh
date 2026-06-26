@@ -1523,9 +1523,23 @@ pr_run_review_for_pr() {
   # パイプラインを止めない（best-effort / pr_publish_commit_status が WARN 済み）。
   pr_publish_codex_status "$pr_number" "$sha" "$verdict" "$pr_url" || true
 
+  # Issue #404 / adjudicator hook: codex 結果確定直後に adjudicator を chain する。
+  # gate OFF（PR_REVIEWER_ADJUDICATOR_ENABLED != true）時は adj_run_for_pr 内部で即 return 0
+  # するため完全 no-op（NFR 2.1 / 既存ラベル付与・status publish ロジックは残置）。
+  # gate ON 時は adjudicator が後発で同 (sha, claude-review) を上書き publish する（Req 3.2）。
+  adj_run_for_pr "$pr_number" "$sha" "$review_text" "$pr_url" "$head_ref" \
+    || adj_warn "adj_run_for_pr 想定外の失敗 (pr=#${pr_number} sha=${sha})"
+
   # 2nd gate（claude-review / #108）。toggle OFF（既定）では no-op。同一 SHA を claude で
   # 独立レビューし claude-review status を publish する。best-effort（本体を止めない）。
-  if pr_second_gate_enabled; then
+  #
+  # Issue #404 reconciliation: adjudicator gate ON 時は **adjudicator を claude-review の
+  # 唯一の publisher** とする（single-publisher discipline）。adjudicator が後発で
+  # claude-review を確定 publish するため、#108 2nd gate を同時に走らせると同一 (sha,
+  # claude-review) を二重 publish して race / 上書き競合になる。よって gate ON 時は
+  # 2nd gate を skip し、adjudicator にのみ publish 権を委ねる（gate OFF 時は従来通り #108
+  # 2nd gate が publish する）。
+  if pr_second_gate_enabled && ! adj_gate_enabled; then
     pr_run_claude_second_gate "$pr_number" "$sha" "$head_ref" "$base_ref" "$pr_url" || true
   fi
 

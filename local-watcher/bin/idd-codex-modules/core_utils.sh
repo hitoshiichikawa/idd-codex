@@ -203,6 +203,21 @@ sr_error() {
   echo "[$(date '+%F %T')] [$REPO] stale-pickup-reaper: ERROR: $*" >&2
 }
 
+# PR Reviewer Adjudicator 専用ロガー（識別用 prefix と timestamp 形式を Issue Watcher と揃える）
+# Issue #404 Req 4.4: 既存 `pr_log` / `pi_log` / `sr_log` と同形式の
+# `[YYYY-MM-DD HH:MM:SS] [$REPO] pr-adjudicator:` prefix を用いる。`adj_warn` / `adj_error`
+# は `>&2` に出力（NFR 1.1 観測ログ規約と整合 / 既存ログ stderr/stdout 分離契約を変更しない /
+# Req 5.5）。関数本体は idd-codex-modules/adjudicator.sh に配置。
+adj_log() {
+  echo "[$(date '+%F %T')] [$REPO] pr-adjudicator: $*"
+}
+adj_warn() {
+  echo "[$(date '+%F %T')] [$REPO] pr-adjudicator: WARN: $*" >&2
+}
+adj_error() {
+  echo "[$(date '+%F %T')] [$REPO] pr-adjudicator: ERROR: $*" >&2
+}
+
 # secure tempfile helper（Issue #52 Req 5）
 #
 # prompt / JSON / stderr / quota reset state などを置く一時ファイルを、repo ごとに

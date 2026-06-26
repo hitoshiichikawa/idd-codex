@@ -299,6 +299,38 @@ pi_general_filter_resolved() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# pi_general_filter_excessive: adjudicator が excessive と判定した指摘コメントを除外
+#   入力: stdin に一般コメント JSON 配列
+#   出力: stdout にフィルタ後の JSON 配列
+#   Issue #404 Req 2.4, 2.5, 4.3 / NFR 1.1, NFR 2.2
+#
+#   判定: gate ON (PR_REVIEWER_ADJUDICATOR_ENABLED=true) のときのみ、comment.body 中に
+#         `idd-codex:pr-adjudicator-excessive` を含む HTML hidden marker を持つコメントを
+#         除外する。gate OFF / 未設定 / 不正値 / typo はすべて jq '.' で pass-through
+#         （既存件数挙動を維持 / NFR 1.1）。env 値判定は厳密 `=true` 一致のみで ON とする
+#         （idd-codex-issue-watcher.sh が `case true) ... *) false` 正規化済みの env を渡す
+#         前提に整合 / adj_gate_enabled と同方針）。
+#
+#   設計判断（design.md Components and Interfaces 節）:
+#     - gate 判定を本関数内で完結させ、呼び出し元（pi_collect_general_comments）からは
+#       無条件で chain に挿入する形に倒す。これにより gate OFF 時の filter chain も
+#       `self → resolved → excessive → event_style → truncate` の同一構成となり、
+#       サマリ 1 行ログに `filtered_excessive=0` が常時記録される（観測可能性 / Req 4.4）
+#     - 既存 pi_general_filter_self は `idd-codex:pr-iteration` prefix のみを対象とする。
+#       `pr-adjudicator-excessive` は前方一致しないため self-filter と衝突しない（Req 4.3 /
+#       NFR 1.2）。adjudicator 側 summary marker `idd-codex:pr-adjudicator sha=...` も
+#       `pr-adjudicator-excessive` を substring に持たないため本関数を素通りする
+#       （summary は iteration agent への情報として keep）。
+# ─────────────────────────────────────────────────────────────────────────────
+pi_general_filter_excessive() {
+  if [ "${PR_REVIEWER_ADJUDICATOR_ENABLED:-false}" = "true" ]; then
+    jq '[.[] | select((.body // "") | contains("idd-codex:pr-adjudicator-excessive") | not)]'
+  else
+    jq '.'
+  fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # pi_general_filter_event_style: GitHub system 由来の event-style コメントを除外
 #   入力: stdin に一般コメント JSON 配列
 #   出力: stdout にフィルタ後の JSON 配列
@@ -398,8 +430,11 @@ pi_collect_general_comments() {
   last_run=$(pi_read_last_run "$pr_body")
 
   # 4. フィルタを順次適用しながら各段の length を測定
-  #    順序: self → resolved → event_style → truncate
-  local after_self after_resolved after_event final
+  #    順序: self → resolved → excessive → event_style → truncate
+  #    Issue #404: adjudicator が excessive と判定した指摘コメントを除外する excessive 段を
+  #    resolved の直後 / event_style の前に挿入。gate OFF 時は内部で pass-through するため
+  #    既存件数挙動には影響しない（NFR 1.1）。
+  local after_self after_resolved after_excessive after_event final
   local filter_event_input
 
   # event_style filter は射影段で残した _meta_user_type を user.type の代理として使う
@@ -420,8 +455,17 @@ pi_collect_general_comments() {
   local count_resolved
   count_resolved=$(echo "$after_resolved" | jq 'length' 2>/dev/null || echo "0")
 
+  # Issue #404: excessive フィルタ（gate ON 時のみ marker 除外、OFF 時 pass-through）
+  if ! after_excessive=$(echo "$after_resolved" | pi_general_filter_excessive 2>/dev/null); then
+    pi_warn "PR #${pr_number}: excessive フィルタに失敗、空配列で続行"
+    echo "[]"
+    return 0
+  fi
+  local count_excessive
+  count_excessive=$(echo "$after_excessive" | jq 'length' 2>/dev/null || echo "0")
+
   # event_style フィルタは _meta_user_type を user.type 相当に詰め直してから判定する
-  filter_event_input=$(echo "$after_resolved" | jq '[.[] | . + {user: {type: ._meta_user_type, login: (.user)}}]' 2>/dev/null || echo "[]")
+  filter_event_input=$(echo "$after_excessive" | jq '[.[] | . + {user: {type: ._meta_user_type, login: (.user)}}]' 2>/dev/null || echo "[]")
   if ! after_event=$(echo "$filter_event_input" | pi_general_filter_event_style 2>/dev/null); then
     pi_warn "PR #${pr_number}: event-style フィルタに失敗、空配列で続行"
     echo "[]"
@@ -441,18 +485,22 @@ pi_collect_general_comments() {
   count_final=$(echo "$final" | jq 'length' 2>/dev/null || echo "0")
 
   # 5. サマリ 1 行ログ
-  local filtered_self filtered_resolved filtered_event truncated
+  # Issue #404: filtered_excessive を filtered_resolved と filtered_event の間に追加。
+  # gate OFF 時は pi_general_filter_excessive が pass-through するため filtered_excessive=0 と
+  # なり、観測者が「gate が無効か機能してないか」をログ 1 行で確認できる（Req 4.4 観測可能性）。
+  local filtered_self filtered_resolved filtered_excessive filtered_event truncated
   filtered_self=$((fetched - count_self))
   filtered_resolved=$((count_self - count_resolved))
-  filtered_event=$((count_resolved - count_event))
+  filtered_excessive=$((count_resolved - count_excessive))
+  filtered_event=$((count_excessive - count_event))
   truncated=$((count_event - count_final))
 
   # サマリは stderr に出力する（本関数の stdout は JSON 配列に予約されているため）。
   # pi_warn は元々 stderr 直行、pi_log は stdout のため明示的に >&2 で逃がす。
   if [ "$truncated" -gt 0 ]; then
-    pi_warn "PR #${pr_number} general comments: fetched=${fetched}, filtered_self=${filtered_self}, filtered_resolved=${filtered_resolved}, filtered_event=${filtered_event}, truncated=${truncated} (limit=${limit}), final=${count_final}"
+    pi_warn "PR #${pr_number} general comments: fetched=${fetched}, filtered_self=${filtered_self}, filtered_resolved=${filtered_resolved}, filtered_excessive=${filtered_excessive}, filtered_event=${filtered_event}, truncated=${truncated} (limit=${limit}), final=${count_final}"
   else
-    pi_log "PR #${pr_number} general comments: fetched=${fetched}, filtered_self=${filtered_self}, filtered_resolved=${filtered_resolved}, filtered_event=${filtered_event}, truncated=0, final=${count_final}" >&2
+    pi_log "PR #${pr_number} general comments: fetched=${fetched}, filtered_self=${filtered_self}, filtered_resolved=${filtered_resolved}, filtered_excessive=${filtered_excessive}, filtered_event=${filtered_event}, truncated=0, final=${count_final}" >&2
   fi
 
   echo "$final"
