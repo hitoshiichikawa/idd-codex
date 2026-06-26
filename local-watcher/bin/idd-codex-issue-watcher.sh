@@ -519,6 +519,18 @@ esac
 PR_REVIEWER_CLAUDE_CMD="${PR_REVIEWER_CLAUDE_CMD:-claude -p \"\$(cat '{PROMPT_FILE}')\"}"
 # claude の認証チェックコマンド（終了コード 0 で OK、空文字なら check skip）。
 PR_REVIEWER_CLAUDE_AUTH_CMD="${PR_REVIEWER_CLAUDE_AUTH_CMD:-}"
+# Issue #403 移植: 同一 sha で外部レビューツール（codex 等）の exec が連続失敗した回数の上限。
+# 到達すると当該 sha への外部レビュー呼び出しを抑止する（exec-failed の無限リトライが
+# rate-limit を持続させる事故を防ぐ）。新規 commit を push して sha が変わると streak は reset
+# され自動再開。非整数 / 0 以下は 3。`999999` 等の大値で従来（無制限リトライ）に戻せる。
+# quota（reset epoch 解析可）は既存 pr_handle_quota_wait 経路で別処理されるため streak に数えない。
+PR_REVIEWER_EXEC_FAIL_LIMIT="${PR_REVIEWER_EXEC_FAIL_LIMIT:-3}"
+case "$PR_REVIEWER_EXEC_FAIL_LIMIT" in
+  ''|*[!0-9]*) PR_REVIEWER_EXEC_FAIL_LIMIT=3 ;;
+  *) [ "$PR_REVIEWER_EXEC_FAIL_LIMIT" -le 0 ] && PR_REVIEWER_EXEC_FAIL_LIMIT=3 ;;
+esac
+# exec-fail streak（per-PR の {sha, streak}）の永続化先（repo-slug 分離 / failed-recovery と同方針）。
+PR_REVIEWER_EXEC_FAIL_STATE_DIR="${PR_REVIEWER_EXEC_FAIL_STATE_DIR:-$HOME/.idd-codex/pr-reviewer-exec-fail/$REPO_SLUG}"
 
 # ─── Design Review Release Processor 設定 (#40) ───
 # 設計 PR が merge された Issue から `codex-awaiting-design-review` ラベルを自動除去し、
