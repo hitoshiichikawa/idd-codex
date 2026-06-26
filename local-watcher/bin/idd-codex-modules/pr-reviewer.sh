@@ -687,6 +687,73 @@ pr_post_error_comment() {
   return 0
 }
 
+# ═════════════════════════════════════════════════════════════════════════════
+# Issue #403 移植: 同一 sha の連続 exec 失敗 streak を per-PR JSON に永続化し、上限到達で
+#   外部レビューツール呼び出しを抑止する（codex exec-failed の無限リトライが rate-limit を
+#   持続させる事故を防ぐ）。state は repo-slug 分離（failed-recovery と同方針）。新 sha では
+#   streak が reset されるため push でレビュー自動再開。quota（reset epoch 解析可）は既存
+#   pr_handle_quota_wait 経路で別処理されるため streak には数えない（呼び出し側で increment を
+#   quota 分岐より後の non-quota 失敗経路のみに置く）。
+# ═════════════════════════════════════════════════════════════════════════════
+
+# pr_exec_fail_state_path: per-PR の exec-fail streak state JSON 絶対パス（純粋関数）
+pr_exec_fail_state_path() {
+  printf '%s/pr-%s.json\n' "$PR_REVIEWER_EXEC_FAIL_STATE_DIR" "$1"
+}
+
+# pr_read_exec_fail_streak: 現 sha に対応する連続失敗数を返す（sha 不一致 / 不在 / 破損は 0）
+#   入力: $1=pr_number $2=sha / 出力: stdout に整数（fail-open）
+pr_read_exec_fail_streak() {
+  local pr_number="$1" sha="$2" path val
+  path="$(pr_exec_fail_state_path "$pr_number")"
+  if [ ! -f "$path" ]; then printf '0'; return 0; fi
+  val=$(jq -r --arg s "$sha" 'if (.sha // "") == $s then (.streak // 0) else 0 end' "$path" 2>/dev/null)
+  [[ "$val" =~ ^[0-9]+$ ]] || val=0
+  printf '%s' "$val"
+  return 0
+}
+
+# pr_record_exec_fail: 現 sha の連続失敗数を +1（sha 変化時は 1 にリセット）して atomic 永続化
+#   入力: $1=pr_number $2=sha / 出力: stdout に新 streak / 戻り値: 0（永続化失敗でも継続）
+pr_record_exec_fail() {
+  local pr_number="$1" sha="$2" path prev new tmp
+  path="$(pr_exec_fail_state_path "$pr_number")"
+  prev="$(pr_read_exec_fail_streak "$pr_number" "$sha")"
+  new=$((prev + 1))
+  if ! mkdir -p "$PR_REVIEWER_EXEC_FAIL_STATE_DIR" 2>/dev/null; then
+    pr_warn "PR #${pr_number}: exec-fail state dir 作成に失敗（streak 抑止が効かない可能性）"
+    printf '%s' "$new"; return 0
+  fi
+  tmp="$(idd_secure_mktemp "pr-exec-fail-${pr_number}" 2>/dev/null || true)"
+  if [ -n "$tmp" ] \
+      && jq -nc --arg s "$sha" --argjson n "$new" '{sha:$s, streak:$n}' > "$tmp" 2>/dev/null \
+      && mv -f "$tmp" "$path" 2>/dev/null; then
+    :
+  else
+    [ -n "$tmp" ] && rm -f "$tmp" 2>/dev/null || true
+    pr_warn "PR #${pr_number}: exec-fail streak の永続化に失敗（次サイクルで再評価）"
+  fi
+  printf '%s' "$new"
+  return 0
+}
+
+# pr_reset_exec_fail: レビュー成功時に streak state を消去（best-effort / 戻り値 0）
+pr_reset_exec_fail() {
+  local path
+  path="$(pr_exec_fail_state_path "$1")"
+  if [ -f "$path" ]; then rm -f "$path" 2>/dev/null || true; fi
+  return 0
+}
+
+# pr_exec_fail_limit_reached: 現 sha の連続失敗が PR_REVIEWER_EXEC_FAIL_LIMIT に達したか
+#   入力: $1=pr_number $2=sha / 戻り値: 0 = 到達（抑止）/ 1 = 未達
+pr_exec_fail_limit_reached() {
+  local pr_number="$1" sha="$2" streak
+  streak="$(pr_read_exec_fail_streak "$pr_number" "$sha")"
+  [ "$streak" -ge "$PR_REVIEWER_EXEC_FAIL_LIMIT" ] 2>/dev/null || return 1
+  return 0
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # pr_detect_usage_limit_reset_epoch: review command の stdout/stderr から usage-limit reset を抽出
 #   入力: 任意個の log file path
@@ -1293,6 +1360,19 @@ pr_run_review_for_pr() {
     return 2
   fi
 
+  # #403 移植: 同一 sha の連続 exec 失敗が上限に達したら外部レビューツール呼び出しを抑止
+  # （無限リトライによる rate-limit 持続を防ぐ）。新規 commit を push して sha が変われば
+  # streak は reset され自動再開。エスカレーションコメントは 1 回のみ（kind 重複防止）・ラベルは付与しない。
+  if pr_exec_fail_limit_reached "$pr_number" "$sha"; then
+    local _ef_streak
+    _ef_streak="$(pr_read_exec_fail_streak "$pr_number" "$sha")"
+    pr_post_error_comment "$pr_number" "$sha" "exec-fail-escalated" \
+      "レビューツール \`${tool}\` の実行が同一 sha で連続失敗（${_ef_streak}/${PR_REVIEWER_EXEC_FAIL_LIMIT} 回）したため、当該 sha への外部レビュー呼び出しを抑止します（rate-limit 持続の防止）。**新規 commit を push** すると自動的にレビューを再開します。ラベルは付与しません（診断は watcher ローカルログ / 既存 diagnostic artifact を参照）。" \
+      "$tool"
+    pr_log "PR #${pr_number}: exec-fail-streak 上限到達 (${_ef_streak}/${PR_REVIEWER_EXEC_FAIL_LIMIT}) tool=${tool} sha=${sha} → 外部レビュー抑止"
+    return 2
+  fi
+
   pr_log "PR #${pr_number}: レビュー着手 tool=${tool} head=${head_ref} base=${base_ref} sha=${sha} (${pr_url})"
 
   # cmd template を tool 別に解決
@@ -1363,6 +1443,7 @@ pr_run_review_for_pr() {
     pr_post_error_comment "$pr_number" "$sha" "workspace-modified" \
       "レビューツール \`${tool}\` の実行がワークツリーを変更しました。read-only 制約に違反するため tracked 変更を破棄しました。ツールの sandbox / read-only 設定（codex は \`--sandbox read-only\`）と \`PR_REVIEWER_*_CMD\` を確認してください。" \
       "$tool"
+    pr_record_exec_fail "$pr_number" "$sha" >/dev/null  # #403: 連続失敗カウント（再現性ある失敗）
     return 3
   fi
 
@@ -1386,6 +1467,7 @@ pr_run_review_for_pr() {
     detail=$(printf 'レビュー実行コマンドが非ゼロ終了しました。詳細は watcher のローカルログまたは診断 artifact を確認してください。\n\n- PR: #%s\n- sha: `%s`\n- tool: `%s`\n- exit: `%s`\n- correlation: `%s`' \
       "$pr_number" "$sha" "$tool" "$exec_rc" "$correlation_token")
     pr_post_error_comment "$pr_number" "$sha" "exec-failed" "$detail" "$tool"
+    pr_record_exec_fail "$pr_number" "$sha" >/dev/null  # #403: non-quota exec 失敗を streak に計上
     return 3
   fi
 
@@ -1409,8 +1491,12 @@ pr_run_review_for_pr() {
     pr_post_error_comment "$pr_number" "$sha" "exec-failed" \
       "レビュー実行は成功しましたが出力が空でした（tool=${tool}）。\`PR_REVIEWER_*_CMD\` / prompt を確認してください。" \
       "$tool"
+    pr_record_exec_fail "$pr_number" "$sha" >/dev/null  # #403: 空出力（再現性ある失敗）を streak に計上
     return 3
   fi
+
+  # #403: レビュー出力を得られた（= exec 成功）→ 連続失敗 streak を消去。
+  pr_reset_exec_fail "$pr_number"
 
   local verdict
   verdict=$(pr_resolve_review_verdict "$pr_number" "$review_text")
