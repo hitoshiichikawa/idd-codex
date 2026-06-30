@@ -7362,10 +7362,10 @@ verify_stagec_pr_or_retry() {
     rc=0
     if [ "$_has_timeout" = "true" ]; then
       pr_url=$(timeout "$_timeout_secs" gh pr list --repo "$REPO" --head "$branch" --state all \
-                --json url --jq '.[0].url // empty' 2>/dev/null) || rc=$?
+                --json html_url --jq '.[0].html_url // empty' 2>/dev/null) || rc=$?
     else
       pr_url=$(gh pr list --repo "$REPO" --head "$branch" --state all \
-                --json url --jq '.[0].url // empty' 2>/dev/null) || rc=$?
+                --json html_url --jq '.[0].html_url // empty' 2>/dev/null) || rc=$?
     fi
 
     if [ "$rc" -eq 0 ] && [ -n "$pr_url" ]; then
