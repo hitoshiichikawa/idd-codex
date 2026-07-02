@@ -1086,9 +1086,11 @@ pp_issue_has_label() {
 
 # pp_pr_issue_candidate_rows: merged PR JSON から staged-for-release 自動付与候補を抽出する。
 # stdout は `<issue_number>\t<source>\t<pr_number>` の 1 行 1 候補。human-readable log は出さない。
-# closing refs は既存互換として managed 判定なしで読むが、body plain reference は managed PR
-# （同一 repo の `codex/issue-<N>-impl-*` branch、または codex/ branch + title issue 表記）
-# に限定して読む。caller 側は fork PR を除外済みだが、本 helper でも same-repo を再確認する。
+# closing refs は既存互換として managed 判定なしで読むが、design PR
+# （`codex/issue-<N>-design-*`）は release staging 対象ではないため全参照を除外する。
+# body plain reference は managed PR（同一 repo の `codex/issue-<N>-impl-*` branch、
+# または codex/ branch + title issue 表記）に限定して読む。caller 側は fork PR を除外済みだが、
+# 本 helper でも same-repo を再確認する。
 pp_pr_issue_candidate_rows() {
   local pr_json="$1"
   local repo_owner="$2"
@@ -1109,9 +1111,11 @@ pp_pr_issue_candidate_rows() {
       and ((.isCrossRepository // false) != true);
     def codex_head:
       ((.headRefName // "") | startswith("codex/"));
+    def design_head:
+      ((.headRefName // "") | test("^codex/issue-[0-9]+-design-"));
     . as $pr
     | ($pr.number // "") as $pr_number
-    | if (same_repo | not) then
+    | if ((same_repo | not) or design_head) then
         empty
       else
         (issue_nums_from_head) as $head_nums
@@ -1173,7 +1177,7 @@ pp_collect_merged_issues() {
   fi
 
   local candidate_rows=""
-  local pr_json pr_number pr_base pr_rows
+  local pr_json pr_number pr_base pr_head design_issue pr_rows
   while IFS= read -r pr_json; do
     [ -n "$pr_json" ] || continue
     pr_number=$(echo "$pr_json" | jq -r '.number // "unknown"' 2>/dev/null || echo "unknown")
@@ -1181,6 +1185,12 @@ pp_collect_merged_issues() {
     # gh pr list --base が主フィルタ。baseRefName が取れる場合のみ二重確認する。
     if [ -n "$pr_base" ] && [ "$pr_base" != "$BASE_BRANCH" ]; then
       pp_warn "pr=#${pr_number} baseRefName=${pr_base} が BASE_BRANCH=${BASE_BRANCH} と一致しないため auto-label skip"
+      continue
+    fi
+    pr_head=$(echo "$pr_json" | jq -r '.headRefName // ""' 2>/dev/null || echo "")
+    if [[ "$pr_head" =~ ^codex/issue-([0-9]+)-design- ]]; then
+      design_issue="${BASH_REMATCH[1]}"
+      pp_log "pr=#${pr_number} issue=#${design_issue} headRefName=${pr_head} design-pr auto-label skip" >&2
       continue
     fi
     if ! pr_rows=$(pp_pr_issue_candidate_rows "$pr_json" "$repo_owner"); then

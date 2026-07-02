@@ -62,6 +62,18 @@ assert_not_contains() {
   fi
 }
 
+assert_not_line() {
+  local label="$1" needle="$2" haystack="$3"
+  if grep -Fxq -- "$needle" <<< "$haystack"; then
+    echo "FAIL: $label"
+    echo "  unexpected line: $(printf '%q' "$needle")"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  else
+    echo "PASS: $label"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  fi
+}
+
 assert_success() {
   local label="$1"
   shift
@@ -173,6 +185,19 @@ merged_prs_json() {
     "closingIssuesReferences":[],
     "mergedAt":"2026-06-05T00:00:00Z",
     "updatedAt":"2026-06-05T00:00:00Z"
+  },
+  {
+    "number":106,
+    "headRepositoryOwner":{"login":"owner"},
+    "isCrossRepository":false,
+    "headRefName":"codex/issue-5-design-home-screen",
+    "baseRefName":"develop",
+    "title":"design(#5): home screen",
+    "body":"Refs #5",
+    "mergeCommit":{"oid":"sha106"},
+    "closingIssuesReferences":[{"number":5}],
+    "mergedAt":"2026-06-06T00:00:00Z",
+    "updatedAt":"2026-06-06T00:00:00Z"
   }
 ]
 EOF_JSON
@@ -328,6 +353,17 @@ fork_rows=$(pp_pr_issue_candidate_rows '{
 }' "owner")
 assert_eq "fork PR is excluded" "" "$fork_rows"
 
+design_rows=$(pp_pr_issue_candidate_rows '{
+  "number":106,
+  "headRepositoryOwner":{"login":"owner"},
+  "isCrossRepository":false,
+  "headRefName":"codex/issue-5-design-home-screen",
+  "title":"design(#5): home screen",
+  "body":"Refs #5",
+  "closingIssuesReferences":[{"number":5}]
+}' "owner")
+assert_eq "design PR references are excluded from auto-label candidates" "" "$design_rows"
+
 echo "--- promote auto-label collection ---"
 
 promote_err="$TMPROOT/promote.err"
@@ -335,11 +371,13 @@ promote_out="$(pp_collect_merged_issues 2>"$promote_err")"
 assert_eq "promote stdout lists staged issues only" $'18\n20\n21\n24\n25' "$promote_out"
 edit_log=$(sort -n "$EDIT_LOG")
 assert_eq "auto-label edits skip already-labeled issue" $'18\n20\n24\n25' "$edit_log"
+assert_not_line "design PR is not auto-labeled" "5" "$edit_log"
 assert_not_contains "unmanaged plain reference is not auto-labeled" "22" "$edit_log"
 assert_not_contains "fork PR is not auto-labeled" "23" "$edit_log"
 promote_log="$(cat "$promote_err")"
 assert_contains "auto-label log reports managed head/title sources" "resolver_sources=head,title" "$promote_log"
 assert_contains "auto-label log reports managed body source" "resolver_sources=body-plain" "$promote_log"
+assert_contains "auto-label log reports design PR skip" "pr=#106 issue=#5 headRefName=codex/issue-5-design-home-screen design-pr auto-label skip" "$promote_log"
 
 echo "--- promote merge SHA resolver ---"
 
@@ -370,6 +408,8 @@ assert_contains "README documents multi-branch Refs exception" \
   "multi-branch / Gitflow 例外" "$readme_text"
 assert_contains "README documents managed PR no-closing resolver" \
   "GitHub closing keyword だけに依存せず" "$readme_text"
+assert_contains "README documents design PR auto-label exclusion" \
+  "設計 PR merge は対象外" "$readme_text"
 
 echo ""
 echo "==========================================="

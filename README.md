@@ -1239,7 +1239,7 @@ Out of Scope だったが、**[Phase B Promote Pipeline (#15)](#promote-pipeline
 
 | 前ラベル | トリガー | 後ラベル | 副作用 |
 |---|---|---|---|
-| なし | Phase A の `BASE_BRANCH` merge | + `codex-staged-for-release` | 自動付与（人間付与 #100 と同一ラベルを共有） |
+| なし | Phase A の実装 PR `BASE_BRANCH` merge | + `codex-staged-for-release` | 自動付与（人間付与 #100 と同一ラベルを共有）。`codex/issue-<N>-design-*` の設計 PR merge は対象外 |
 | + `codex-staged-for-release`（既付与） | 自動付与 attempt | 変更なし | 重複付与抑止（Req 2.1.3） |
 | + `codex-staged-for-release` | ST = success（PROMOTE_MODE != on-demand） | − `codex-staged-for-release` | promote 候補集合へ |
 | + `codex-staged-for-release` | ST = success（PROMOTE_MODE = on-demand） | 変更なし | 人間トリガー待ち（Req 3.2.5） |
@@ -1913,6 +1913,7 @@ Phase A により `BASE_BRANCH` に merge された変更を System Test（ST）
 - `BASE_BRANCH != PROMOTION_TARGET_BRANCH` の 2-branch model リポジトリのみ
 - single-branch（`BASE_BRANCH` 未設定 = `main` のみ）リポジトリでは no-op
 - fork PR は自動 promote / 自動 revert 対象から除外（NFR 2.4）
+- `codex/issue-<N>-design-*` の設計 PR merge は `codex-staged-for-release` 自動付与対象から除外
 - unmanaged PR の body plain reference だけでは `codex-staged-for-release` 自動付与対象にしない
 
 ### タイミング
@@ -1973,6 +1974,7 @@ Phase B の判断・操作結果は `[$REPO] promote-pipeline:` prefix と以下
 |---|---|
 | `promote-pipeline: サマリ:` | サイクル終了時のサマリ行 |
 | `issue=#N action=label-add label=codex-staged-for-release source=auto resolver_sources=... prs=...` | 自動付与（Req 2.1.1）。`resolver_sources` は `closing-ref` / `head` / `title` / `body-plain` 等 |
+| `pr=#N issue=#M headRefName=codex/issue-M-design-... design-pr auto-label skip` | 設計 PR merge の自動付与除外 |
 | `issue=#N ST=success action=label-remove+promote-queued` | ST success による除去 |
 | `issue=#N ST=success mode=on-demand action=hold-label-await-human-trigger` | on-demand mode の hold |
 | `issue=#N ST=failure action=revert+label-add+label-remove+reopen+comment` | ST failure による revert |
