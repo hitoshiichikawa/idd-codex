@@ -66,6 +66,22 @@ repo は従来どおりブロック優先で、ブロックが無い場合のみ
 | 5.4 | `stage_a_verify_sandbox_boundary_test.sh`, `stage_a_verify_round1_defer_test.sh`, `stage_a_verify_ios_boundary_test.sh` case5 | regression test suite | command resolution / round / sandbox flows | テスト成功 | `xcodebuild` heuristic 追加も検証 |
 | 5.5 | changed shell scripts | shellcheck | warning-level shellcheck | `shellcheck --severity=warning ...` 成功 | 変更起因 warning なし |
 
+## Reviewer Round 1 是正
+
+### Finding Closure Matrix
+
+| Target requirement | Category | Required Action | Fix commit | Test/assertion | Verification result | Notes / no-change reason |
+|--------------------|----------|-----------------|------------|----------------|---------------------|--------------------------|
+| `boundary:docs/specs/130-stage-a-verify-sandbox-ios-simulator/tasks.md` | boundary 逸脱 | `tasks.md` を追加し、各実装タスクに `_Requirements:_` と `_Boundary:_` を明記する。今回変更した production code、test、README が該当タスクの境界内に含まれる状態にする。 | `docs(spec): Stage A Verifyのtasks境界を追加` | `tasks.md` の `Boundary Components` と各 task の `_Boundary:_` / `_Requirements:_` | `bash -n ...`、主要 Stage A Verify テスト、warning-level `shellcheck` を再実行して成功 | code/test 差分なし。Reviewer が確認済みの AC 実装に対し、欠落していた境界照合 artifact を追加した。 |
+
+### 是正内容
+
+`docs/specs/130-stage-a-verify-sandbox-ios-simulator/tasks.md` を追加し、既存差分を
+`StageAVerifyModule`、`WatcherEnvConfig`、`StageAVerifyRegressionTests`、
+`StageAVerifyOperatorDocs` の 4 境界へ対応付けた。各 task は対応 AC を `_Requirements:_` に、
+許可境界を `_Boundary:_` に明記し、Reviewer が production code、test、README の差分を task scope
+へ照合できる状態にした。
+
 ## 確認事項
 
 - なし。
