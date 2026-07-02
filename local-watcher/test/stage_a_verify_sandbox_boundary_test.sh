@@ -96,6 +96,7 @@ setup_case() {
   export STAGE_A_VERIFY_TIMEOUT="5"
   export STAGE_A_VERIFY_COMMAND=""
   export STAGE_A_VERIFY_SANDBOX_PROFILE=":workspace"
+  export STAGE_A_VERIFY_EXECUTION_BOUNDARY="codex-sandbox"
   export STAGE_A_VERIFY_STATE_DIR="$TMP_ROOT/$name/state"
 
   CODEX_BIN="$TMP_ROOT/$name/fake-codex"
