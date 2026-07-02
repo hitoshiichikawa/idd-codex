@@ -92,6 +92,23 @@ _sav_sandbox_profile_is_forbidden() {
   esac
 }
 
+# ─── _sav_repo_execution_boundary ───
+#
+# repository 由来 verify（structured-block / heuristic）の実行境界を返す。
+# 既定は従来どおり codex sandbox。`host` 完全一致時のみ operator opt-in として
+# watcher / cron ユーザー権限の直接実行を許可する。typo / 大文字違い / 空文字は
+# sandbox 側に倒し、tasks.md 由来コマンドが暗黙に host 権限へ fallback しないようにする。
+_sav_repo_execution_boundary() {
+  case "${STAGE_A_VERIFY_EXECUTION_BOUNDARY:-codex-sandbox}" in
+    host) printf '%s\n' "host" ;;
+    codex-sandbox|sandbox|"") printf '%s\n' "codex-sandbox" ;;
+    *)
+      sav_warn "execution boundary unknown value=${STAGE_A_VERIFY_EXECUTION_BOUNDARY:-} fallback=codex-sandbox"
+      printf '%s\n' "codex-sandbox"
+      ;;
+  esac
+}
+
 # ─── _sav_run_repo_command_in_codex_sandbox ───
 #
 # `tasks.md` 由来の verify コマンドを Codex CLI の sandbox runner 内で実行する。親 watcher は
@@ -117,6 +134,76 @@ _sav_run_repo_command_in_codex_sandbox() {
   # 確実に回収する（#377 F5）。stdout/stderr は呼び出し側 redirect を継承。
   _sav_exec_with_timeout "$timeout_sec" "${STAGE_A_VERIFY_KILL_AFTER:-10}" \
     "${CODEX_BIN:-codex}" sandbox -P "$profile" -C "$REPO_DIR" -- bash -c "$cmd"
+}
+
+# ─── _sav_run_repo_command_on_host ───
+#
+# operator が `STAGE_A_VERIFY_EXECUTION_BOUNDARY=host` を明示した場合だけ使う、repository
+# 由来 verify の host 実行経路。iOS Simulator / Xcode のように codex sandbox から host service
+# や CoreSimulator log 領域へ到達できない repo 向けの opt-in escape hatch であり、gate 全体の
+# 無効化（STAGE_A_VERIFY_ENABLED=false）とは独立して verify 自体は継続する。
+_sav_run_repo_command_on_host() {
+  local cmd="$1"
+  local timeout_sec="$2"
+
+  sav_warn "host EXEC boundary=host reason=operator-opt-in env=STAGE_A_VERIFY_EXECUTION_BOUNDARY"
+  _sav_exec_with_timeout "$timeout_sec" "${STAGE_A_VERIFY_KILL_AFTER:-10}" \
+    bash -c "cd \"$REPO_DIR\" && $cmd"
+}
+
+# ─── iOS Simulator / CoreSimulator boundary diagnostics ───
+#
+# Stage A Verify の実行境界が原因で xcodebuild の destination 検出が失敗した場合に、
+# verify command の exit code とは別の operator-visible 診断を出す。通常シェルで
+# destination が見えるかどうかは watcher から安全に判定しないため、該当前提を満たす場合の
+# recovery hint として明示する。
+_sav_cmd_uses_ios_simulator() {
+  local cmd="$1"
+  case "$cmd" in
+    *xcodebuild*"platform=iOS Simulator"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+_sav_output_has_coresim_connection_failure() {
+  grep -qF "CoreSimulatorService connection became invalid" "$1"
+}
+
+_sav_output_has_coresim_permission_failure() {
+  local output_file="$1"
+  grep -qF "Operation not permitted" "$output_file" && \
+    grep -Eq "CoreSimulator|CoreSimulatorService|com\\.apple\\.dt\\.xcodebuild" "$output_file"
+}
+
+_sav_output_has_ios_destination_failure() {
+  local output_file="$1"
+  grep -qF "Unable to discover any Simulator runtimes" "$output_file" || \
+    grep -qF "Unable to find a device matching the provided destination specifier" "$output_file"
+}
+
+_sav_emit_ios_simulator_boundary_diagnostics() {
+  local output_file="$1"
+  local cmd="$2"
+  local resolved_source="$3"
+  local boundary="$4"
+  local rc="$5"
+
+  local emitted=0
+  if _sav_output_has_coresim_connection_failure "$output_file"; then
+    sav_warn "DIAGNOSTIC kind=coresimulator-connection boundary=$boundary source=$resolved_source verify_exit=$rc message=CoreSimulatorService-connection-became-invalid"
+    emitted=1
+  fi
+  if _sav_output_has_coresim_permission_failure "$output_file"; then
+    sav_warn "DIAGNOSTIC kind=coresimulator-permission boundary=$boundary source=$resolved_source verify_exit=$rc message=CoreSimulator-log-operation-not-permitted"
+    emitted=1
+  fi
+  if _sav_cmd_uses_ios_simulator "$cmd" && _sav_output_has_ios_destination_failure "$output_file"; then
+    sav_warn "DIAGNOSTIC kind=ios-simulator-destination boundary=$boundary source=$resolved_source verify_exit=$rc message=destination-discovery-failed hint=if-normal-shell-can-see-destination-consider-STAGE_A_VERIFY_EXECUTION_BOUNDARY=host-or-a-Codex-profile-with-CoreSimulator-access"
+    emitted=1
+  fi
+  if [ "$emitted" -eq 1 ]; then
+    sav_warn "DIAGNOSTIC recovery=stage-a-verify-boundary-adjustment gate_opt_out=STAGE_A_VERIFY_ENABLED=false boundary_opt_in=STAGE_A_VERIFY_EXECUTION_BOUNDARY=host"
+  fi
 }
 
 # ─── _sav_cmd_starts_with_keyword ───
@@ -167,6 +254,7 @@ _sav_cmd_starts_with_keyword() {
     "tox "*) return 0 ;;
     "swift test"*) return 0 ;;
     "swift build"*) return 0 ;;
+    "xcodebuild "*) return 0 ;;
   esac
   return 1
 }
@@ -203,8 +291,9 @@ stage_a_verify_extract_command() {
   #   - `shellcheck` / `actionlint` : shell 系プロジェクト（idd-codex 自身を含む）
   #   - `tox ` : Python tox
   #   - `swift test` / `swift build` : Swift
+  #   - `xcodebuild ` : Xcode / iOS Simulator
   local _SAV_KEYWORDS
-  _SAV_KEYWORDS="./gradlew|gradle |mvn |npm test|npm run|npm ci|pnpm |yarn |cargo |go test|go build|go vet|pytest|python -m pytest|python -m unittest|make test|make build|make check|make verify|bundle exec|rake |dotnet test|dotnet build|shellcheck|actionlint|tox |swift test|swift build"
+  _SAV_KEYWORDS="./gradlew|gradle |mvn |npm test|npm run|npm ci|pnpm |yarn |cargo |go test|go build|go vet|pytest|python -m pytest|python -m unittest|make test|make build|make check|make verify|bundle exec|rake |dotnet test|dotnet build|shellcheck|actionlint|tox |swift test|swift build|xcodebuild "
 
   # awk 1 パス走査で「直近で keyword に一致した行」を変数 last に保持し、
   # ファイル末尾まで読んだら最後の保持値を出力する（= 末尾に最も近い 1 行、
@@ -955,18 +1044,39 @@ stage_a_verify_run() {
   # cmd の shell エスケープは printf %q で安全側に倒し、ログ復元性を確保する。
   sav_log "EXEC issue=#${NUMBER:-?} source=${resolved_source:-unknown} timeout=${_timeout}s cmd=$(printf '%q' "$cmd")"
   local rc=0
+  local boundary="operator-direct"
+  local verify_output_file
+  verify_output_file=$(mktemp "${TMPDIR:-/tmp}/stage-a-verify-output.XXXXXX") || {
+    sav_error "temporary verify output file 作成に失敗"
+    local fail_rc=0
+    _sav_handle_source_sidecar_failure "tempfile" || fail_rc=$?
+    return "$fail_rc"
+  }
   if _sav_source_requires_sandbox "$resolved_source"; then
-    # repository 由来 verify は Codex sandbox runner に委譲し、sandbox 確立失敗時も
-    # watcher / cron ユーザーの非 sandbox `bash -c` へ fallback しない（Issue #51 Req 1.2, 1.3）。
-    _sav_run_repo_command_in_codex_sandbox "$cmd" "$_timeout" >> "$LOG" 2>&1 || rc=$?
+    boundary=$(_sav_repo_execution_boundary)
+    if [ "$boundary" = "host" ]; then
+      # operator が明示 opt-in した repo 由来 verify の host 実行経路。未設定 / typo 時は
+      # _sav_repo_execution_boundary が codex-sandbox に倒すため、暗黙 fallback は起きない。
+      _sav_run_repo_command_on_host "$cmd" "$_timeout" >> "$verify_output_file" 2>&1 || rc=$?
+    else
+      # repository 由来 verify は Codex sandbox runner に委譲し、sandbox 確立失敗時も
+      # watcher / cron ユーザーの非 sandbox `bash -c` へ fallback しない（Issue #51 Req 1.2, 1.3）。
+      _sav_run_repo_command_in_codex_sandbox "$cmd" "$_timeout" >> "$verify_output_file" 2>&1 || rc=$?
+    fi
   else
     # operator が明示した STAGE_A_VERIFY_COMMAND は既存 semantics を維持する。
     # cwd は `bash -c "cd ... && $cmd"` で REPO_DIR に隔離（NFR 5.1）。setsid + pgid SIGKILL
     # で暴走と孤児 grandchild を確実に遮断し flock 占有デッドロックを防ぐ（#377 F5 / NFR 5.2）。
     _sav_exec_with_timeout "$_timeout" "${STAGE_A_VERIFY_KILL_AFTER:-10}" \
         bash -c "cd \"$REPO_DIR\" && $cmd" \
-        >> "$LOG" 2>&1 || rc=$?
+        >> "$verify_output_file" 2>&1 || rc=$?
   fi
+  cat "$verify_output_file" >> "$LOG" 2>/dev/null || \
+    sav_warn "verify output log 追記に失敗 path=$verify_output_file log=${LOG:-}"
+  if [ "$rc" -ne 0 ]; then
+    _sav_emit_ios_simulator_boundary_diagnostics "$verify_output_file" "$cmd" "$resolved_source" "$boundary" "$rc"
+  fi
+  rm -f "$verify_output_file" 2>/dev/null || true
 
   # ── 結果分岐 ──
   case "$rc" in

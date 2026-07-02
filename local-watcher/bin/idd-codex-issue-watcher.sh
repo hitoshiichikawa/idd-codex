@@ -678,10 +678,15 @@ STAGE_CHECKPOINT_ENABLED="${STAGE_CHECKPOINT_ENABLED:-true}"
 #                              tasks.md 由来 verify を `codex sandbox` で実行する際の
 #                              permission profile。既定 `:workspace`。`:danger-full-access`
 #                              は repository 由来 verify では拒否する（#51）。
+#   - STAGE_A_VERIFY_EXECUTION_BOUNDARY:
+#                              tasks.md 由来 verify の実行境界。既定 `codex-sandbox`。
+#                              `host` 完全一致時のみ operator opt-in として非 sandbox
+#                              実行する（iOS Simulator / Xcode 等の host service 向け）。
 STAGE_A_VERIFY_ENABLED="${STAGE_A_VERIFY_ENABLED:-true}"
 STAGE_A_VERIFY_TIMEOUT="${STAGE_A_VERIFY_TIMEOUT:-600}"
 STAGE_A_VERIFY_COMMAND="${STAGE_A_VERIFY_COMMAND:-}"
 STAGE_A_VERIFY_SANDBOX_PROFILE="${STAGE_A_VERIFY_SANDBOX_PROFILE:-:workspace}"
+STAGE_A_VERIFY_EXECUTION_BOUNDARY="${STAGE_A_VERIFY_EXECUTION_BOUNDARY:-codex-sandbox}"
 # Issue F5(#377 port): verify cmd timeout 後 SIGTERM→SIGKILL の猶予秒。timeout の
 # `--kill-after` 値。既定 10 は従来ハードコード値と同一（後方互換）。setsid + pgid 全体
 # SIGKILL で孤児 grandchild を確実回収し flock 占有デッドロックを防ぐ（NFR 5.2）。
