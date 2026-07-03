@@ -9,6 +9,7 @@
 # 前提:   auto-merge.sh から am_* 関数、watcher から full_auto_enabled を awk 抽出 → eval。
 
 set -euo pipefail
+# shellcheck disable=SC2034  # eval で抽出した関数が参照する環境変数をこのテスト内で定義する。
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODULE_SH="$SCRIPT_DIR/../bin/idd-codex-modules/auto-merge.sh"
@@ -26,23 +27,31 @@ extract_function() {
   ' "$script"
 }
 
-for fn in am_resolve_gate_enabled am_should_enable_for_pr am_enable_auto_merge_for_pr process_auto_merge; do
+for fn in am_resolve_gate_enabled am_pr_has_label am_resolve_marker_approval_signal \
+  am_resolve_review_approval_signal am_resolve_status_gate_signal \
+  am_resolve_review_gate_for_pr am_should_enable_for_pr am_enable_auto_merge_for_pr \
+  process_auto_merge; do
   # shellcheck disable=SC1090,SC2086
   eval "$(extract_function "$MODULE_SH" "$fn")"
 done
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$WATCHER_SH" "full_auto_enabled")"
 
-for fn in am_resolve_gate_enabled am_should_enable_for_pr am_enable_auto_merge_for_pr process_auto_merge full_auto_enabled; do
+for fn in am_resolve_gate_enabled am_pr_has_label am_resolve_marker_approval_signal \
+  am_resolve_review_approval_signal am_resolve_status_gate_signal \
+  am_resolve_review_gate_for_pr am_should_enable_for_pr am_enable_auto_merge_for_pr \
+  process_auto_merge full_auto_enabled; do
   declare -F "$fn" >/dev/null || { echo "ERROR: $fn not loaded" >&2; exit 2; }
 done
 
 # ─── 環境 / stub ───
-REPO="owner/repo"
+export REPO="owner/repo"
 LABEL_READY="codex-ready-for-review"; LABEL_FAILED="codex-failed"; LABEL_NEEDS_DECISIONS="codex-needs-decisions"
-AUTO_MERGE_MAX_PRS=10; AUTO_MERGE_GIT_TIMEOUT=5; AUTO_MERGE_HEAD_PATTERN='^codex/issue-.*-impl'
+LABEL_NEEDS_ITERATION="codex-needs-iteration"; LABEL_NEEDS_REBASE="codex-needs-rebase"
+export AUTO_MERGE_MAX_PRS=10; export AUTO_MERGE_GIT_TIMEOUT=5; export AUTO_MERGE_HEAD_PATTERN='^codex/issue-.*-impl'
 SHA40="$(printf 'a%.0s' {1..40})"
-GH_CALL_LOG=""; LOG_FILE=""; GH_PR_LIST_RESPONSE="[]"; GH_PR_MERGE_RC=0; GH_PR_MERGE_STDERR=""
+OLD_SHA40="$(printf 'b%.0s' {1..40})"
+GH_CALL_LOG=""; LOG_FILE=""; GH_PR_LIST_RESPONSE="[]"; GH_COMMENTS_RESPONSE="[]"; GH_API_RC=0; GH_PR_MERGE_RC=0; GH_PR_MERGE_STDERR=""
 
 timeout() { shift; "$@"; }
 gh() {
@@ -50,6 +59,7 @@ gh() {
   case "$1 $2" in
     "pr list") printf '%s' "$GH_PR_LIST_RESPONSE" ;;
     "pr merge") [ -n "$GH_PR_MERGE_STDERR" ] && printf '%s' "$GH_PR_MERGE_STDERR" >&2; return "$GH_PR_MERGE_RC" ;;
+    "api /repos/"*) [ "$GH_API_RC" -ne 0 ] && return "$GH_API_RC"; printf '%s' "$GH_COMMENTS_RESPONSE" ;;
   esac
   return 0
 }
@@ -58,7 +68,7 @@ am_warn() { printf 'WARN %s\n' "$*" >>"$LOG_FILE"; }
 am_error(){ printf 'ERR %s\n'  "$*" >>"$LOG_FILE"; }
 idd_secure_mktemp() { mktemp -t "idd-codex-test-${1:-x}.XXXXXX"; }
 
-reset_state() { GH_CALL_LOG="$(mktemp)"; LOG_FILE="$(mktemp)"; GH_PR_MERGE_RC=0; GH_PR_MERGE_STDERR=""; }
+reset_state() { GH_CALL_LOG="$(mktemp)"; LOG_FILE="$(mktemp)"; GH_COMMENTS_RESPONSE="[]"; GH_API_RC=0; GH_PR_MERGE_RC=0; GH_PR_MERGE_STDERR=""; }
 calls() { grep -c "$1" "$GH_CALL_LOG" 2>/dev/null || true; }
 logs()  { grep -c "$1" "$LOG_FILE" 2>/dev/null || true; }
 
@@ -69,6 +79,18 @@ build_pr_json() {
   jq -nc --argjson num "$1" --arg head "$2" --arg sha "$SHA40" --arg mergeable "$3" \
     --argjson draft "$4" --argjson labels "$labels_json" --argjson am "${6:-null}" --arg owner "${7:-owner}" \
     '{number:$num,headRefName:$head,headRefOid:$sha,mergeable:$mergeable,isDraft:$draft,labels:$labels,autoMergeRequest:$am,url:"https://x/pr",headRepositoryOwner:{login:$owner}}'
+}
+
+with_status_success() {
+  jq -c '.statusCheckRollup=[{"context":"codex-review","state":"SUCCESS"},{"context":"ci","state":"SUCCESS"}]' <<<"$1"
+}
+
+with_approved_review_decision() {
+  jq -c '.reviewDecision="APPROVED"' <<<"$1"
+}
+
+approval_comment_for_sha() {
+  jq -nc --arg sha "$1" '[{author_association:"OWNER", body:("## Review\n\nVERDICT: approve\n<!-- idd-codex:pr-reviewer sha=" + $sha + " kind=review tool=codex -->")}]'
 }
 
 PASS_COUNT=0; FAIL_COUNT=0
@@ -91,6 +113,8 @@ assert_eq "draft → skip(1)"                  "1" "$(rc_of am_should_enable_for
 assert_eq "ready ラベル無し → skip(1)"       "1" "$(rc_of am_should_enable_for_pr "$(build_pr_json 1 'codex/issue-1-impl-x' MERGEABLE false '')")"
 assert_eq "failed 付き → skip(1)"            "1" "$(rc_of am_should_enable_for_pr "$(build_pr_json 1 'codex/issue-1-impl-x' MERGEABLE false "$LABEL_READY,$LABEL_FAILED")")"
 assert_eq "needs-decisions 付き → skip(1)"   "1" "$(rc_of am_should_enable_for_pr "$(build_pr_json 1 'codex/issue-1-impl-x' MERGEABLE false "$LABEL_READY,$LABEL_NEEDS_DECISIONS")")"
+assert_eq "needs-iteration 付き → skip(1)"   "1" "$(rc_of am_should_enable_for_pr "$(build_pr_json 1 'codex/issue-1-impl-x' MERGEABLE false "$LABEL_READY,$LABEL_NEEDS_ITERATION")")"
+assert_eq "needs-rebase 付き → skip(1)"      "1" "$(rc_of am_should_enable_for_pr "$(build_pr_json 1 'codex/issue-1-impl-x' MERGEABLE false "$LABEL_READY,$LABEL_NEEDS_REBASE")")"
 assert_eq "CONFLICTING → skip(1)"            "1" "$(rc_of am_should_enable_for_pr "$(build_pr_json 1 'codex/issue-1-impl-x' CONFLICTING false "$LABEL_READY")")"
 assert_eq "UNKNOWN → skip(1)"                "1" "$(rc_of am_should_enable_for_pr "$(build_pr_json 1 'codex/issue-1-impl-x' UNKNOWN false "$LABEL_READY")")"
 assert_eq "既に auto-merge 有効 → 冪等(2)"   "2" "$(rc_of am_should_enable_for_pr "$(build_pr_json 1 'codex/issue-1-impl-x' MERGEABLE false "$LABEL_READY" '{"enabledAt":"x"}')")"
@@ -121,16 +145,55 @@ reset_state; FULL_AUTO_ENABLED=true; AUTO_MERGE_ENABLED=false
 process_auto_merge || true
 assert_eq "AUTO_MERGE OFF → gh 0 回" "0" "$(calls '^gh ')"
 assert_eq "AUTO_MERGE OFF → suppression ログ" "1" "$(logs 'suppressed by AUTO_MERGE_ENABLED')"
-# 4c. 両 gate ON + 1 valid PR → merge 1 回
+# 4c. 両 gate ON + ready PR だが review/status 証跡なし → merge 0 回
+# shellcheck disable=SC2034  # process_auto_merge が eval 抽出関数内で参照する。
 reset_state; FULL_AUTO_ENABLED=true; AUTO_MERGE_ENABLED=true
 GH_PR_LIST_RESPONSE="$(jq -c -n --argjson p "$(build_pr_json 7 'codex/issue-7-impl-x' MERGEABLE false "$LABEL_READY")" '[$p]')"
 process_auto_merge || true
-assert_eq "両 gate ON + valid → gh pr merge 1 回" "1" "$(calls 'pr merge')"
+assert_eq "ready PR 証跡なし → gh pr merge 0 回" "0" "$(calls 'pr merge')"
+assert_eq "ready PR 証跡なし → review gate missing ログ" "1" "$(logs 'review gate missing')"
 # 4d. 両 gate ON + CONFLICTING → merge 0 回（委譲）
 reset_state; FULL_AUTO_ENABLED=true; AUTO_MERGE_ENABLED=true
 GH_PR_LIST_RESPONSE="$(jq -c -n --argjson p "$(build_pr_json 7 'codex/issue-7-impl-x' CONFLICTING false "$LABEL_READY")" '[$p]')"
 process_auto_merge || true
 assert_eq "CONFLICTING → gh pr merge 0 回（merge-queue へ委譲）" "0" "$(calls 'pr merge')"
+# 4e. current SHA approve marker + codex-review success → merge 1 回
+reset_state; FULL_AUTO_ENABLED=true; AUTO_MERGE_ENABLED=true
+pr="$(build_pr_json 8 'codex/issue-8-impl-x' MERGEABLE false "$LABEL_READY")"
+pr="$(with_status_success "$pr")"
+GH_COMMENTS_RESPONSE="$(approval_comment_for_sha "$SHA40")"
+GH_PR_LIST_RESPONSE="$(jq -c -n --argjson p "$pr" '[$p]')"
+process_auto_merge || true
+assert_eq "current SHA approve marker + status success → gh pr merge 1 回" "1" "$(calls 'pr merge')"
+assert_eq "review gate source ログ" "1" "$(logs 'review_gate=idd-codex-marker+status:review-check')"
+# 4f. stale old-SHA marker のみ → merge 0 回
+reset_state; FULL_AUTO_ENABLED=true; AUTO_MERGE_ENABLED=true
+pr="$(build_pr_json 9 'codex/issue-9-impl-x' MERGEABLE false "$LABEL_READY")"
+pr="$(with_status_success "$pr")"
+GH_COMMENTS_RESPONSE="$(approval_comment_for_sha "$OLD_SHA40")"
+GH_PR_LIST_RESPONSE="$(jq -c -n --argjson p "$pr" '[$p]')"
+process_auto_merge || true
+assert_eq "stale marker → gh pr merge 0 回" "0" "$(calls 'pr merge')"
+assert_eq "stale marker → reason=stale-marker" "1" "$(logs 'reason=stale-marker')"
+# 4g. GitHub comment metadata fetch failure → warning + merge 0 回
+reset_state; FULL_AUTO_ENABLED=true; AUTO_MERGE_ENABLED=true; GH_API_RC=1
+pr="$(build_pr_json 10 'codex/issue-10-impl-x' MERGEABLE false "$LABEL_READY")"
+pr="$(with_status_success "$pr")"
+GH_PR_LIST_RESPONSE="$(jq -c -n --argjson p "$pr" '[$p]')"
+process_auto_merge || true
+assert_eq "comments API failure → gh pr merge 0 回" "0" "$(calls 'pr merge')"
+assert_eq "comments API failure → WARN" "1" "$(logs 'コメント取得に失敗')"
+# 4h. GitHub reviewDecision APPROVED + codex-review success → merge 1 回
+reset_state
+# shellcheck disable=SC2034  # process_auto_merge が eval 抽出関数内で参照する。
+FULL_AUTO_ENABLED=true
+# shellcheck disable=SC2034  # process_auto_merge が eval 抽出関数内で参照する。
+AUTO_MERGE_ENABLED=true
+pr="$(build_pr_json 11 'codex/issue-11-impl-x' MERGEABLE false "$LABEL_READY")"
+pr="$(with_approved_review_decision "$(with_status_success "$pr")")"
+GH_PR_LIST_RESPONSE="$(jq -c -n --argjson p "$pr" '[$p]')"
+process_auto_merge || true
+assert_eq "reviewDecision APPROVED + status success → gh pr merge 1 回" "1" "$(calls 'pr merge')"
 
 echo ""
 echo "==========================================="

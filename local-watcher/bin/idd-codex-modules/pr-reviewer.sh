@@ -287,21 +287,51 @@ pr_fetch_candidate_prs() {
       --repo "$REPO" \
       --state open \
       --search "-draft:true" \
-      --json number,headRefName,headRefOid,baseRefName,isDraft,url,headRepositoryOwner \
+      --json number,headRefName,headRefOid,baseRefName,isDraft,url,headRepositoryOwner,labels,reviewDecision,statusCheckRollup \
       --limit 50 2>/dev/null); then
     pr_warn "候補 PR の取得に失敗しました（gh pr list タイムアウトまたはエラー）"
     echo "[]"
     return 0
   fi
 
-  echo "$prs_json" | jq \
+  local metrics filtered
+  if ! metrics=$(echo "$prs_json" | jq -r \
+      --arg pattern "$PR_REVIEWER_HEAD_PATTERN" \
+      --arg owner "$repo_owner" '
+      def safe_head: (.headRefName // "");
+      {
+        fetched: length,
+        draft: ([.[] | select((.isDraft // false) != false)] | length),
+        fork: ([.[] | select((.isDraft // false) == false)
+                    | select((.headRepositoryOwner.login // "") != $owner)] | length),
+        excluded_by_head_pattern: ([.[] | select((.isDraft // false) == false)
+                    | select((.headRepositoryOwner.login // "") == $owner)
+                    | select((safe_head | test($pattern)) | not)] | length),
+        candidates: ([.[] | select((.isDraft // false) == false)
+                    | select((.headRepositoryOwner.login // "") == $owner)
+                    | select(safe_head | test($pattern))] | length)
+      }
+      | "fetched=\(.fetched) candidates=\(.candidates) draft=\(.draft) fork=\(.fork) excluded-by-head-pattern=\(.excluded_by_head_pattern) metadata-error=0"
+    ' 2>/dev/null); then
+    pr_warn "候補 PR metadata の解析に失敗しました（metadata error）"
+    echo "[]"
+    return 0
+  fi
+  pr_log "candidate totals: ${metrics}" >&2
+
+  filtered=$(echo "$prs_json" | jq \
     --arg pattern "$PR_REVIEWER_HEAD_PATTERN" \
     --arg owner "$repo_owner" \
     '[.[]
-      | select(.isDraft == false)
+      | select((.isDraft // false) == false)
       | select((.headRepositoryOwner.login // "") == $owner)
-      | select(.headRefName | test($pattern))
-    ]'
+      | select((.headRefName // "") | test($pattern))
+    ]' 2>/dev/null) || {
+    pr_warn "候補 PR filtering に失敗しました（metadata error）"
+    echo "[]"
+    return 0
+  }
+  echo "$filtered"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
