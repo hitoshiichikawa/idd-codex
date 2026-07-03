@@ -2479,7 +2479,7 @@ PR Reviewer Processor (#261)         PR Iteration Processor (#26)
 > 挙動**（ラベル遷移 / コメント投稿 / 他 Processor の起動順序が等価）を維持します。
 
 > ⚠️ **本機能は private / 信頼できる collaborator のみが PR を出す repo で使うこと**:
-> PR Reviewer は対象 PR の **head ブランチをローカル作業ディレクトリに checkout し、その
+> PR Reviewer は対象 PR の **head SHA を detached な一時 review worktree に checkout し、その
 > コードを外部 AI レビューツールに渡して実行**します。fork からの PR は head owner 比較で
 > 除外しますが（後述）、レビュー対象コードを外部ツールに送る性質上、不特定多数からの
 > コードを信頼境界外で実行しない運用環境（自己ホスト / 社内 repo / 信頼できる contributor
@@ -2537,8 +2537,10 @@ PR を伴わない Issue 単体は `gh pr list` の対象外のため自然に�
 
 1. **重複判定**: 対象 PR の既存コメントに当該 head SHA の `kind=review` marker（後述）が
    あれば **skip**（同一コミットを二重レビューしない）。
-2. **head checkout**: `git fetch origin <head>` → `git checkout -B <head> origin/<head>`
-   をサブシェル内で実行。サブシェルの `EXIT` trap で必ず `BASE_BRANCH` へ復帰します。
+2. **review workspace 準備**: `git fetch origin <head>` 後、detached な一時 worktree を
+   `origin/<head>` に作成してレビューを実行します。実装用 slot worktree が同じ head branch を
+   checkout 済みでも local branch checkout と衝突しません。一時 worktree はサブシェルの
+   `EXIT` trap で削除します。
 3. **レビュー実行**: `PR_REVIEWER_<TOOL>_CMD` のプレースホルダ（`{BASE}` / `{HEAD}` / `{PR}` /
    `{PROMPT_FILE}`）を置換し、`timeout $PR_REVIEWER_EXEC_TIMEOUT bash -c "<cmd>"` で実行
    （`eval` 不使用）。プロンプト本体は一時ファイル経由で argv に渡し、コマンド文字列へ注入
@@ -2554,6 +2556,8 @@ PR を伴わない Issue 単体は `gh pr list` の対象外のため自然に�
    `## 自動レビューエラー` を投稿しますが、**generic exec-failed public comment** として
    raw stdout / stderr 抜粋は公開しません。公開コメントには PR 番号、head SHA、tool、exit code、
    correlation token だけを載せ、詳細は watcher の local log / secure diagnostic artifact に保持します。
+   review workspace 準備に失敗した場合は `workspace-prepare-failed` コメントを同一 SHA へ
+   1 回だけ投稿し、具体的な分類と原因概要は `pr-reviewer:` prefix の operator-visible log に残します。
 6. **VERDICT 検出 → approve signal / ラベル付与**: レビュー結果テキストを
    `^[[:space:]]*VERDICT:[[:space:]]*approve[[:space:]]*$` と `PR_REVIEWER_ITERATION_PATTERN`
    （既定 `^[[:space:]]*VERDICT:[[:space:]]*codex-needs-iteration[[:space:]]*$`）で `grep -E -i`
@@ -2576,7 +2580,7 @@ PR を伴わない Issue 単体は `gh pr list` の対象外のため自然に�
 marker を埋め込みます:
 
 ```html
-<!-- idd-codex:pr-reviewer sha=<headRefOid> kind=<review|conflict-tool|not-installed|not-authenticated|exec-failed|workspace-modified> tool=<codex|antigravity|none> -->
+<!-- idd-codex:pr-reviewer sha=<headRefOid> kind=<review|conflict-tool|not-installed|not-authenticated|exec-failed|workspace-modified|workspace-prepare-failed> tool=<codex|antigravity|none> -->
 ```
 
 watcher は対象 PR の既存コメント群を `gh api .../issues/<n>/comments` で取得し、`(sha, kind)`

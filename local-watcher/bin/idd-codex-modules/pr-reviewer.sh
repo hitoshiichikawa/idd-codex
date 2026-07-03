@@ -552,7 +552,80 @@ pr_write_exec_failure_diagnostic() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# pr_execute_review_command: head checkout + レビュー実行 + read-only 検査（task 5.2）
+# pr_git_error_excerpt: git stderr の operator log 用 1 行要約を返す
+#   入力: $1=stderr file
+#   出力: stdout に 1 行（最大 240 bytes 目安）
+#   戻り値: 0 固定
+#
+#   public comment には使わず、operator-visible log の原因概要にだけ使う。
+# ─────────────────────────────────────────────────────────────────────────────
+pr_git_error_excerpt() {
+  local err_file="${1:-}"
+  if [ -z "$err_file" ] || [ ! -s "$err_file" ]; then
+    printf 'no stderr captured'
+    return 0
+  fi
+
+  LC_ALL=C tr '\n\r\t' '   ' < "$err_file" \
+    | awk '{gsub(/[[:space:]]+/, " "); sub(/^ /, ""); sub(/ $/, ""); print substr($0, 1, 240)}'
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# pr_classify_review_workspace_failure: review workspace 準備失敗を分類する
+#   入力: $1=phase, $2=stderr file
+#   出力: stdout に分類 token
+#   戻り値: 0 固定
+# ─────────────────────────────────────────────────────────────────────────────
+pr_classify_review_workspace_failure() {
+  local phase="${1:-unknown}"
+  local err_file="${2:-}"
+
+  if [ -n "$err_file" ] && [ -s "$err_file" ] \
+    && LC_ALL=C grep -Eqi "already used by worktree|is already checked out|already checked out|worktree.*already" "$err_file"; then
+    printf 'checkout-conflict'
+    return 0
+  fi
+
+  case "$phase" in
+    fetch) printf 'fetch-fail' ;;
+    add-worktree) printf 'worktree-add-fail' ;;
+    cd) printf 'workspace-cd-fail' ;;
+    tempdir) printf 'tempdir-fail' ;;
+    *) printf 'workspace-prepare-fail' ;;
+  esac
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# pr_cleanup_review_workspace: detached review worktree と親 temp dir を片付ける
+#   入力: $1=repo root, $2=review worktree path, $3=temp parent dir
+#   戻り値: 0 固定
+# ─────────────────────────────────────────────────────────────────────────────
+pr_cleanup_review_workspace() {
+  local repo_root="${1:-}"
+  local review_wt="${2:-}"
+  local review_tmp="${3:-}"
+
+  if [ -n "$repo_root" ] && [ -n "$review_wt" ] && [ -e "$review_wt/.git" ]; then
+    git -C "$repo_root" worktree remove --force "$review_wt" >/dev/null 2>&1 || true
+  fi
+
+  if [ -n "$review_tmp" ] && [ "$review_tmp" != "/" ]; then
+    case "$(basename "$review_tmp")" in
+      idd-pr-reviewer.*)
+        rm -rf "$review_tmp" 2>/dev/null || true
+        ;;
+      *)
+        pr_warn "review workspace cleanup: 想定外の temp dir 名のため rm を skip: ${review_tmp}"
+        ;;
+    esac
+  fi
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# pr_execute_review_command: detached review worktree + レビュー実行 + read-only 検査（task 5.2）
 #   入力: $1 = head_ref, $2 = resolved_cmd, $3 = tool,
 #         $4 = out_file, $5 = err_file, $6 = result_file
 #   出力: out_file へ stdout、err_file へ stderr、result_file へ実行結果トークン
@@ -560,17 +633,16 @@ pr_write_exec_failure_diagnostic() {
 #   AC: 4.1, 4.2, 4.5（read-only invariant: Decision 8 / eval 不使用: Decision 9）
 #
 #   result_file に書き出すトークン（呼び出し元が parse）:
-#     - `fetch-fail`         : git fetch 失敗（一時的 / コメント投稿しない）
-#     - `checkout-fail`      : git checkout 失敗（同上）
-#     - `ran:<rc>:clean`     : 実行完了、ワークツリー変更なし（rc=コマンド終了コード）
-#     - `ran:<rc>:modified`  : 実行完了したがワークツリーを変更（read-only 違反）
+#     - `workspace-fail:<classification>` : review workspace 準備失敗
+#     - `ran:<rc>:clean`                  : 実行完了、ワークツリー変更なし
+#     - `ran:<rc>:modified`               : 実行完了したがワークツリーを変更
 #
 #   - design.md interface 表は ($1=command_string, $2=tool) の 2 引数 + stdout 返却
 #     表記だが、(a) head checkout を本関数内で行う（AC 4.1）/ (b) stdout・stderr・
 #     実行結果を分離して呼び出し元へ渡す必要がある（exec-failed コメントへ stderr
 #     1KB 抜粋を含めるため / AC 4.5）ため、tempfile 渡しに拡張している
 #     （impl-notes.md に記録）。
-#   - サブシェル + EXIT trap で必ず BASE_BRANCH に戻す（副作用を残さない invariant）。
+#   - サブシェル + EXIT trap で detached review worktree を削除する。
 #   - `eval` は使わず `bash -c "$resolved_cmd"` で subshell に閉じ込める（Decision 9）。
 #   - 実行直後に `git status --porcelain` でワークツリー変更を検査し、検出時は
 #     `git checkout -- .` で tracked 変更を破棄し `modified` を報告（Decision 8）。
@@ -589,18 +661,37 @@ pr_execute_review_command() {
 
   (
     set +e
-    # shellcheck disable=SC2064
-    trap "git checkout '${BASE_BRANCH}' >/dev/null 2>&1" EXIT
+    local repo_root review_tmp review_wt git_err classification excerpt
+    repo_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 
-    # head branch を fresh に checkout（origin 最新へ追従、AC 4.1）
-    if ! timeout "$PR_REVIEWER_GIT_TIMEOUT" git fetch origin "$head_ref" >/dev/null 2>&1; then
-      pr_warn "head '${head_ref}' の git fetch に失敗"
-      printf 'fetch-fail\n' > "$result_file"
+    if ! review_tmp=$(mktemp -d "${TMPDIR:-/tmp}/idd-pr-reviewer.XXXXXX" 2>/dev/null); then
+      pr_warn "review workspace 準備失敗 class=tempdir-fail head=${head_ref} tool=${tool}"
+      printf 'workspace-fail:tempdir-fail\n' > "$result_file"
       exit 0
     fi
-    if ! timeout "$PR_REVIEWER_GIT_TIMEOUT" git checkout -B "$head_ref" "origin/${head_ref}" >/dev/null 2>&1; then
-      pr_warn "head '${head_ref}' の checkout に失敗"
-      printf 'checkout-fail\n' > "$result_file"
+    review_wt="${review_tmp}/review"
+    git_err="${review_tmp}/git.err"
+    # shellcheck disable=SC2064
+    trap 'pr_cleanup_review_workspace "$repo_root" "$review_wt" "$review_tmp"' EXIT
+
+    # head branch を detached review worktree に fresh checkout（origin 最新へ追従）。
+    if ! timeout "$PR_REVIEWER_GIT_TIMEOUT" git -C "$repo_root" fetch origin "$head_ref" >/dev/null 2>"$git_err"; then
+      classification=$(pr_classify_review_workspace_failure "fetch" "$git_err")
+      excerpt=$(pr_git_error_excerpt "$git_err")
+      pr_warn "review workspace 準備失敗 class=${classification} phase=fetch head=${head_ref} tool=${tool} reason=${excerpt}"
+      printf 'workspace-fail:%s\n' "$classification" > "$result_file"
+      exit 0
+    fi
+    if ! timeout "$PR_REVIEWER_GIT_TIMEOUT" git -C "$repo_root" -c advice.detachedHead=false worktree add --detach "$review_wt" "origin/${head_ref}" >/dev/null 2>"$git_err"; then
+      classification=$(pr_classify_review_workspace_failure "add-worktree" "$git_err")
+      excerpt=$(pr_git_error_excerpt "$git_err")
+      pr_warn "review workspace 準備失敗 class=${classification} phase=add-worktree head=${head_ref} tool=${tool} reason=${excerpt}"
+      printf 'workspace-fail:%s\n' "$classification" > "$result_file"
+      exit 0
+    fi
+    if ! cd "$review_wt"; then
+      pr_warn "review workspace 準備失敗 class=workspace-cd-fail head=${head_ref} tool=${tool} path=${review_wt}"
+      printf 'workspace-fail:workspace-cd-fail\n' > "$result_file"
       exit 0
     fi
 
@@ -1295,8 +1386,8 @@ pr_run_claude_second_gate() {
   local result exec_rc wsmod
   result=$(cat "$result_file" 2>/dev/null || echo "")
   case "$result" in
-    fetch-fail|checkout-fail)
-      pr_warn "2nd gate: head '${head_ref}' の取得に失敗 (${result})・PR #${pr_number}・claude-review は publish せず skip"
+    workspace-fail:*)
+      pr_warn "2nd gate: review workspace 準備に失敗 (${result})・PR #${pr_number}・claude-review は publish せず skip"
       rm -f "$prompt_file" "$out_file" "$err_file" "$result_file" 2>/dev/null || true
       return 0
       ;;
@@ -1425,10 +1516,15 @@ pr_run_review_for_pr() {
   result=$(cat "$result_file" 2>/dev/null || echo "")
 
   case "$result" in
-    fetch-fail|checkout-fail)
-      # 一時的な git/gh 失敗 → WARN + skip（コメント投稿しない / Error 戦略 3 層目）
-      pr_warn "PR #${pr_number}: head '${head_ref}' の取得に失敗 (${result})、当該 PR を skip"
-      return 1
+    workspace-fail:*)
+      local workspace_failure
+      workspace_failure="${result#workspace-fail:}"
+      pr_error "PR #${pr_number}: review workspace 準備失敗 pr=${pr_number} head=${head_ref} sha=${sha} class=${workspace_failure} tool=${tool}"
+      local workspace_detail
+      workspace_detail=$(printf 'レビュー用 workspace の準備に失敗したため、この head SHA の自動レビューを継続できませんでした。\n\n- PR: #%s\n- sha: `%s`\n- tool: `%s`\n- failure: `%s`\n\n詳細な原因概要は watcher の operator-visible log（`pr-reviewer:` prefix）を確認してください。' \
+        "$pr_number" "$sha" "$tool" "$workspace_failure")
+      pr_post_error_comment "$pr_number" "$sha" "workspace-prepare-failed" "$workspace_detail" "$tool" || true
+      return 3
       ;;
   esac
 
