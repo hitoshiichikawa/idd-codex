@@ -305,6 +305,23 @@ FAILED_RECOVERY_GIT_TIMEOUT="${FAILED_RECOVERY_GIT_TIMEOUT:-60}"
 FAILED_RECOVERY_DEV_MODEL="${FAILED_RECOVERY_DEV_MODEL:-${DEV_MODEL:-gpt-5.5}}"
 # 通算 attempt budget / no-progress baseline を work-unit 単位で永続化する state dir。
 FAILED_RECOVERY_STATE_DIR="${FAILED_RECOVERY_STATE_DIR:-$HOME/.idd-codex/failed-recovery/$REPO_SLUG}"
+# #137: codex が起動直後 rc≠0 で即死する「即時失敗」の継続時間閾値（秒）。
+# elapsed < 閾値 かつ rc≠0（quota 以外）の失敗は attempt budget を消費せず巻き戻す。
+# 認証エラー等の決定論的即死で budget を空消費しないためのバグ修正（既定 ON = 10 秒）。
+# 非整数 / 0 以下は 10 に正規化。
+FAILED_RECOVERY_IMMEDIATE_FAIL_SECONDS="${FAILED_RECOVERY_IMMEDIATE_FAIL_SECONDS:-10}"
+case "$FAILED_RECOVERY_IMMEDIATE_FAIL_SECONDS" in
+  ''|*[!0-9]*) FAILED_RECOVERY_IMMEDIATE_FAIL_SECONDS=10 ;;
+  *) [ "$FAILED_RECOVERY_IMMEDIATE_FAIL_SECONDS" -le 0 ] && FAILED_RECOVERY_IMMEDIATE_FAIL_SECONDS=10 ;;
+esac
+# #137: 連続即時失敗の上限。attempt budget とは独立カウンタ。到達すると max-attempts とは
+# 区別された `immediate-failure-streak` 終端理由で停止し人間レビューへ委ねる。
+# 非整数 / 0 以下は 3 に正規化。
+FAILED_RECOVERY_IMMEDIATE_FAIL_MAX_STREAK="${FAILED_RECOVERY_IMMEDIATE_FAIL_MAX_STREAK:-3}"
+case "$FAILED_RECOVERY_IMMEDIATE_FAIL_MAX_STREAK" in
+  ''|*[!0-9]*) FAILED_RECOVERY_IMMEDIATE_FAIL_MAX_STREAK=3 ;;
+  *) [ "$FAILED_RECOVERY_IMMEDIATE_FAIL_MAX_STREAK" -le 0 ] && FAILED_RECOVERY_IMMEDIATE_FAIL_MAX_STREAK=3 ;;
+esac
 
 # ─── needs-decisions 自動続行 設定 (#102 / D-08・D-09) ───
 # Triage が `codex-needs-decisions` 判定した Issue を、`safe` 分類に限り PM 第一推奨で
