@@ -3842,6 +3842,32 @@ pt_run_repeated_reject_warning_redo() {
   return 0
 }
 
+# ─── pt_marker_matches_task_with_suffix <subject> <task_id> ───
+#
+# subject が `docs(tasks): mark <task_id> as done (#<number>)`（canonical + trailing
+# issue-ref suffix）に一致すれば 0、しなければ 1 を返す（Issue #142 / idd-claude #421 移植）。
+# 許容する suffix は「`as done` と `(` の間に半角空白 1 つ・`#` 直後に 1 桁以上の数字・
+# 閉じ括弧 `)` で終端」の canonical 形のみ。空白なし / 括弧なし / 閉じ括弧後の追加文字列 /
+# 非数字は非許容（無関係 suffix を誤マッチしない）。
+#
+# 未信頼 subject を sed / eval / 動的パターンに渡さず、glob（case）とパラメータ展開の
+# リテラル処理のみで判定する（AGENTS.md「未信頼入力」規約 / セキュリティ）。suffix の
+# <number> 値は照合にのみ使い、path / git revision / 外部コマンド引数へは渡さない。
+pt_marker_matches_task_with_suffix() {
+  local subject="$1" task_id="$2"
+  local prefix="docs(tasks): mark ${task_id} as done (#"
+  # `<canonical> (#` で始まり `)` で終端すること（粗判定）。quote 済み $prefix は
+  # リテラル、`*` のみ glob。task_id の `.` も glob ではリテラル扱い（誤マッチしない）。
+  case "$subject" in
+    "$prefix"*")") ;;
+    *) return 1 ;;
+  esac
+  local num="${subject#"$prefix"}"
+  num="${num%)}"
+  # 残余が 1 桁以上の数字のみであること（`(#abc)` 等を拒否）。
+  [[ "$num" =~ ^[0-9]+$ ]]
+}
+
 # ─── pt_resolve_diff_range <task_id> ───
 #
 # per-task Reviewer に渡す diff range の開始 SHA / 終了 SHA を解決して
@@ -3873,8 +3899,18 @@ pt_run_repeated_reject_warning_redo() {
 #   - <ids> 部を `/` / `,` / 空白で正規化した後 word 単位で完全一致照合するため、task_id `1`
 #     が `1.1` や `11` に誤マッチしない
 #
+# Trailing issue-ref suffix 許容（Issue #142 / idd-claude #421 移植）:
+#   - Developer が Conventional Commits / GitHub 慣習で付けがちな
+#     `docs(tasks): mark <id> as done (#<number>)` の trailing issue-ref suffix を、単記 /
+#     連記いずれの経路でも当該 task の marker として解決する（表記ゆれ 1 点で codex-failed に
+#     落とさない）。許容する suffix は canonical 形（`as done` と `(` の間に半角空白 1 つ・
+#     `#` 直後に 1 桁以上の数字・閉じ括弧 `)` で終端）のみで、空白なし / 括弧なし / 閉じ括弧後の
+#     追加文字列 / 非数字は非許容。suffix 無し canonical marker のみの履歴では本変更前と同一の
+#     SHA pair を返す（後方互換 / 単記照合の via タグ `single-id-marker` も不変）。
+#
 # Requirements: Issue #23 Req 1.4, 2.1, 2.2, 2.3, 2.4, 3.3, 3.4, 5.1,
-#               Issue #164 Req 2.1, 2.2, 2.3, 2.4, 2.5, 3.1, 3.2, NFR 2.1
+#               Issue #164 Req 2.1, 2.2, 2.3, 2.4, 2.5, 3.1, 3.2, NFR 2.1,
+#               Issue #142（marker trailing issue-ref suffix 許容）
 pt_resolve_diff_range() {
   local task_id="$1"
   local base="${BASE_BRANCH:-main}"
@@ -3887,12 +3923,17 @@ pt_resolve_diff_range() {
   fi
 
   # ─── (a) 単記 marker を優先検索（subject 完全一致 / Req 3.1 後方互換） ───
+  # canonical（suffix 無し）完全一致を最優先し、無ければ canonical + trailing issue-ref
+  # suffix `(#<number>)`（Issue #142）を許容する。canonical のみの履歴では本変更前と同一挙動。
   local current_mark="" via="" sha subject id_list tok found
   while IFS=$'\t' read -r sha subject; do
     [ -n "$sha" ] || continue
     if [ "$subject" = "docs(tasks): mark ${task_id} as done" ]; then
       current_mark="$sha"
       via="single-id-marker"
+    elif pt_marker_matches_task_with_suffix "$subject" "$task_id"; then
+      current_mark="$sha"
+      via="single-id-marker-with-suffix"
     fi
   done <<<"$all_pairs"
 
@@ -3901,8 +3942,10 @@ pt_resolve_diff_range() {
     while IFS=$'\t' read -r sha subject; do
       [ -n "$sha" ] || continue
       # subject から <ids> 部を抽出（`docs(tasks): mark <ids> as done`）。
-      # 末尾アンカで「as done」以降にコメント等が付いた変則 subject は対象外とする。
-      id_list=$(printf '%s' "$subject" | sed -nE 's/^docs\(tasks\): mark (.+) as done$/\1/p')
+      # 末尾は optional な trailing issue-ref suffix ` (#<number>)`（Issue #142）まで許容し、
+      # それ以外（閉じ括弧後の追加文字列 / 括弧なし / 非数字）が続く変則 subject は対象外。
+      # sed パターンは固定で、未信頼 subject は data として pipe に渡す（パターン側へ展開しない）。
+      id_list=$(printf '%s' "$subject" | sed -nE 's/^docs\(tasks\): mark (.+) as done( \(#[0-9]+\))?$/\1/p')
       [ -n "$id_list" ] || continue
       # `/` / `,` を空白に正規化し、word 単位で task_id と完全一致する token を探す。
       # word splitting は IFS のデフォルト（空白）で行われ、任意連続空白に対応する。
@@ -3915,7 +3958,11 @@ pt_resolve_diff_range() {
       done
       if [ "$found" = "true" ]; then
         current_mark="$sha"
-        via="multi-id-marker"
+        # suffix 付き連記かどうかで via タグを分ける（観測用）。canonical 連記は従来と同一。
+        case "$subject" in
+          *" as done (#"*")") via="multi-id-marker-with-suffix" ;;
+          *) via="multi-id-marker" ;;
+        esac
       fi
     done <<<"$all_pairs"
   fi
@@ -3945,12 +3992,15 @@ pt_resolve_diff_range() {
     fi
   fi
 
-  # NFR 2.1: 連記経由で解決した場合は stderr ログに識別可能な印を残す（運用者が
-  # `grep via=multi-id-marker` で件数把握できる）。単記経由は出力しない（既存ログ量を
-  # 増やさない後方互換）。関数の主出力（SHA pair）と区別するため stderr に出す。
-  if [ "$via" = "multi-id-marker" ]; then
-    echo "[$(date '+%F %T')] per-task: diff-range resolved via=multi-id-marker task_id=${task_id} sha=${current_mark}" >&2
-  fi
+  # NFR 2.1: 連記経由 / suffix 経由で解決した場合は stderr ログに識別可能な印を残す（運用者が
+  # `grep via=multi-id-marker` / `grep via=.*-with-suffix` で件数把握できる）。suffix 無し単記
+  # 経由（既存 canonical）は出力しない（既存ログ量を増やさない後方互換）。既存の
+  # `via=multi-id-marker` 文字列・発火条件は不変（NFR 1.1）。主出力（SHA pair）と区別するため stderr。
+  case "$via" in
+    multi-id-marker|single-id-marker-with-suffix|multi-id-marker-with-suffix)
+      echo "[$(date '+%F %T')] per-task: diff-range resolved via=${via} task_id=${task_id} sha=${current_mark}" >&2
+      ;;
+  esac
 
   local range_end="$current_mark"
   local head_sha
