@@ -100,6 +100,52 @@ src/
 - 繰り返し構造の場合は、パターンを 1 回だけ記述（"domain-b follows same pattern as domain-a"）
 - 個別ファイルはその責務がパスから自明でない場合のみ個別列挙
 
+## bootstrap 一極集中の回避（self-register パターン）
+
+> 本節は **推奨（指針）であり必須ではありません**。採否は Architect の判断に委ねます。
+> ここで示す回避策を採らないことを理由に design-review-gate で reject することはありません。
+
+### 課題: 単一 bootstrap が merge conflict ホットスポットになる
+
+単一の bootstrap ファイル（`cmd/api/main.go` の DI 配線スロット、ルータの Mount 列挙、
+プラグイン登録テーブル等）へ、各ドメイン／機能が **一極集中で配線を追記する**設計を採ると、
+並行して進む複数の Issue が同じ bootstrap ファイルの同じ近傍を編集することになり、
+**merge conflict が構造的に発生し続ける** ホットスポットになります。idd-codex のように
+複数 Issue が並行で PR を出すワークフローでは、この衝突が auto-rebase / merge-queue の停滞や
+人手介入の増加に直結します。
+
+衝突の中身は多くの場合「import の和集合」「各ドメインの Mount 行の併記」で機械的に解消できる
+**加算的（追加のみ）**なものですが、加算的であっても衝突自体は毎回発生するため、設計段階で
+配線の集中そのものを分散できるならその方が望ましい場面があります。
+
+### 回避指針: ドメインごとに self-register（registry）する
+
+bootstrap が各ドメインを **能動的に列挙して配線する**（pull 型）のではなく、各ドメインが
+**自分自身を共有 registry / router へ登録する**（push 型 / self-register）構成にすると、
+配線の追記がドメイン側のファイルに分散し、bootstrap ファイルの編集が不要になります:
+
+- 各ドメインは init（パッケージ初期化 / モジュールロード時の副作用 / 明示的な登録呼び出し）で
+  共有 registry へ自分のハンドラ・ルート・依存を登録する
+- bootstrap は registry を 1 度走査して全登録分を一括配線するだけになり、**ドメイン追加で
+  bootstrap を編集しなくて済む**
+- 結果として、並行 Issue は各自のドメインファイルだけを触り、共通 bootstrap での衝突が原理的に
+  起きにくくなる
+
+### 適用条件: 加算的追記の集中が見えたら評価対象にする
+
+複数のドメインが **同一 bootstrap の同じ配線スロットへ加算的に追記する**設計（import 列・
+Mount 列・登録テーブルへ各ドメインが行を足し続ける形）を検討している場合、self-register
+パターンを **評価対象**として俎上に乗せてください。配線が 1 ドメインに閉じる小規模な設計や、
+登録順序に強い依存があり明示的な列挙の方が読みやすい場合などは、無理に self-register 化せず
+従来の集中配線を選んで構いません（採否は Architect の判断）。
+
+### Out of Scope
+
+- 本節は **設計判断の材料を増やす指針**であり、特定言語／フレームワークの registry 実装
+  テンプレート（Go の `init()` 登録、DI コンテナ設定等）は提供しません。実装手段は対象
+  リポジトリの言語・慣習に合わせて Architect / Developer が選択します。
+- self-register を idd-codex が生成する設計へ自動適用・強制する仕組みは持ちません。
+
 ## 参考
 
 - [cc-sdd `design.md` テンプレート](https://github.com/gotalab/cc-sdd/blob/main/.kiro/settings/templates/specs/design.md)
