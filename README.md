@@ -971,6 +971,36 @@ auto-close された場合でも、**人間が当該 Issue を reopen すれば 
 | 仮案・判断を委ねたい点 | 任意 | 作成者の案（参考）と迷い |
 | 優先度 | ✓ | 参考値（実際の着手順は PjM 判断） |
 
+### Issue / PR コメントのエージェント注入（steer は効く / stale は毒）
+
+Triage・PM・Architect・Developer の各プロンプトは、**Issue 本文に加えて既存コメントを必ず読む**
+よう指示されている:
+
+- **Triage**: `local-watcher/bin/idd-codex-triage-prompt.tmpl`（`gh issue view <N> --comments` でコメント取得。コメント 0 件時は本文のみで判定）
+- **設計ルート（PM → Architect）**: `idd-codex-issue-watcher.sh` の `_slot_run_issue()` が `MODE=design`
+  時に組み立てる STEPS（`Issue 本文と既存コメント（gh issue view ${NUMBER} --comments）を必ず読む`）
+- **実装ルート（PM → Developer）**: `idd-codex-issue-watcher.sh` の `build_dev_prompt_a()`（同様の指示に
+  加え「人間がコメントで回答済みの決定事項は requirements に反映する」ことを明示）
+
+つまり **Issue コメントはエージェントの context に強く効く**。これは「人間が steer（方針注入）
+できる」強力な機能であると同時に、「stale / 矛盾コメントがエージェントを誤誘導する」落とし穴でもある。
+
+**活用**: Issue コメントに書いた方針・制約・推奨は、Triage / PM / Architect / Developer に反映される。
+人間が後から steer したいときは Issue にコメントを残せば、次サイクルのエージェントが拾う。
+`codex-needs-decisions` への回答や設計方針の指定はこの経路で効く。
+
+**落とし穴**: コメントは強く重み付けされるため、**stale / 撤回済み / 矛盾するコメントはエージェント
+を誤誘導する**。典型事故:
+
+- close → reopen した設計 PR に古い指示コメントが残り、iteration の Architect が現行指示と誤読して
+  設計が no-progress deadlock に陥る
+- 解決済みの古い escalation コメントを Triage が未解決決定として再読し、`codex-needs-decisions`
+  ループに陥る
+
+**運用指針**: 用済み・撤回したコメントは削除する。PR を close/reopen する際は古い指示コメントを
+必ず消す。決定が変わったら、古いコメントを残したまま新コメントを足すのではなく、古い方を削除するか
+明示的に撤回マークを付ける。
+
 ### 緊急時・強制着手
 
 Triage をスキップしたい場合は Issue に `codex-skip-triage` ラベルを付ける。
