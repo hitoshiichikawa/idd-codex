@@ -21,6 +21,12 @@
 #   {REVIEW_TEXT}     codex stdout の review 本文（PR コメントに投稿された body 全体）
 #   {SPEC_DIR}        docs/specs/<N>-<slug>/ パス。解決不能時は `(none)` を埋める
 #   {REQUIREMENTS_MD} 上記 SPEC_DIR 配下 requirements.md の本文。解決不能時は `(none)`
+#   {OOS_INSTRUCTIONS} out-of-scope（第 3 判定）機能 gate ON 時に注入される分類規約ブロック
+#                     （#146 / idd-claude #437 移植）。`PR_ITERATION_OOS_ENABLED=true` のとき
+#                     adj_oos_prompt_block（adjudicator.sh）の本文で置換され、`out-of-scope`
+#                     verdict の分類条件・判定根拠出力・「迷ったら legitimate」原則・
+#                     summary.out_of_scope 出力契約を加える。gate OFF（既定）のときは
+#                     placeholder 行ごと除去され、既存 prompt と等価になる（後方互換 no-op）。
 #
 # NOTE: placeholder 規約は既存 `pr_default_prompt`（pr-reviewer.sh）の
 #       **単一波括弧 {PR} style** に整合させる（`iteration-prompt.tmpl` の
@@ -116,7 +122,7 @@ legitimate」原則（後述）を適用してください。
 「実害指摘の見落とし（excessive 誤判定 → 反復から除外 → merge 後にバグ発覚）」が
 最悪のシナリオです。逆に legitimate 過判定は反復 round が 1 つ増えるだけで実害は軽微です。
 保守的に判定してください。
-
+{OOS_INSTRUCTIONS}
 ## 全指摘に 1:1 対応する義務
 
 `## 指摘事項` 配下のすべての bullet 行に対して **1 件の decision を必ず返してください**。

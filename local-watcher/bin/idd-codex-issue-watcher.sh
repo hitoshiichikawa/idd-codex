@@ -667,6 +667,66 @@ case "$PR_REVIEWER_ADJUDICATOR_MAX_FINDINGS" in
     ;;
 esac
 
+# ─── PR Iteration out-of-scope（第 3 判定）設定 (#146 / idd-claude #437 移植) ───
+# adjudicator が「正当だが当該 impl PR スコープ外（requirements.md / design.md / tasks.md の
+# 確定事項変更を要し、impl PR は規約上それらを書き換えられない）」という第 3 の指摘類型を
+# `out-of-scope` として独立分類し、round を消費させる legitimate 件数から除外して
+# 既定経路（`codex-needs-decisions`）へ還流させ、Developer 構造化マーカー
+# （`OUT-OF-SCOPE: design` / `OUT-OF-SCOPE: spec-stale`）検出と指摘内容ベース fingerprint の
+# no-progress 早期打ち切りで max_rounds 到達前に停止する機能。「設計レベル指摘が毎 round
+# 堂々巡りして max_rounds を消尽し codex-failed に倒れる」構造的失敗を解消する。
+#
+# **完全な opt-in（既定 OFF）**: `PR_ITERATION_OOS_ENABLED=true` 厳密一致以外（未設定 / 空 /
+# `True` / `TRUE` / `1` / `0` / typo 等）はすべて安全側＝無効として `false` に正規化し、
+# 本機能導入前と完全に等価な挙動を保つ。gate OFF 時、adjudicator は `out-of-scope` を
+# 一切出さず受け取らず（既存 2 値 schema と `legitimate + excessive == total` 不変条件を
+# 完全保持）、pr-iteration の oos フィルタ / Developer marker 検出 / 内容ベース早期打ち切りは
+# 発火せず（既存 SHA ベース streak のみ）、prompt template の out-of-scope 指示は注入されない。
+# 既存 `PR_REVIEWER_ADJUDICATOR_ENABLED`（#138 で既定 ON）/ `PR_ITERATION_ENABLED`
+# （#112 で既定 ON）には相乗りせず新規 env を新設して no-op 既定を保証する
+# （相乗りは ON 既定のため no-op を保証できない）。本 gate は既存 gate を override しない。
+#
+# 後方互換性:
+#   - 既存 env var 名 / ラベル名（`codex-needs-decisions` 再利用 = 新ラベル新設なし）/
+#     exit code / cron 文字列 / ログ書式 / 既存 marker（round / last-run /
+#     no-progress-streak キー）は不変。新 env と新 marker キー（`oos-no-progress-streak` /
+#     `oos-fingerprint`）の追加のみ（additive。2 値時代の decision JSON も引き続き valid）。
+#
+# 関数本体は idd-codex-modules/adjudicator.sh（adj_ prefix）/
+# idd-codex-modules/pr-iteration.sh（pi_ prefix）。
+PR_ITERATION_OOS_ENABLED="${PR_ITERATION_OOS_ENABLED:-false}"
+# 値正規化: `true` 厳密一致のみ通し、それ以外はすべて `false` に固定する（安全側）。
+# 既定 OFF の opt-in 制のため、後段の「デフォルト有効化フラグの値正規化」ループには加えない。
+case "$PR_ITERATION_OOS_ENABLED" in
+  true) : ;;
+  *)    PR_ITERATION_OOS_ENABLED="false" ;;
+esac
+# out-of-scope 還流ルート。許容値:
+#   - `needs-decisions`（推奨既定）: `codex-needs-iteration` を外し `codex-needs-decisions` を
+#     付与して人間判断へエスカレート（不可逆操作を伴わない最も安全側の経路）
+#   - `spawn-issue`: フォローアップ Issue を自動起票して指摘を還流する明示 opt-in 値
+#     （外部副作用 = Issue 作成を伴う。起票失敗時は needs-decisions へフォールバック）
+#   - `design-reflow`: 将来予約（本実装では `needs-decisions` に丸める）
+# 未知値 / 空 / typo は安全側として `needs-decisions` に正規化する。
+PR_ITERATION_OOS_ROUTE="${PR_ITERATION_OOS_ROUTE:-needs-decisions}"
+case "$PR_ITERATION_OOS_ROUTE" in
+  needs-decisions|design-reflow|spawn-issue) : ;;
+  *) PR_ITERATION_OOS_ROUTE="needs-decisions" ;;
+esac
+# 指摘内容ベース早期打ち切りの上限 N。out-of-scope 指摘は impl PR 側で確定的に収束不能なため、
+# 既存 SHA ベース no-progress 上限（`PR_ITERATION_NO_PROGRESS_LIMIT` 既定 3）とは独立の別軸
+# カウンタで既定 2 と短く設定する。非数値 / 0 以下は安全側として既定 2 に正規化する。
+# gate OFF 時は本値を参照しない（早期打ち切り自体が no-op）。
+PR_ITERATION_OOS_NO_PROGRESS_LIMIT="${PR_ITERATION_OOS_NO_PROGRESS_LIMIT:-2}"
+case "$PR_ITERATION_OOS_NO_PROGRESS_LIMIT" in
+  ''|*[!0-9]*) PR_ITERATION_OOS_NO_PROGRESS_LIMIT="2" ;;
+  *)
+    if [ "$PR_ITERATION_OOS_NO_PROGRESS_LIMIT" -lt 1 ] 2>/dev/null; then
+      PR_ITERATION_OOS_NO_PROGRESS_LIMIT="2"
+    fi
+    ;;
+esac
+
 # ─── Design Review Release Processor 設定 (#40) ───
 # 設計 PR が merge された Issue から `codex-awaiting-design-review` ラベルを自動除去し、
 # ステータスコメントを 1 件投稿する。標準機能としてデフォルト有効化（#112）。
@@ -1398,7 +1458,7 @@ mkdir -p "$LOG_DIR"
 # 運用者は `grep pr-reviewer-adjudicator=` で adjudicator 経路の有効 / 無効状態を事後に
 # 判別できる。既定反転（OFF → ON）後、`=false` を明示した opt-out 環境を grep で識別する
 # 目的を兼ねる。
-echo "[$(date '+%F %T')] base-branch=${BASE_BRANCH} merge-queue-base=${MERGE_QUEUE_BASE_BRANCH} auto-rebase=${AUTO_REBASE_MODE} auto-rebase-semantic=${AUTO_REBASE_SEMANTIC} auto-merge=${AUTO_MERGE_ENABLED} auto-merge-design=${AUTO_MERGE_DESIGN_ENABLED} failed-recovery=${FAILED_RECOVERY_ENABLED} needs-decisions-mode=${NEEDS_DECISIONS_MODE} blocked-cycle-detection=${BLOCKED_CYCLE_DETECTION_ENABLED} slack-notify=${SLACK_NOTIFY_ENABLED} pr-reviewer-2nd-gate=${PR_REVIEWER_SECOND_GATE} full-auto=${FULL_AUTO_ENABLED} pr-reviewer-adjudicator=${PR_REVIEWER_ADJUDICATOR_ENABLED}"
+echo "[$(date '+%F %T')] base-branch=${BASE_BRANCH} merge-queue-base=${MERGE_QUEUE_BASE_BRANCH} auto-rebase=${AUTO_REBASE_MODE} auto-rebase-semantic=${AUTO_REBASE_SEMANTIC} auto-merge=${AUTO_MERGE_ENABLED} auto-merge-design=${AUTO_MERGE_DESIGN_ENABLED} failed-recovery=${FAILED_RECOVERY_ENABLED} needs-decisions-mode=${NEEDS_DECISIONS_MODE} blocked-cycle-detection=${BLOCKED_CYCLE_DETECTION_ENABLED} slack-notify=${SLACK_NOTIFY_ENABLED} pr-reviewer-2nd-gate=${PR_REVIEWER_SECOND_GATE} full-auto=${FULL_AUTO_ENABLED} pr-reviewer-adjudicator=${PR_REVIEWER_ADJUDICATOR_ENABLED} oos-enabled=${PR_ITERATION_OOS_ENABLED}"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # doctor サブコマンド dispatch (#238 / Decision 2)
