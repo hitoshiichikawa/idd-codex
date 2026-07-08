@@ -562,9 +562,9 @@ case "$PR_REVIEWER_ADJUDICATOR_ENABLED" in
   *)    PR_REVIEWER_ADJUDICATOR_ENABLED="false" ;;
 esac
 # adjudicator 呼び出しモデル（既存命名規約踏襲）。空文字なら既定。
-PR_REVIEWER_ADJUDICATOR_MODEL="${PR_REVIEWER_ADJUDICATOR_MODEL:-claude-sonnet-4-5}"
+PR_REVIEWER_ADJUDICATOR_MODEL="${PR_REVIEWER_ADJUDICATOR_MODEL:-claude-sonnet-4-6}"
 if [ -z "$PR_REVIEWER_ADJUDICATOR_MODEL" ]; then
-  PR_REVIEWER_ADJUDICATOR_MODEL="claude-sonnet-4-5"
+  PR_REVIEWER_ADJUDICATOR_MODEL="claude-sonnet-4-6"
 fi
 # claude 実行 timeout 秒。既存 PR_REVIEWER_EXEC_FAIL_LIMIT と同じ case パターンで非数値 /
 # 0 以下を既定 300 に正規化（Req 5.5 既存規約整合）。

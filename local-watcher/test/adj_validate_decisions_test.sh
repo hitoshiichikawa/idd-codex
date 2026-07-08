@@ -155,7 +155,7 @@ export HOME="$TMP_BIN"
 
 # Issue env defaults（adj_classify_findings が参照）
 export PR_REVIEWER_ADJUDICATOR_EXEC_TIMEOUT="300"
-export PR_REVIEWER_ADJUDICATOR_MODEL="claude-sonnet-4-5"
+export PR_REVIEWER_ADJUDICATOR_MODEL="claude-sonnet-4-6"
 unset PR_REVIEWER_ADJUDICATOR_PROMPT
 
 # ─── helper: stub claude が返す JSON を構築 ─────────────────────────────
