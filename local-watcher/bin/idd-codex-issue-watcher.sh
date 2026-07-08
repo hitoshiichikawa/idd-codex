@@ -296,6 +296,24 @@ AUTO_MERGE_DESIGN_MAX_PRS="${AUTO_MERGE_DESIGN_MAX_PRS:-10}"
 AUTO_MERGE_DESIGN_GIT_TIMEOUT="${AUTO_MERGE_DESIGN_GIT_TIMEOUT:-60}"
 AUTO_MERGE_DESIGN_HEAD_PATTERN="${AUTO_MERGE_DESIGN_HEAD_PATTERN:-^codex/issue-.*-design}"
 
+# ─── Auto-Merge Disarm Processor 設定 (#145 / idd-claude #434 移植) ───
+# arm 済み（`autoMergeRequest != null`）の open PR が `codex-failed` / `codex-needs-decisions`
+# といった terminal ラベルへ遷移した時点で、`gh pr merge --disable-auto` で native auto-merge を
+# 取り消す機能。arm 時点判定（am_should_enable_for_pr）は arm 後の遷移を追えないため、
+# 毎サイクル GitHub を直接クエリして「arm 済み かつ terminal ラベル付き かつ open」な PR を
+# disarm する。
+#
+# opt-in gate: `FULL_AUTO_ENABLED=true` AND (`AUTO_MERGE_ENABLED=true` OR
+# `AUTO_MERGE_DESIGN_ENABLED=true`)。arm が起きるのは AUTO_MERGE_ENABLED /
+# AUTO_MERGE_DESIGN_ENABLED のいずれかが ON のときだけなので、disarm gate を arm 源に
+# 相乗りさせることで、arm が起きない環境（既定）では disarm も完全 no-op になり、
+# 新規 env gate を増やさずに後方互換（新機能既定 OFF）を満たす（idd-claude #434 と同一設計）。
+# どちらの arm 源も無効なら gh API 呼び出しゼロで本不具合修正導入前と等価。
+#
+# 1 サイクルで disarm する PR 数の上限（残りは次回サイクルに持ち越し）。`=数値` 以外は
+# 既定 10 に正規化。timeout は既存 AUTO_MERGE_GIT_TIMEOUT を流用（新規 env を増やさない）。
+AUTO_MERGE_DISARM_MAX_PRS="${AUTO_MERGE_DISARM_MAX_PRS:-10}"
+
 # ─── Failed Recovery Processor 設定 (#101 / D-19) ───
 # `codex-failed` Issue（reviewer-reject 由来含む）と auto-merge 待ちで CI 失敗の PR を
 # 解析 → fresh codex で自動復旧する gate。`=true` 厳密一致のみ ON。`FULL_AUTO_ENABLED`
@@ -1326,7 +1344,7 @@ IDD_MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)/id
 # 3 プロセッサ（quota-aware / merge-queue / auto-rebase）、#181 Part 3 で切り出した
 # 3 プロセッサ（promote-pipeline / pr-iteration / stage-a-verify）を並べ、末尾に
 # #238 の scaffolding-health.sh と #239 の per-run evidence サマリ（run-summary.sh）を置く。
-REQUIRED_MODULES=( "core_utils.sh" "env-loader.sh" "guard-hook.sh" "quota-aware.sh" "merge-queue.sh" "auto-rebase.sh" "auto-merge.sh" "auto-merge-design.sh" "failed-recovery.sh" "needs-decisions-auto.sh" "slack-notify.sh" "stale-pickup-reaper.sh" "promote-pipeline.sh" "pr-iteration.sh" "pr-reviewer.sh" "adjudicator.sh" "stage-a-verify.sh" "scaffolding-health.sh" "context-map.sh" "run-summary.sh" )
+REQUIRED_MODULES=( "core_utils.sh" "env-loader.sh" "guard-hook.sh" "quota-aware.sh" "merge-queue.sh" "auto-rebase.sh" "auto-merge.sh" "auto-merge-design.sh" "auto-merge-disarm.sh" "failed-recovery.sh" "needs-decisions-auto.sh" "slack-notify.sh" "stale-pickup-reaper.sh" "promote-pipeline.sh" "pr-iteration.sh" "pr-reviewer.sh" "adjudicator.sh" "stage-a-verify.sh" "scaffolding-health.sh" "context-map.sh" "run-summary.sh" )
 for _idd_mod in "${REQUIRED_MODULES[@]}"; do
   _idd_mod_path="$IDD_MODULE_DIR/$_idd_mod"
   if [ ! -f "$_idd_mod_path" ]; then
@@ -1500,6 +1518,16 @@ process_auto_rebase || ar_warn "process_auto_rebase が想定外のエラーで�
 process_auto_merge || am_warn "process_auto_merge が想定外のエラーで終了しました（後続 Issue 処理は継続）"
 # 設計 PR auto-merge（#100）。impl 版の直後で head pattern により排他。gate OFF 時は no-op。
 process_auto_merge_design || amd_warn "process_auto_merge_design が想定外のエラーで終了しました（後続 Issue 処理は継続）"
+# Auto-Merge Disarm Processor（#145 / idd-claude #434 移植）— idd-codex-modules/auto-merge-disarm.sh が定義
+#   arm 済み（`autoMergeRequest != null`）の open PR が `codex-failed` / `codex-needs-decisions`
+#   といった terminal ラベルへ遷移した時点で `gh pr merge --disable-auto` で native auto-merge を
+#   取り消す。arm 時点判定（am_should_enable_for_pr）は arm 後の遷移を追えず、失敗確定済み PR が
+#   status checks の green 到達で誤 merge される不具合（Defect A）を解消する。GitHub を直接
+#   クエリして対象を列挙し、state dir には依存しない。opt-in gate は FULL_AUTO_ENABLED AND
+#   (AUTO_MERGE_ENABLED OR AUTO_MERGE_DESIGN_ENABLED)。いずれの arm 源も OFF（既定）なら gh API
+#   ゼロ呼び出しで本不具合修正導入前と等価。arm 側（#99 / #100）の直後に直列配置し、
+#   同一サイクルで arm された PR でも terminal ラベルが付いていれば即 disarm できるようにする。
+process_auto_merge_disarm || amx_warn "process_auto_merge_disarm が想定外のエラーで終了しました（後続 Issue 処理は継続）"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Phase B: Promote Pipeline Processor (#15) + Phase E: Path Overlap Checker (#18)
