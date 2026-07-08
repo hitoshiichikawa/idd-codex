@@ -8,8 +8,9 @@
 #     merge された変更について ST check-run 結果をポーリングし、success なら
 #     PROMOTION_TARGET_BRANCH への fast-forward 昇格、failure なら git revert + reopen +
 #     codex-st-failed 付与を行う（PROMOTE_PIPELINE_ENABLED=true の opt-in 機能）。
-#     pp_resolve_target_branch / pp_collect_merged_issues / pp_get_st_state /
-#     pp_handle_st_failure / pp_handle_st_success / pp_do_promote / process_promote_pipeline ほか。
+#     pp_resolve_target_branch / pp_collect_merged_issues / pp_remove_ready_for_review_if_present /
+#     pp_get_st_state / pp_handle_st_failure / pp_handle_st_success / pp_do_promote /
+#     process_promote_pipeline ほか。
 #   - Path Overlap Checker (#18, Phase E): 同サイクル内 dispatch 競合予防・待機。
 #     Triage 結果の edit_paths を永続化し、in-flight Issue と top-level path が重複する
 #     場合に codex-awaiting-slot ラベルを付与して dispatch を見送る。
@@ -1084,6 +1085,60 @@ pp_issue_has_label() {
     '.labels // [] | map(.name) | index($l)' >/dev/null 2>&1
 }
 
+# pp_remove_ready_for_review_if_present: Issue から `codex-ready-for-review` ラベルを
+# 除去する（#139 / idd-claude #413 移植）。`codex-staged-for-release` 自動付与対象として
+# 確定した Issue 集合に対して `pp_collect_merged_issues` 内のループから呼ばれる。
+#
+# 背景: `BASE_BRANCH != PROMOTION_TARGET_BRANCH`（gitflow）運用では impl PR が
+# `BASE_BRANCH` に merge されても GitHub の auto-close（closing keyword）が発火しない
+# ため、`codex-ready-for-review` が Issue に残り続ける。Path Overlap Checker の
+# holder 集合判定（`codex-staged-for-release` のみを判定除外）に stale な
+# `codex-ready-for-review` が該当し、後続 Issue を `codex-awaiting-slot` で無期限
+# ブロックする。default base（main）運用では GitHub auto-close が既に
+# `codex-ready-for-review` を消しているため、本関数は no-op になる（後方互換）。
+#
+# 設計判断:
+#   - 既に `codex-ready-for-review` が付与されていない Issue では `gh issue edit` を
+#     再送しない。ラベル状態は `pp_issue_has_label` で事前確認する。
+#   - 数値 ID `^[0-9]+$` の再検証を行う（防御層）。呼び出し側で既に検証済みだが、
+#     `gh issue edit` 引数や URL に展開する直前の最終ゲート。
+#   - 除去失敗（タイムアウト / non-zero exit / レート制限）時は WARN ログを 1 行
+#     残し、戻り値 0 を返して呼び出し側の per-Issue ループを継続させる（fail-continue）。
+#   - 既未付与時の INFO ログは出力しない（staged-for-release 重複付与スキップ集計とは
+#     区別可能な「個別 INFO ログを出さない」選択肢を採用）。
+#
+# 入力: $1 = Issue 番号
+# 副作用:
+#   - `codex-ready-for-review` 付与済なら `gh issue edit --remove-label codex-ready-for-review`
+#   - 成功時 `issue=#N action=label-remove label=codex-ready-for-review source=auto` ログ
+#   - 失敗時 `issue=#N codex-ready-for-review 除去に失敗（後続 Issue は継続）` WARN ログ
+# 戻り値: 常に 0（fail-continue）
+pp_remove_ready_for_review_if_present() {
+  local issue_number="$1"
+  # 呼び出しコンテキストによっては $LABEL_READY 未設定（例: 近接テストが本モジュールを
+  # 単体 source する場合）もありうるため、本ファイル内の他箇所（base_labels 組み立て等）
+  # と同じ既定値フォールバックで参照する（`set -u` 下での unbound variable エラー防止）。
+  local label_ready="${LABEL_READY:-codex-ready-for-review}"
+  # `gh issue edit` 引数 / URL 展開直前の数値 ID 再検証。
+  # 不正値（capture 漏れ等）はサイレントに skip。
+  if ! [[ "$issue_number" =~ ^[0-9]+$ ]]; then
+    return 0
+  fi
+  # 既未付与なら API 再送しない（pp_issue_has_label 内部で
+  # `gh issue view --json labels` を 1 回呼ぶのみ）。
+  if ! pp_issue_has_label "$issue_number" "$label_ready"; then
+    return 0
+  fi
+  if timeout "$PROMOTE_GIT_TIMEOUT" \
+      gh issue edit "$issue_number" --repo "$REPO" \
+        --remove-label "$label_ready" >/dev/null 2>&1; then
+    pp_log "issue=#${issue_number} action=label-remove label=${label_ready} source=auto" >&2
+  else
+    pp_warn "issue=#${issue_number} codex-ready-for-review 除去に失敗（後続 Issue は継続）"
+  fi
+  return 0
+}
+
 # pp_pr_issue_candidate_rows: merged PR JSON から staged-for-release 自動付与候補を抽出する。
 # stdout は `<issue_number>\t<source>\t<pr_number>` の 1 行 1 候補。human-readable log は出さない。
 # closing refs は既存互換として managed 判定なしで読むが、design PR
@@ -1237,6 +1292,12 @@ ${pr_rows}"
         }
         END { print out }
       ')
+      # #139 / idd-claude #413: staged-for-release 付与対象として確定した Issue から
+      # stale な codex-ready-for-review を除去する（base ブランチが default かどうかに
+      # 依存しない）。staged-for-release の付与有無に関わらず実行する（既に
+      # staged-for-release を持つ Issue でも、人間付与運用や過去サイクルの取りこぼしで
+      # codex-ready-for-review が残っているケースを救済するため、continue 前に呼ぶ）。
+      pp_remove_ready_for_review_if_present "$issue_number"
       if pp_issue_has_label "$issue_number" "$LABEL_STAGED_FOR_RELEASE"; then
         # AC 2.1.3: 既付与なら API 再送しない
         skipped=$((skipped + 1))
