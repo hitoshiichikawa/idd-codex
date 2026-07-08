@@ -282,6 +282,61 @@ npm test && npm run lint && npm run build
 ```
 ```
 
+### パス存在前提（存在しないパスへの diff を含めない / #134）
+
+verify ブロックに記述する **すべてのコマンド対象パスは、`tasks.md` commit 時点の作業ツリーに
+存在すること**を必須要件とします。存在しないパスを `diff` / `cat` / `shellcheck` 等に渡すと、
+watcher が REPO_DIR で独立再実行したときに「コード品質失敗」と区別の付かない非 0 exit を返し、
+clean な実装でも Stage A が false-fail して `codex-failed` まで escalate する事故が起きます
+（#134 = idd-claude #364 移植）。本制約は **構造化 verify ブロック**（`<!-- stage-a-verify -->`
++ 直後 fence）と、構造化ブロックを持たない場合の **ヒューリスティック抽出**（行頭 keyword 一致）の
+双方に等しく適用されます（同じ「watcher が `bash -c` に渡すコマンド」という入力面を共有している
+ため）。
+
+#### idd-codex 特有の注意: `local-watcher/` は `repo-template/` 配下にミラーされない
+
+idd-codex self-hosting 環境では、root に `local-watcher/bin/*.sh` /
+`local-watcher/bin/idd-codex-modules/*.sh` が存在しますが、**`repo-template/local-watcher/`
+というパスは存在しません**（`repo-template/` にミラーされるのは `.codex/` 一式であり、
+`local-watcher/` は `install.sh` 経由でユーザーホーム（`$HOME/bin/`）へ配布する別系統）。
+そのため、idd-codex の `tasks.md` に
+`diff -r local-watcher/bin repo-template/local-watcher/bin` 等の「`repo-template/local-watcher/`
+配下を比較対象にする」コマンドを verify に含めると、`diff` は exit=2 + `No such file or directory`
+を返し verify が false-fail します。当該パターンのコマンドは verify に **含めてはなりません**。
+
+#### idd-codex における root ↔ repo-template 同期 diff の canonical 対象
+
+idd-codex では root と `repo-template/` 配下が byte 一致で同期される対象は **`.codex/agents` と
+`.codex/rules` の 2 系統のみ**です（AGENTS.md「機能追加ガイドライン」の二重管理規約と整合）。
+したがって idd-codex self-hosting で verify に置く同期 diff の canonical 形は以下に限定されます:
+
+```sh
+diff -r .codex/agents repo-template/.codex/agents
+diff -r .codex/rules repo-template/.codex/rules
+```
+
+`labels` script / `AGENTS.md` / `README.md` 等は **byte 一致対象外**（consumer 固有 / 別 PR で
+個別同期 / 構造的にミラーされない）であり、これらの `diff -r` を verify に含めても意味のある
+検証にはなりません。
+
+#### 存在の不確定なディレクトリへの diff には存在ガードを置く
+
+他リポジトリの `tasks.md` で「2 つのディレクトリのうち一方が cleanup PR 等で消える可能性がある」
+ような不確定パスを参照する必要がある場合、**`[ -d <path> ] && diff -r ...` 形のパス存在ガード**を
+置く書式を canonical とします（パス不在を WARN 降格の対象ではなく **無音 skip** として扱える
+ため、verify 全体の意図が明確になります）:
+
+```sh
+[ -d packages/old-module ] && [ -d packages/new-module ] && \
+  diff -r packages/old-module packages/new-module
+```
+
+`stage-a-verify` 側にも「`diff` の exit=2 + `No such file or directory`」は WARN 降格として
+扱う defense-in-depth（#134）が入っていますが、これは **Architect 側のミス（存在しないパスを
+verify に含めた）を実害化させないための救済ネット**であり、Architect は本節の制約でそもそも
+パス不在を含めない責務を負います。WARN 降格に依存せず、verify 時点で確実に存在するパスのみを
+書くこと。
+
 ### verify 対象が無い spec はブロックを省略できる
 
 verify すべき build/test/lint コマンドが存在しない spec（純ドキュメント変更等）では、構造化ブロックを

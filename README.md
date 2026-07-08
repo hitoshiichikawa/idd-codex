@@ -767,7 +767,7 @@ value の語彙は以下のとおりです:
 | `mode` | `impl` / `impl-resume` / `design` / `unknown` | 実行モード |
 | `stages` | `none` / `A` / `B` / `A,B,C` 等（実行順カンマ区切り。`A'`→`Ap`、`B'`→`Bp`） | 実行された stage 集合 |
 | `reviewer` | `n/a` / `independent:approve:r<n>` / `independent:reject:r<n>` / `independent:quota:r<n>` / `degraded:r<n>` | Reviewer 起動・verdict・round |
-| `stage-a-verify` | `success` / `round1` / `round2` / `skip` / `disabled` / `n/a` | Stage A Verify Gate の結果・round |
+| `stage-a-verify` | `success` / `round1` / `round2` / `skip` / `disabled` / `warn-skipped` / `warn-tool-missing` / `n/a` | Stage A Verify Gate の結果・round（`warn-skipped` は #134 で追加: パス不在 `diff` の WARN 降格時に出る。`warn-tool-missing` は #143 で追加: 実行ファイル未検出（exit 127）の WARN 降格時に出る。いずれも `success` と区別される outcome） |
 | `scaffolding` | `ok` / `missing` / `unknown` | worktree の `.codex/agents` `.codex/rules` 有無 |
 | `errors` | `no` / `yes` | degraded 兆候の検出有無 |
 | `degraded-events` | `none` / `collab_spawn_failed(stage=<stage>,role=<role>,reason=no_thread_with_id,fallback=<yes\|retry\|failed>,degraded=yes,repeated=<yes\|no>)`（複数時は `;` 区切り） | structured degraded event。collab subagent spawn failure では stage / agent role / failure reason / fallback / degraded 判定を保持 |
@@ -1412,7 +1412,7 @@ idd-codex は基本フロー（Triage → 実装 → PR 作成）以外の機能
 | **impl-resume Branch Protection**（既存 origin branch resume + force-push 抑制 + tasks.md 進捗追跡） | `IMPL_RESUME_PRESERVE_COMMITS` | `true` | `=false` 厳密一致のみ無効。それ以外（`Yes` / `1` / 空文字 / typo / 不正値）はすべて有効 | 推奨: `IMPL_RESUME_PROGRESS_TRACKING`（既定 `true`。`=false` で進捗追跡指示の注入のみ抑制。`IMPL_RESUME_PRESERVE_COMMITS=false` 時は値に関わらず注入されない） | [impl-resume Branch Protection (#67)](#impl-resume-branch-protection-67) | #67, #112 |
 | **impl-resume tasks.md 進捗追跡**（Developer がタスク完了ごとに `- [ ]` → `- [x]` を専用 commit） | `IMPL_RESUME_PROGRESS_TRACKING` | `true` | `=false` 厳密一致のみ無効。それ以外（空文字含む）は有効 | 必須前提: `IMPL_RESUME_PRESERVE_COMMITS=true`（既定）。`IMPL_RESUME_PRESERVE_COMMITS=false` の状態では本機能は **常に未注入**（サイレント no-op） | [impl-resume Branch Protection (#67)](#impl-resume-branch-protection-67) | #67 |
 | **Stage Checkpoint Resume**（impl 系 Stage 単位の checkpoint で Reviewer / PjM 失敗時の Developer 再実行回避。#212 Stage C 直前冪等ガード / #219 Stage A 越境観測・spec 成果物完全性保証を相乗りで内包） | `STAGE_CHECKPOINT_ENABLED` | `true` | `=false` 厳密一致のみ無効。それ以外（空文字 / `0` / `False` / typo）はすべて有効 | — | [Stage Checkpoint (#68)](#stage-checkpoint-68) | #68, #112, #212, #219 |
-| **Stage A Verify Gate**（tasks.md 末尾 verify タスク（build/test/lint）の独立再実行で自己申告ガード） | `STAGE_A_VERIFY_ENABLED` | `true` | `=false` 厳密一致のみ無効。それ以外（空文字 / `0` / `False` / typo）はすべて有効 | 推奨: `STAGE_A_VERIFY_TIMEOUT`（既定 `600` 秒）、`STAGE_A_VERIFY_KILL_AFTER`（既定 `10` 秒 / timeout 到達後 SIGTERM → SIGKILL までの猶予。setsid + pgid 全体 SIGKILL で孤児 grandchild を回収し flock 占有デッドロックを防ぐ / 通常変更不要 / idd-claude #377/F5 移植）、`STAGE_A_VERIFY_COMMAND`（構造化ブロック不在時に参照する operator 固定 escape hatch / 未対応言語向け）、`STAGE_A_VERIFY_SANDBOX_PROFILE`（tasks.md 由来 verify 用 Codex permission profile / 既定 `:workspace`）、`STAGE_A_VERIFY_EXECUTION_BOUNDARY`（既定 `codex-sandbox`。iOS Simulator / Xcode 等で必要な場合のみ `host` を明示して verify 実行境界を調整）、`STAGE_A_VERIFY_STATE_DIR`（round counter 永続化先 / 既定 `$HOME/.idd-codex/issue-watcher/state/<repo_slug>` / 通常変更不要 / #246） | [Stage A Verify Gate (#125)](#stage-a-verify-gate-125) | #125, #246, #51, #377, #130 |
+| **Stage A Verify Gate**（tasks.md 末尾 verify タスク（build/test/lint）の独立再実行で自己申告ガード） | `STAGE_A_VERIFY_ENABLED` | `true` | `=false` 厳密一致のみ無効。それ以外（空文字 / `0` / `False` / typo）はすべて有効 | 推奨: `STAGE_A_VERIFY_TIMEOUT`（既定 `600` 秒）、`STAGE_A_VERIFY_KILL_AFTER`（既定 `10` 秒 / timeout 到達後 SIGTERM → SIGKILL までの猶予。setsid + pgid 全体 SIGKILL で孤児 grandchild を回収し flock 占有デッドロックを防ぐ / 通常変更不要 / idd-claude #377/F5 移植）、`STAGE_A_VERIFY_COMMAND`（構造化ブロック不在時に参照する operator 固定 escape hatch / 未対応言語向け）、`STAGE_A_VERIFY_SANDBOX_PROFILE`（tasks.md 由来 verify 用 Codex permission profile / 既定 `:workspace`）、`STAGE_A_VERIFY_EXECUTION_BOUNDARY`（既定 `codex-sandbox`。iOS Simulator / Xcode 等で必要な場合のみ `host` を明示して verify 実行境界を調整）、`STAGE_A_VERIFY_STATE_DIR`（round counter 永続化先 / 既定 `$HOME/.idd-codex/issue-watcher/state/<repo_slug>` / 通常変更不要 / #246） | [Stage A Verify Gate (#125)](#stage-a-verify-gate-125) | #125, #246, #51, #377, #130, #134, #143 |
 | **Tasks Count Gate**（Architect 完了直後の tasks.md 件数を harness で再評価し、8〜10 件で警告コメント / ≥11 件で `codex-needs-decisions` + Developer 自動起動抑止） | `TC_ENABLED` | `true` | `=false` 厳密一致のみ無効。それ以外（空文字 / `0` / `False` / typo）はすべて有効 | 推奨: `TC_WARN_LOWER`（既定 `8`）、`TC_WARN_UPPER`（既定 `10`）、`TC_ESCALATE_LOWER`（既定 `11`）。非整数は warning ログ + 既定値にフォールバック | [Tasks Count Gate (#147)](#tasks-count-gate-147) | #147 |
 | **Per-Run Evidence Summary**（1 サイクルの stage/gate 実行実態を `run-summary:` 1 行で機械可読出力。前述「複数リポ運用時の cron.log grep 例」節参照） | `RUN_SUMMARY_ENABLED` | `true` | lowercase の `false` / `0` / `no` / `off` のいずれかで無効。それ以外（空文字 / `False` / `OFF` / typo）はすべて有効（#112 系 8 種の「`=false` 厳密一致のみ無効」とは正規化規則が異なる点に注意） | — | Issue #239（専用詳細セクションなし。grep 例・enum 表は本節の上記参照） | #239 |
 | **役割定義の prompt 注入**（Codex には Claude の subagent 機構が無いため `.codex/agents/<role>.md` を各 stage の prompt へ注入する。Developer 出力品質のキーストーン） | `CODEX_INJECT_ROLE_DEFS` | `true` | `=false` で注入なし（移植直後の挙動に戻す） | — | 下記「Codex CLI 移植固有の harness 設計」節 | #74 |
@@ -4618,6 +4618,38 @@ opt-out したい場合:
   デッドロックを防ぐ（idd-claude #377/F5 移植）
 - **SKIPPED**: `tasks.md` 内に抽出キーワード集合と一致する行が無ければ SKIPPED
   として Stage A 完了を続行（reason ログ付き）
+- **WARN 降格（パス不在 `diff` 失敗 / #134）**: verify コマンドが `diff` のパス不在
+  （`exit=2` + 出力に `diff: <path>: No such file or directory`）**のみ**で終了した場合、
+  これを「コード品質失敗」と区別して **WARN に降格**し、`codex-failed` 化も Developer 差し戻しも
+  行わず Stage A を続行します。round counter も増加させません。本機能は Architect 側で
+  `.codex/rules/tasks-generation.md` の「パス存在前提」節に従って verify からパス不在を排除する
+  root-cause fix と対になる **defense-in-depth** であり、Architect が誤ってミラーされていない
+  パス（idd-codex の `repo-template/local-watcher/` 等）を verify に含めた場合の false-fail を
+  実害化させないための救済ネットです。WARN 降格ログは
+  `[YYYY-MM-DD HH:MM:SS] [$REPO] stage-a-verify: WARN: reason=verify-path-missing path=<検出パス> exit=2 cmd=<shell-quoted>`
+  形式で 1 行記録され、`grep '\[.*\] stage-a-verify: WARN'` で全件抽出可能です。run サマリの
+  `stage-a-verify=` キーは `warn-skipped` outcome として success と区別されます。**real な
+  テスト / lint / shellcheck 失敗（exit=1 等）/ `diff` の content 差分（exit=1）/ timeout
+  （exit=124）は本機能の対象外**で、従来どおり round1 差し戻し / round2 escalate 経路です
+- **WARN 降格（実行ファイル未検出 / tool-missing / #143）**: verify コマンドが `exit 127`
+  （POSIX 規約で「command not found」）で終了した場合、これを「コード品質失敗」と区別して
+  **WARN に降格**し、`codex-failed` 化も Developer 差し戻しも行わず Stage A を続行します。
+  round counter も増加させません。watcher ホストに lint / build ツール（例: `golangci-lint`,
+  `node`, `go`, `gradle`）が未インストールという環境要因に過ぎず、コード自体は verify-clean
+  であるため、人間を不要に escalate に巻き込まないための救済ネットです。連結コマンド（`&&` /
+  `||` / `;`）で全体 exit code が 127 となるケース（先頭・途中・末尾いずれかの未検出コマンド）
+  もすべて本経路で処理します。**real fail（exit=1 等）と 127 が混在し最終 exit code が
+  real fail のもの（例: 1）となる場合**は従来の round1 → round2 → `codex-failed` 経路を
+  維持します（短絡評価で最終 exit code が real fail のものになるため）。WARN 降格ログは
+  `[YYYY-MM-DD HH:MM:SS] [$REPO] stage-a-verify: WARN: reason=verify-tool-missing tool=<推定ツール名> exit=127 cmd=<shell-quoted>`
+  形式で 1 行記録されます。`tool=` フィールドには出力の
+  `bash: line N: <tool>: command not found` から抽出した名前、またはコマンド断片の先頭 token を
+  best-effort で記録します（取得不能時は `(unknown)`）。run サマリの `stage-a-verify=` キーは
+  `warn-tool-missing` outcome として success / `warn-skipped`（path-missing）と区別されます。
+  `grep ... | grep 'reason=verify-tool-missing'` で「ツール未導入による降格」だけに絞れば、
+  運用者は cron.log から「どのツールを watcher ホストに追加インストールすべきか」を集計できます。
+  **timeout（exit=124）/ real fail（exit=1 等）/ path-missing `diff`（exit=2 + ENOENT）は
+  本機能の対象外**で、従来どおりの各経路です
 
 round counter は **worktree 外**の `$HOME/.idd-codex/issue-watcher/state/<repo_slug>/<NUMBER>-<branch>.stage-a-verify-round`
 に整数 1 行で永続化されます（commit しない設計）。SUCCESS / codex-failed escalate 後に削除されます。
@@ -4651,8 +4683,15 @@ body の形式（grep / awk で個別抽出可能）:
 - `SUCCESS exit=0` — 成功
 - `FAILED exit=<N>` — 失敗（exit）
 - `TIMEOUT timeout=<S>s exit=124` — 失敗（timeout）
+- `WARN: reason=verify-path-missing path=<path> exit=2 cmd=<shell-quoted>` — パス不在 `diff` の WARN 降格（#134）
+- `WARN: reason=verify-tool-missing tool=<tool> exit=127 cmd=<shell-quoted>` — 実行ファイル未検出（tool-missing）の WARN 降格（#143）
 - `round=<N> outcome=codex-needs-iteration (Developer 差し戻し)` — round=1 後
 - `round=<N> outcome=codex-failed (escalate to human)` — round=2 後
+
+WARN 降格行は `grep '\[.*\] stage-a-verify: WARN'` で全件抽出可能で、`grep ... | grep
+'reason=verify-path-missing'` で「パス不在による false-fail 救済」（#134）だけに、`grep ... | grep
+'reason=verify-tool-missing'` で「実行ファイル未検出による false-fail 救済」（#143）だけに
+絞れます。TIMEOUT / FAILED 等の他 WARN（既存）と区別したい場合は本フィルタを使ってください。
 
 ### Migration Note（既存ユーザー向け）
 
