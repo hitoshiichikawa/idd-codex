@@ -11,10 +11,12 @@
 #   確定権を adjudicator 側に移譲する。設計の詳細は
 #   docs/specs/404-feat-pr-reviewer-codex-advisory-claude-a/design.md を参照。
 #
-#   - opt-in gate 判定: adj_gate_enabled
+#   - gate 判定: adj_gate_enabled
 #     既に正規化済みの `PR_REVIEWER_ADJUDICATOR_ENABLED`（idd-codex-issue-watcher.sh の
-#     Config ブロックで `case true) ... *) false` に正規化済み）を厳密 `=true` で評価する。
-#     重複正規化は行わない（既定値の責任は呼び出し側 / Req 5.1）。
+#     Config ブロックで `case false) :;; *) true` + 後段の「デフォルト有効化フラグの値正規化」
+#     ループにより `true` / `false` の 2 値に正規化済み。#138 で既定反転 = ON / opt-out）を
+#     厳密 `=true` で評価する。重複正規化は行わない（既定値の責任は呼び出し側 / #404 Req 5.1 /
+#     #138 既定反転）。
 #   - codex 指摘 parse: adj_extract_findings
 #     codex stdout の `## 指摘事項` 配下 bullet 行を awk で抽出し、JSON 配列化する。
 #     reconciliation check 内蔵: `## 指摘事項` 配下の bullet 総数と parse 件数を突合し、
@@ -36,14 +38,18 @@
 #   - 外部 CLI: jq（指摘 JSON 化に使用）/ claude（adjudicator 本体）。
 
 # ─────────────────────────────────────────────────────────────────────────────
-# adj_gate_enabled: opt-in gate 評価（既に正規化済みの env を厳密一致で判定）
+# adj_gate_enabled: gate 評価（既に正規化済みの env を厳密一致で判定）
 #   入力: なし（env のみ参照）
 #   出力: なし
 #   戻り値: 0 = ON / 1 = OFF
 #
 #   idd-codex-issue-watcher.sh の Config ブロックで `PR_REVIEWER_ADJUDICATOR_ENABLED` は
-#   `case true) ... *) false` で正規化されているため、本関数は厳密 `=true` 判定のみ行う
-#   （既定 / 未設定 / typo / 大文字違い等はすべて OFF / Req 5.1 安全側 / 重複正規化はしない）。
+#   `case false) :;; *) true`（#138 で既定反転）+ 後段の「デフォルト有効化フラグの値正規化」
+#   ループで `true` / `false` の 2 値に正規化されているため、本関数は厳密 `=true` 判定のみ
+#   行う（`=false` 明示のみ OFF、それ以外は ON / #404 Req 5.1 安全側 + #138 既定反転 /
+#   重複正規化はしない）。watcher 本体を経由しない直接呼び出し（テスト等）で env 未設定の
+#   場合は従来どおり OFF に倒れる（`:-false` フォールバックは防御的既定であり、正規化済み
+#   env を前提とする本番経路では到達しない）。
 # ─────────────────────────────────────────────────────────────────────────────
 adj_gate_enabled() {
   if [ "${PR_REVIEWER_ADJUDICATOR_ENABLED:-false}" = "true" ]; then

@@ -549,34 +549,49 @@ esac
 # exec-fail streak（per-PR の {sha, streak}）の永続化先（repo-slug 分離 / failed-recovery と同方針）。
 PR_REVIEWER_EXEC_FAIL_STATE_DIR="${PR_REVIEWER_EXEC_FAIL_STATE_DIR:-$HOME/.idd-codex/pr-reviewer-exec-fail/$REPO_SLUG}"
 
-# ─── PR Reviewer Adjudicator 設定 (#404) ───
+# ─── PR Reviewer Adjudicator 設定 (#404 / #138) ───
 # codex Reviewer の指摘を Claude adjudicator が「legitimate（実害）」と「excessive
 # （過剰指摘）」に分類し、(1) `codex-needs-iteration` 反復を legitimate のみで駆動し、
 # (2) merge ゲートを `codex-review`（advisory）から `claude-review`（必須相当）へシフトする
-# opt-in 機能（Issue #404）。codex の過剰指摘 / nitpick / exec-failed が merge を永久 block
-# する事象を解消する。
+# 機能（Issue #404）。codex の過剰指摘 / nitpick / exec-failed が merge を永久 block
+# する事象を解消する。idd-codex は codex が primary reviewer のため、この経路は production
+# の主経路であり、opt-in 既定 OFF のままでは production で発動しない（#138）。
 #
-# **完全な opt-in / 既定 OFF**（Req 5.1 / NFR 1.1）。`PR_REVIEWER_ADJUDICATOR_ENABLED=true`
-# 厳密一致以外（未設定 / 空 / `True` / `TRUE` / `1` / typo 等）はすべて `false` に正規化し、
-# 本機能導入前と完全に等価な挙動を保つ（Req 5.2）。gate OFF 時は adjudicator.sh の関数群が
-# 早期 return するため、コメント投稿 / ラベル付与 / commit status publish の既存挙動には
-# 影響を与えない（NFR 2.1 観測ログ diff ゼロ / Req 5.3 既存 env 名・既定値・意味の不変性）。
+# **既定 ON / opt-out（#138 で既定反転）**: `PR_REVIEWER_ADJUDICATOR_ENABLED=false` を
+# 明示した場合のみ無効化し、それ以外（未設定 / 空 / `True` / `TRUE` / `1` / `0` / typo 等）は
+# すべて安全側＝有効として `true` に正規化する。値の最終正規化は後段の「デフォルト有効化
+# フラグの値正規化」ループでも適用される（#138 で本フラグを同ループに追加）。`=false` を
+# 既存 cron / launchd で明示している環境は、本変更導入前の opt-in 既定 OFF と完全に等価な
+# 挙動を維持する。
+#
+# 後方互換性（#138）:
+#   - `PR_REVIEWER_ADJUDICATOR_ENABLED` 以外の `PR_REVIEWER_ADJUDICATOR_*` env / ラベル名 /
+#     commit status 名 / exit code / log prefix は不変。
+#   - 既定反転は本 1 フラグのみ（fallback 既定や他 env の挙動・正規化規則は変更しない）。
+#   - adjudicator の実発動には前提（`PR_REVIEWER_ENABLED=true` + claude CLI インストール・
+#     認証済み）が別途必要。前提不成立時は既存ガード（adjudicator.sh 内の早期 return /
+#     fallback=passthrough）がそのまま働くため、default ON 化しても前提未整備の環境では
+#     観測可能な挙動は変わらない。
 #
 # **fallback 既定 `passthrough` の根拠**（Architecture Decision: claude-review publisher
-# contention 参照 / SPOF 緩和）: adjudicator 自身が claude exec 失敗 / rate-limit / timeout
-# 等で publish できなかった場合、`passthrough` は adjudicator 自体を実行しなかったかのように
-# 扱い、既存 2nd gate / 独立 Reviewer の verdict を尊重する。これにより「codex の SPOF を
-# Claude の SPOF に付け替えただけ」の事態を避ける。`legitimate` は claude 失敗を即 block
-# 扱いしたい運用向け明示 opt-out 値（adjudicator 失敗時に全件 legitimate に倒し
-# needs-iteration 維持 + `claude-review = failure` を publish する）。
+# contention 参照 / SPOF 緩和。#138 既定 ON 化後も維持）: adjudicator 自身が claude exec
+# 失敗 / rate-limit / timeout 等で publish できなかった場合、`passthrough` は adjudicator
+# 自体を実行しなかったかのように扱い、既存 2nd gate / 独立 Reviewer の verdict を尊重する。
+# これにより「codex の SPOF を Claude の SPOF に付け替えただけ」の事態を避ける。default ON
+# 化によって adjudicator は全 consumer repo で常時起動しうるが、`passthrough` 既定は 2nd
+# gate 経路へのフォールバックを残すことで claude-review publisher の SPOF を回避する。
+# `legitimate` は claude 失敗を即 block 扱いしたい運用向け明示 opt-in 値（adjudicator 失敗
+# 時に全件 legitimate に倒し needs-iteration 維持 + `claude-review = failure` を publish する）。
 #
 # 関数本体は idd-codex-modules/adjudicator.sh、ロガー adj_log / adj_warn / adj_error は
 # core_utils.sh 配置済み。
-PR_REVIEWER_ADJUDICATOR_ENABLED="${PR_REVIEWER_ADJUDICATOR_ENABLED:-false}"
-# 値正規化: `true` 厳密一致のみ通し、それ以外はすべて `false` に固定する（Req 5.1 安全側）。
+PR_REVIEWER_ADJUDICATOR_ENABLED="${PR_REVIEWER_ADJUDICATOR_ENABLED:-true}"
+# 値正規化: `false` 厳密一致のみ OFF とし、それ以外（未設定 / 空 / `True` / `TRUE` / `1` /
+# typo 等）はすべて `true` に固定する（#138 既定反転 / 安全側）。最終正規化は後段の
+# 「デフォルト有効化フラグの値正規化」ループでも同様に適用される。
 case "$PR_REVIEWER_ADJUDICATOR_ENABLED" in
-  true) : ;;
-  *)    PR_REVIEWER_ADJUDICATOR_ENABLED="false" ;;
+  false) : ;;
+  *)     PR_REVIEWER_ADJUDICATOR_ENABLED="true" ;;
 esac
 # adjudicator 呼び出しモデル（既存命名規約踏襲）。空文字なら既定。
 PR_REVIEWER_ADJUDICATOR_MODEL="${PR_REVIEWER_ADJUDICATOR_MODEL:-claude-sonnet-4-6}"
@@ -953,12 +968,13 @@ IMPL_RESUME_PRESERVE_COMMITS="${IMPL_RESUME_PRESERVE_COMMITS:-true}"
 # （Req 2.9, 5.2）。
 IMPL_RESUME_PROGRESS_TRACKING="${IMPL_RESUME_PROGRESS_TRACKING:-true}"
 
-# ─── デフォルト有効化フラグの値正規化 (#112 Req 2.10) ───
-# 上記 9 種の env var はすべて「`=false` を明示した場合のみ無効、それ以外
+# ─── デフォルト有効化フラグの値正規化 (#112 Req 2.10 / #138 で 1 フラグ追加) ───
+# 下記 10 種の env var はすべて「`=false` を明示した場合のみ無効、それ以外
 # （未設定 / 空文字 / `0` / `False` / `Yes` / typo 等）はすべてデフォルト有効」
 # として扱う。後続コードの `[ "$VAR" = "true" ]` / `[ "$VAR" != "true" ]` /
 # jq の `$design_enabled == "true"` 等の比較を変更せず正規化で吸収するため、
 # 値を厳密な "true" / "false" の 2 値に正規化する。
+# #138: `PR_REVIEWER_ADJUDICATOR_ENABLED` を本ループに追加（既定 ON / `=false` で opt-out）。
 for _idd_flag in \
     MERGE_QUEUE_ENABLED \
     MERGE_QUEUE_RECHECK_ENABLED \
@@ -968,7 +984,8 @@ for _idd_flag in \
     STAGE_CHECKPOINT_ENABLED \
     QUOTA_AWARE_ENABLED \
     IMPL_RESUME_PRESERVE_COMMITS \
-    IMPL_RESUME_PROGRESS_TRACKING; do
+    IMPL_RESUME_PROGRESS_TRACKING \
+    PR_REVIEWER_ADJUDICATOR_ENABLED; do
   if [ "${!_idd_flag}" = "false" ]; then
     printf -v "$_idd_flag" '%s' "false"
   else
@@ -1292,7 +1309,11 @@ mkdir -p "$LOG_DIR"
 # 解決済み base branch を起動時 log に出力（Req 1.7 / NFR 4.1）。
 # 運用者が cron mailer / log で `base-branch=...` を grep できるよう、
 # 既定値（main）でも明示的に出力する。
-echo "[$(date '+%F %T')] base-branch=${BASE_BRANCH} merge-queue-base=${MERGE_QUEUE_BASE_BRANCH} auto-rebase=${AUTO_REBASE_MODE} auto-rebase-semantic=${AUTO_REBASE_SEMANTIC} auto-merge=${AUTO_MERGE_ENABLED} auto-merge-design=${AUTO_MERGE_DESIGN_ENABLED} failed-recovery=${FAILED_RECOVERY_ENABLED} needs-decisions-mode=${NEEDS_DECISIONS_MODE} blocked-cycle-detection=${BLOCKED_CYCLE_DETECTION_ENABLED} slack-notify=${SLACK_NOTIFY_ENABLED} pr-reviewer-2nd-gate=${PR_REVIEWER_SECOND_GATE} full-auto=${FULL_AUTO_ENABLED}"
+# Issue #138: cycle startup ログに `pr-reviewer-adjudicator=` の解決値も含める。
+# 運用者は `grep pr-reviewer-adjudicator=` で adjudicator 経路の有効 / 無効状態を事後に
+# 判別できる。既定反転（OFF → ON）後、`=false` を明示した opt-out 環境を grep で識別する
+# 目的を兼ねる。
+echo "[$(date '+%F %T')] base-branch=${BASE_BRANCH} merge-queue-base=${MERGE_QUEUE_BASE_BRANCH} auto-rebase=${AUTO_REBASE_MODE} auto-rebase-semantic=${AUTO_REBASE_SEMANTIC} auto-merge=${AUTO_MERGE_ENABLED} auto-merge-design=${AUTO_MERGE_DESIGN_ENABLED} failed-recovery=${FAILED_RECOVERY_ENABLED} needs-decisions-mode=${NEEDS_DECISIONS_MODE} blocked-cycle-detection=${BLOCKED_CYCLE_DETECTION_ENABLED} slack-notify=${SLACK_NOTIFY_ENABLED} pr-reviewer-2nd-gate=${PR_REVIEWER_SECOND_GATE} full-auto=${FULL_AUTO_ENABLED} pr-reviewer-adjudicator=${PR_REVIEWER_ADJUDICATOR_ENABLED}"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # doctor サブコマンド dispatch (#238 / Decision 2)
@@ -1704,6 +1725,15 @@ process_design_review_release() {
 # codex-needs-iteration ラベルを同一 flock 内で直後の process_pr_iteration が引き継げる
 # （PR_REVIEWER_ENABLED!=true なら即 return 0 で本機能導入前と等価、NFR 1.1）。
 process_pr_reviewer || pr_warn "process_pr_reviewer が想定外のエラーで終了しました（後続 Issue 処理は継続）"
+
+# Issue #138 Merge Gate Visibility Processor を PR Reviewer の直後に実行（idd-claude #412 移植）。
+# `claude-review` を required status に採用した repo で、adjudicator も #108 2nd gate も
+# 発火せず `claude-review` が publish されない停滞 PR を検知して可視化する
+# （codex-needs-merge-gate-attention 付与 + WARN ログ）。`claude-review` が required でない
+# repo では read-only の gh 呼び出しのみで即 return 0（副作用ゼロ）。adjudicator や 2nd gate
+# が後発で publish に成功した場合は次サイクル冒頭で当該 PR が解消と判定され、label が冪等に
+# 除去される。
+process_claude_review_merge_gate_visibility || pr_warn "process_claude_review_merge_gate_visibility が想定外のエラーで終了しました（後続 Issue 処理は継続）"
 
 # Phase A 直後に PR Iteration Processor を実行（AC 8.1 / 8.2: 同一 flock 内で直列実行）
 process_pr_iteration || pi_warn "process_pr_iteration が想定外のエラーで終了しました（後続 Issue 処理は継続）"
