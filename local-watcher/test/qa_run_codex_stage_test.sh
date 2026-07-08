@@ -106,6 +106,9 @@ eval "$(extract_function "$WATCHER_SH" "qa_run_codex_stage")"
 eval "$(extract_function "$WATCHER_SH" "qa_format_iso8601")"
 # shellcheck disable=SC1090
 eval "$(extract_function "$WATCHER_SH" "qa_persist_reset_time")"
+# ── watcher refactor 追従: qa_persist_reset_time は secure tempfile helper 経由で永続化する ──
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$CORE_UTILS_SH" "idd_secure_mktemp")"
 # shellcheck disable=SC1090
 eval "$(extract_function "$WATCHER_SH" "qa_build_escalation_comment")"
 # shellcheck disable=SC1090

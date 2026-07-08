@@ -35,6 +35,16 @@ eval "$(extract_function "$WATCHER_SH" "pt_build_diff_range_resolve_diagnostic")
 eval "$(extract_function "$WATCHER_SH" "pt_guard_reviewer_range_fresh")"
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$WATCHER_SH" "run_per_task_reviewer")"
+# ── watcher refactor 追従 (#149 Reviewer timeout / secure tempfile): ──
+# run_per_task_reviewer が新たに依存する timeout helper と idd_secure_mktemp を追加ロード。
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$WATCHER_SH" "codex_effective_timeout_sec")"
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$WATCHER_SH" "reviewer_base_timeout_sec")"
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$WATCHER_SH" "reviewer_normalize_extended_timeout_sec")"
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$SCRIPT_DIR/../bin/idd-codex-modules/core_utils.sh" "idd_secure_mktemp")"
 
 if ! declare -F pt_resolve_diff_range >/dev/null; then
   echo "ERROR: pt_resolve_diff_range not loaded" >&2

@@ -41,6 +41,17 @@ eval "$(extract_function "$WATCHER_SH" "pt_build_redo_context_block")"
 eval "$(extract_function "$WATCHER_SH" "pt_extract_learnings")"
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$WATCHER_SH" "build_per_task_implementer_prompt")"
+# ── watcher refactor 追従: prompt builder が新規依存する module 関数 / env を追加ロード ──
+# build_per_task_{implementer,reviewer}_prompt は build_issue_context_block（watcher）と
+# cm_build_prompt_block（context-map module。既定 OFF 時は空文字を返す）を呼ぶ。
+# shellcheck source=../bin/idd-codex-modules/context-map.sh
+. "$SCRIPT_DIR/../bin/idd-codex-modules/context-map.sh"
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$WATCHER_SH" "build_issue_context_block")"
+LABEL_NEEDS_DECISIONS="${LABEL_NEEDS_DECISIONS:-codex-needs-decisions}"
+# pt_build_redo_context_block は idd_secure_mktemp を呼ぶ。
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$SCRIPT_DIR/../bin/idd-codex-modules/core_utils.sh" "idd_secure_mktemp")"
 
 if ! declare -F pt_extract_review_reject_context >/dev/null; then
   echo "ERROR: pt_extract_review_reject_context not loaded" >&2

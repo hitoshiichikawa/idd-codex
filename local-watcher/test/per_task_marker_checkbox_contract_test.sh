@@ -38,6 +38,14 @@ eval "$(extract_function "$WATCHER_SH" "pt_resolve_diff_range")"
 eval "$(extract_function "$WATCHER_SH" "build_per_task_implementer_prompt")"
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$WATCHER_SH" "build_per_task_reviewer_prompt")"
+# ── watcher refactor 追従: prompt builder が新規依存する module 関数 / env を追加ロード ──
+# build_per_task_{implementer,reviewer}_prompt は build_issue_context_block（watcher）と
+# cm_build_prompt_block（context-map module。既定 OFF 時は空文字を返す）を呼ぶ。
+# shellcheck source=../bin/idd-codex-modules/context-map.sh
+. "$SCRIPT_DIR/../bin/idd-codex-modules/context-map.sh"
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$WATCHER_SH" "build_issue_context_block")"
+LABEL_NEEDS_DECISIONS="${LABEL_NEEDS_DECISIONS:-codex-needs-decisions}"
 
 for fn in pt_extract_learnings pt_resolve_diff_range build_per_task_implementer_prompt build_per_task_reviewer_prompt; do
   if ! declare -F "$fn" >/dev/null; then

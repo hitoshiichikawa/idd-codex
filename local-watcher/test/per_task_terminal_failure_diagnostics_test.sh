@@ -42,6 +42,14 @@ eval "$(extract_function "$WATCHER_SH" "validate_debugger_notes")"
 eval "$(extract_function "$WATCHER_SH" "run_debugger_stage")"
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$WATCHER_SH" "run_per_task_loop")"
+# ── watcher refactor 追従: run_debugger_stage が依存する secure tempfile helper を追加ロード ──
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$SCRIPT_DIR/../bin/idd-codex-modules/core_utils.sh" "idd_secure_mktemp")"
+# run_per_task_loop の startup guard（numeric checkbox marker 検査）helper も追加。
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$WATCHER_SH" "pt_has_watcher_compatible_tasks")"
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$WATCHER_SH" "pt_fail_no_compatible_tasks")"
 
 for fn in pt_artifact_state_line pt_artifact_content_block pt_build_terminal_failure_diagnostics mark_issue_failed dbg_log validate_debugger_notes run_debugger_stage run_per_task_loop; do
   if ! declare -F "$fn" >/dev/null; then

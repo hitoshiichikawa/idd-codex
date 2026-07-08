@@ -709,7 +709,15 @@ pr_execute_review_command() {
     local repo_root review_tmp review_wt git_err classification excerpt
     repo_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 
-    if ! review_tmp=$(mktemp -d "${TMPDIR:-/tmp}/idd-pr-reviewer.XXXXXX" 2>/dev/null); then
+    if ! review_tmp=$(idd_secure_mktemp "pr-reviewer-workspace"); then
+      pr_warn "review workspace 準備失敗 class=tempdir-fail head=${head_ref} tool=${tool}"
+      printf 'workspace-fail:tempdir-fail\n' > "$result_file"
+      exit 0
+    fi
+    # idd_secure_mktemp は private (mode 700) tmp root 配下に file を作るため、
+    # review worktree 用に directory へ変換する（file→dir。親が owner-only なので安全）。
+    rm -f "$review_tmp"
+    if ! mkdir -p "$review_tmp"; then
       pr_warn "review workspace 準備失敗 class=tempdir-fail head=${head_ref} tool=${tool}"
       printf 'workspace-fail:tempdir-fail\n' > "$result_file"
       exit 0
