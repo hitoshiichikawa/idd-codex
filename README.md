@@ -1674,6 +1674,7 @@ Codex CLI には Claude の `--max-turns` 相当の turn 上限が無い。各 `
 | 変数 | 既定 | 用途 |
 |---|---|---|
 | `CODEX_DEFAULT_TIMEOUT_SEC` | `1800` | 全 codex exec の既定 wall-clock 上限（秒）。`0` で無効。呼び出し側が明示する `CODEX_EXEC_TIMEOUT_SEC`（auto-rebase 等）が優先される |
+| `REVIEWER_TIMEOUT_EXTENDED_SEC` | 基準 timeout の 2 倍 | **#149**: 独立 Reviewer が timeout（rc=124）した場合のみ、同一 round 内で 1 回だけ適用される拡張 timeout（秒）。詳細は「Reviewer ゲート」節の環境変数表を参照 |
 
 ### Stage A の PM / Developer 分離（#82 / 既定 ON・挙動変更）
 
@@ -3924,9 +3925,21 @@ Stage C exit !=0 → codex-failed
 |---|---|---|---|
 | `REVIEWER_MODEL` | `gpt-5.5` | `DEV_MODEL` と揃える運用が無難 | Reviewer サブエージェント用 Codex モデル ID |
 | `REVIEWER_MAX_TURNS` | `30` | turn 不足で parse 失敗が出る場合のみ増やす | Reviewer 1 起動あたりの Codex 実行 turn 数上限（NFR 1.1） |
+| `REVIEWER_TIMEOUT_EXTENDED_SEC` | 基準 timeout の 2 倍（既定 `3600`） | 大規模 spec / diff で拡張リトライ後も timeout が続く場合のみ増やす | **#149（idd-claude #442 移植）**: 独立 Reviewer（per-task 経路 / 単発経路）が wall-clock timeout（rc=124）で終了したときの拡張リトライ用 timeout 予算（秒）。同一 round 内で 1 回だけ拡張 timeout で再実行し、なお timeout なら `reviewer-timeout-exhausted`（per-task 経路は `per-task-reviewer-timeout-exhausted`）カテゴリで `codex-failed` 化する（codex crash / parse 失敗の `reviewer-error` と grep で区別可能）。未設定 / 非数値は既定（基準 timeout `CODEX_DEFAULT_TIMEOUT_SEC` の 2 倍）にフォールバック。基準未満の値は基準に引き上げ正規化。基準 timeout 無効（`CODEX_DEFAULT_TIMEOUT_SEC=0`）時は拡張リトライ自体が非適用（従来挙動） |
 
 `REVIEWER_MODEL` / `REVIEWER_MAX_TURNS` は **既存環境変数（`TRIAGE_MODEL` / `DEV_MODEL` /
 `TRIAGE_MAX_TURNS` / `DEV_MAX_TURNS` 等）と独立** に扱われ、互いの値が他方の挙動に影響しません。
+
+> **Note（#149 / Reviewer timeout 拡張リトライ）**: Codex CLI には Claude の `--max-turns` 相当が
+> 無く `REVIEWER_MAX_TURNS` は事実上無効（ログ表示のみ）のため、Reviewer の「予算切れ」は
+> `CODEX_DEFAULT_TIMEOUT_SEC` ベースの wall-clock timeout（rc=124）として現れます。#149 で、
+> この timeout 起因の失敗に限り即 `codex-failed` とせず、拡張 timeout
+> （`REVIEWER_TIMEOUT_EXTENDED_SEC`、既定は基準の 2 倍）で **同一 round 内に 1 回だけ再実行**する
+> 救済を追加しました。拡張リトライ後もなお timeout の場合のみ、`reviewer-timeout-exhausted` /
+> `per-task-reviewer-timeout-exhausted` の区別されたカテゴリで `codex-failed` を付与し、
+> Issue コメント・run-summary（degraded）・watcher ログ（`reason=timeout-exhausted`）に記録します。
+> quota（rc=99）/ codex crash / parse 失敗 / ファイル不在の各経路は従来のまま変更ありません
+> （後方互換）。
 
 cron 例（モデルや turn 数を override する場合）:
 
