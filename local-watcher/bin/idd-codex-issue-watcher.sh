@@ -11263,6 +11263,9 @@ _slot_run_issue() {
       return 1
     fi
     slot_log "ラベル付け替え: codex-claimed → codex-picked-up（impl 着手）"
+    # Slack 進捗通知（#135）。SLACK_NOTIFY_PROGRESS_EVENTS gate OFF（既定）では no-op。
+    # LABEL_PICKED 付与成功直後の 1 回のみ呼ぶ（1 遷移 = 1 通）。失敗しても本体は継続する。
+    sn_notify_pickup "issue" "$NUMBER" "$MODE" || true
   fi
 
   # ── ピックアップ表明コメント（claim 表明ラベルは Dispatcher が事前に付与済）──
