@@ -531,7 +531,12 @@ _SAV_RESOLVED_SOURCE=""
 # ─── _SAV_LAST_OUTCOME（run サマリ用 outcome 露出 / #239 task 5） ───
 #
 # 直近の `stage_a_verify_run` がどの outcome で抜けたかを記録するモジュールスコープ変数。
-# 値域: success / skip / disabled / round1 / round2 / 空（未実行）。`stage_a_verify_run` は
+# 値域: success / skip / disabled / round1 / round2 / warn-skipped / warn-tool-missing /
+# 空（未実行）。`warn-skipped` は #134 で追加（パス不在 `diff` 失敗を WARN 降格して Stage A
+# 続行した outcome）、`warn-tool-missing` は #143 で追加（verify ツール（lint / build 等）の
+# 未インストール起因の exit 127 を WARN 降格して Stage A 続行した outcome）で、いずれも success
+# と区別して run サマリ上で false-fail 救済の発生を観測可能にする（両者は 1 対 1 区別される）。
+# `stage_a_verify_run` は
 # call site（run_impl_pipeline）と同一プロセスで呼ばれる（command substitution ではない）
 # ため、ここに代入した値は call site から読める（_SAV_RESOLVED_SOURCE のサブシェル境界問題は
 # resolve が command substitution で呼ばれることに起因するもので、run 自体には当てはまらない）。
@@ -848,6 +853,192 @@ stage_a_verify_reset_round() {
   rm -f "$path" 2>/dev/null || true
 }
 
+# ─── _sav_is_path_missing_diff_failure ───
+#
+# verify コマンドの実行失敗（非 0 exit）が「`diff` のパス不在」に **限定** されるかを判定する
+# 純粋関数（#134 = idd-claude #364 移植）。WARN 降格と real なコード品質失敗を区別するための
+# defense-in-depth として、`stage_a_verify_run` の Execute 後ブロックから呼ばれる。
+#
+# 判定条件（すべて満たすときに 0 = 「パス不在のみ」）:
+#   - exit code が 2（GNU diff の "trouble" / errors during processing。content 差分は exit=1）
+#   - 出力に `No such file or directory` 文字列を含む（GNU diff のパス不在エラーメッセージ）
+#   - 出力に `diff:` 始まりのエラー行を含む（誤判定回避: 別コマンドが偶然 exit=2 + ENOENT を
+#     吐いたケースを除外し、`diff` 自身のエラーだけを WARN 対象に絞る）
+#
+# 連結コマンド（`&&` / `||` / `;`）中で real fail と path-missing が混在した場合、`bash -c` は
+# 連結全体の最終 exit code を返すため、real fail がいずれかで起きていれば rc は real fail の
+# ものになり、本関数の exit=2 分岐に到達しない（real fail 優先）。具体的には:
+#   - exit=1（diff の content 差分 / real な test/lint 失敗）→ 1 を返す（real fail 経路）
+#   - exit=124（timeout）→ 呼び出し側の専用分岐で処理（本関数に到達しない）
+#   - exit=2 だが `No such file or directory` を含まない（権限エラー等）→ 1 を返す
+#   - exit=2 + `No such file or directory` だが `diff:` 始まり行がない（別コマンドの ENOENT）→ 1
+#
+# 入力:
+#   $1 = 整数 rc（実行 exit code）
+#   $2 = verify 出力全文（stdout+stderr 合流 / multi-line 可）
+# 戻り値: 0 = 「パス不在のみによる失敗」/ 1 = それ以外（real fail として既存経路を維持）
+# 副作用: なし（純粋関数）
+_sav_is_path_missing_diff_failure() {
+  local rc="$1"
+  local output_text="${2:-}"
+  # 整数 rc を防御的に検証（非整数なら real fail として扱う）
+  case "$rc" in
+    2) ;;
+    *) return 1 ;;
+  esac
+  # `No such file or directory` 文字列の存在確認（GNU diff のパス不在エラーメッセージ）
+  case "$output_text" in
+    *"No such file or directory"*) ;;
+    *) return 1 ;;
+  esac
+  # `diff:` で始まる行が含まれることを確認（誤判定回避: diff 自身のエラーに限定）
+  if ! printf '%s' "$output_text" | grep -q '^diff:'; then
+    return 1
+  fi
+  return 0
+}
+
+# ─── _sav_extract_missing_path ───
+#
+# 出力から `diff:` のパス不在エラーメッセージに含まれるパスを抽出する純粋関数（#134 移植）。
+# GNU diff のエラーフォーマットは `diff: <path>: No such file or directory` 形式。複数行ある
+# 場合は最初に検出した行のパスを返す（WARN ログには「最初の検出 1 件」で十分）。
+#
+# パス抽出は sed で `^diff: ` と `: No such file or directory$` を剥がす方式。マッチしない
+# 場合は空文字を返す（呼び出し側は空文字も許容するロギングを行う）。
+#
+# 入力: $1 = verify 出力全文
+# stdout: 抽出したパス（1 行）。抽出失敗時は空文字
+# 副作用: なし（純粋関数）
+_sav_extract_missing_path() {
+  local output_text="${1:-}"
+  # grep 無マッチ時は exit=1 となり caller の `set -e` を巻き込む可能性があるため `|| true`
+  # で吸収する。pipeline 全体は常に exit=0 で返し、stdout に空文字を出す（仕様: マッチしない
+  # 場合は空文字を返す）。
+  local matched=""
+  matched=$(printf '%s' "$output_text" \
+    | grep -m1 '^diff:.*: No such file or directory$' \
+    || true)
+  if [ -z "$matched" ]; then
+    return 0
+  fi
+  printf '%s' "$matched" | sed -e 's|^diff: ||' -e 's|: No such file or directory$||'
+}
+
+# ─── _sav_is_tool_missing_failure ───
+#
+# verify コマンドの実行 exit code が「実行ファイル未検出（command not found / tool-missing）」
+# に該当するかを判定する純粋関数（#143 = idd-claude #422 移植）。WARN 降格と real なコード品質
+# 失敗（exit=1 等）を区別するための defense-in-depth として、`stage_a_verify_run` の Execute 後
+# ブロックから呼ばれる。
+#
+# POSIX shell の慣習では「コマンドが見つからない」場合の exit code は **127** に固定されている
+# （`sh(1)` の "Exit Status" 規定）。本判定は当該 exit code のみを根拠とし、追加で出力の
+# `command not found` 文字列照合は **必須としない**。理由:
+#   - `bash -c` 連結（`&&` / `||` / `;`）で全体 exit code が 127 となるケースはすべて先頭・途中・
+#     末尾いずれかの「未検出コマンド」起因に限られる（exit 1 等の real fail があれば短絡し最終
+#     exit code は real fail のものになり、127 にはならない）。
+#   - verify ブロックは tasks.md の構造化フェンスで人間レビューを経て確定する入力であり、
+#     builtin `exit 127` による意図的偽装は運用前提に含めない。
+#   - `command not found` メッセージは locale（LANG=ja_JP.UTF-8 等）で日本語化される場合があり、
+#     文字列照合だけに依存すると環境差の取りこぼしが出る。
+#
+# real fail と 127 の混在（最終 exit code が real fail のもの）と exit=124（timeout）は呼び出し側
+# `case "$rc"` の分岐順序で担保される: timeout（124）は本判定より前に専用分岐へ抜け、real fail
+# （127 以外の非 0）は本判定で 1 を返して既存 default 分岐へ戻る。
+#
+# 入力:
+#   $1 = 整数 rc（実行 exit code）
+#   $2 = verify 出力全文（optional、本判定では使用しないが将来の併用判定に向けて受け入れる）
+# 戻り値: 0 = 「tool-missing による失敗」/ 1 = それ以外
+# 副作用: なし（純粋関数）
+_sav_is_tool_missing_failure() {
+  local rc="$1"
+  # 整数 rc を防御的に検証（非整数なら real fail として扱う / 安全側）
+  case "$rc" in
+    127) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# ─── _sav_extract_tool_name_from_cmd ───
+#
+# verify コマンド断片と出力から、未導入と推定されるツール名を抽出する純粋関数（#143 移植）。
+# WARN ログに「どのツールが未導入か」の手がかりを 1 行で含めて、運用者が cron.log を grep して
+# 環境構築判断できるようにする。
+#
+# 抽出戦略（優先順）:
+#   1. 出力に bash の標準的な未検出エラーメッセージ
+#      `bash: line N: <tool>: command not found`（locale=C / en の場合）が含まれていれば
+#      その `<tool>` を抽出。連結コマンドのどの位置で 127 が出たかを出力経由で特定できる。
+#   2. 上記マッチがなければコマンド断片の **最初の token**（パイプ / 連結区切り前）を採用。
+#      これは「単一コマンドが 127 で落ちた」素直なケースで実用十分。
+#   3. いずれでも抽出不能なら空文字を返す（呼び出し側は `(unknown)` 等で記録する）。
+#
+# 抽出に失敗しても WARN 降格挙動自体は変わらない（tool 名は best-effort ヒント）。
+#
+# 入力:
+#   $1 = cmd         — `bash -c` に渡された verify コマンド文字列（複数行 / 連結も含む）
+#   $2 = output_text — 実行時の verify 出力全文（optional）
+# stdout: 抽出したツール名 1 行 / 抽出不能時は空文字
+# 副作用: なし（純粋関数）
+_sav_extract_tool_name_from_cmd() {
+  local cmd="${1:-}"
+  local output_text="${2:-}"
+  # ── 戦略 1: 出力の `command not found` 行から抽出 ──
+  # 例: `bash: line 1: golangci-lint: command not found`
+  #     `bash: golangci-lint: command not found`（line N 抜けの bash variant 対策）
+  # locale 依存（LANG=ja_JP の `... コマンドが見つかりません` 等）は本戦略では拾えないが、
+  # 戦略 2 の cmd 先頭 token に fallback する設計で実用上問題ない。
+  local matched=""
+  matched=$(printf '%s' "$output_text" \
+    | grep -m1 -E '^[A-Za-z_0-9./-]+: (line [0-9]+: )?[^:]+: command not found$' \
+    || true)
+  if [ -n "$matched" ]; then
+    # `bash: line N: <tool>: command not found` または `bash: <tool>: command not found` から
+    # `<tool>` を抽出。sed で前後を剥がす。
+    local tool=""
+    tool=$(printf '%s' "$matched" \
+      | sed -E 's|^[A-Za-z_0-9./-]+: (line [0-9]+: )?([^:]+): command not found$|\2|')
+    if [ -n "$tool" ]; then
+      printf '%s\n' "$tool"
+      return 0
+    fi
+  fi
+
+  # ── 戦略 2: cmd 先頭 token を採用 ──
+  # 行頭の空白を剥がしてから awk で `&&` / `||` / `;` / `|` の前の最初の token を取る。
+  # `cd app && npm test` 等は `cd` が出るが、これは実態と乖離するため bash builtin
+  # （cd / export / set 等）は除外して次の token を試す簡易判定を入れる。
+  if [ -n "$cmd" ]; then
+    local first_token=""
+    # 1 行目のみを対象（複数行 cmd の場合の防御）
+    first_token=$(printf '%s' "$cmd" \
+      | head -n1 \
+      | awk '{
+          # 連結記号で区切る前の先頭トークンを取得
+          n = split($0, parts, /[ \t]+/)
+          for (i = 1; i <= n; i++) {
+            tok = parts[i]
+            if (tok == "") continue
+            # bash builtin / 既知の prefix は skip して次を採用
+            if (tok == "cd" || tok == "export" || tok == "set" || tok == "unset" \
+                || tok == "if" || tok == "then" || tok == "while" || tok == "for") {
+              continue
+            }
+            print tok
+            exit
+          }
+        }')
+    if [ -n "$first_token" ]; then
+      printf '%s\n' "$first_token"
+      return 0
+    fi
+  fi
+
+  return 0
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 以下は元 idd-codex-issue-watcher.sh では Region 2（mark_issue_failed 定義後の位置）に
 # 置かれていた失敗ハンドラ / 統合ランナー。#181 Part 3 で Region 1 と 1 モジュールへ
@@ -1076,6 +1267,12 @@ stage_a_verify_run() {
   if [ "$rc" -ne 0 ]; then
     _sav_emit_ios_simulator_boundary_diagnostics "$verify_output_file" "$cmd" "$resolved_source" "$boundary" "$rc"
   fi
+  # #134 / #143: verify 出力（stdout+stderr 合流）を変数に退避してから temp file を削除する。
+  # パス不在 `diff`（#134）/ tool-missing（#143）の WARN 降格判定にのみ使う。出力は verify
+  # コマンド自身の stdout/stderr であり未信頼だが、`case`/`grep`/`awk`/`sed` のパターン照合と
+  # printf %q での shell-quote 化のみに使い、`eval` / `bash -c` / 動的 `source` へは渡さない。
+  local _verify_output_text=""
+  _verify_output_text=$(cat "$verify_output_file" 2>/dev/null || true)
   rm -f "$verify_output_file" 2>/dev/null || true
 
   # ── 結果分岐 ──
@@ -1098,7 +1295,55 @@ stage_a_verify_run() {
       esac
       return "$_hf_rc"
       ;;
+    127)
+      # #143: exit 127 は POSIX 規約で「実行ファイル未検出（command not found）」を意味する。
+      # watcher ホストに lint / build ツール（例: golangci-lint, node, go, gradle）が未インストール
+      # という環境要因に過ぎず、コード自体は verify-clean であるため、real verify 失敗（exit=1 等）
+      # と同列に round1 / round2 / `codex-failed` まで自動昇格させない。path-missing #134 と同様の
+      # WARN 降格として扱い、round counter は触らず Stage A を続行する（戻り値 0 / 既存 SUCCESS /
+      # warn-skipped と同じ「Stage A 完全完了」契約）。連結コマンド（`&&` / `||` / `;`）で全体
+      # exit code が 127 となるケースもすべてここで処理する。real fail と 127 が混在し最終 exit
+      # code が real fail のもの（例: 1）となる場合は本分岐に到達せず default `*` 分岐へ落ちる。
+      if _sav_is_tool_missing_failure "$rc"; then
+        local _tool_name
+        _tool_name=$(_sav_extract_tool_name_from_cmd "$cmd" "$_verify_output_text")
+        # WARN ログは (1) 識別固定 prefix（grep '\[.*\] stage-a-verify: WARN' で抽出可能）、
+        # (2) reason=verify-tool-missing（path-missing と区別）、(3) 推定ツール名（情報源があれば）、
+        # (4) exit=127 と cmd 断片の 4 要素を 1 行で記録する。複数行に分けると grep 抽出時の
+        # 脱漏やペアリングミスを誘発するため 1 行にまとめる。
+        sav_warn "reason=verify-tool-missing tool=$(printf '%q' "${_tool_name:-(unknown)}") exit=$rc cmd=$(printf '%q' "$cmd")"
+        # round counter は触らない。Stage A は続行する（戻り値 0 / gh 差し戻しも行わない）。
+        _SAV_LAST_OUTCOME="warn-tool-missing"
+        return 0
+      fi
+      # 防御的: _sav_is_tool_missing_failure が 0 を返さないケース（現実装では到達しない）は
+      # real fail 経路へ落とす。
+      sav_warn "FAILED exit=$rc"
+      local _hf_rc=0
+      _sav_handle_failure "exit" "$rc" || _hf_rc=$?
+      case "$_hf_rc" in
+        1) _SAV_LAST_OUTCOME="round1" ;;
+        2) _SAV_LAST_OUTCOME="round2" ;;
+      esac
+      return "$_hf_rc"
+      ;;
     *)
+      # #134: パス不在に起因する diff 失敗（exit=2 + `No such file or directory`）は
+      # 「コード品質失敗」と区別して WARN 降格する。real なテスト/lint/shellcheck 失敗
+      # （exit=1 等）/ diff content 差分（exit=1）/ timeout（exit=124、上記分岐）/ tool-missing
+      # （exit=127、上記分岐）は各専用経路で処理する。連結コマンド中に real fail と path-missing が
+      # 混在した場合、`bash -c` は連結全体の最終 exit code を返すため、real fail がいずれかで
+      # 起きていればここに到達する rc は real fail のものになる。
+      if _sav_is_path_missing_diff_failure "$rc" "$_verify_output_text"; then
+        local _missing_path
+        _missing_path=$(_sav_extract_missing_path "$_verify_output_text")
+        # WARN ログは (1) 識別固定 prefix、(2) reason=verify-path-missing、(3) 検出パス、
+        # (4) 実行 cmd 断片の 4 要素を 1 行で記録する。
+        sav_warn "reason=verify-path-missing path=$(printf '%q' "${_missing_path:-(unknown)}") exit=$rc cmd=$(printf '%q' "$cmd")"
+        # round counter は触らない。Stage A は続行する（戻り値 0 / 既存契約と整合）。
+        _SAV_LAST_OUTCOME="warn-skipped"
+        return 0
+      fi
       sav_warn "FAILED exit=$rc"
       local _hf_rc=0
       _sav_handle_failure "exit" "$rc" || _hf_rc=$?
