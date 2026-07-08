@@ -62,6 +62,10 @@ eval "$(extract_function "$WATCHER_SH" "qa_warn")"
 eval "$(extract_function "$WATCHER_SH" "qa_error")"
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$WATCHER_SH" "verify_pushed_or_retry")"
+# ── watcher refactor 追従: verify_pushed_or_retry は push stderr を secure tempfile に取る ──
+# extract_function は CORE_UTILS_SH も探索対象に含むため idd_secure_mktemp を抽出できる。
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$WATCHER_SH" "idd_secure_mktemp")"
 
 for fn in qa_log qa_warn qa_error verify_pushed_or_retry; do
   if ! declare -F "$fn" >/dev/null; then

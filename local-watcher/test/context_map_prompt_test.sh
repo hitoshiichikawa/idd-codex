@@ -62,7 +62,8 @@ URL="https://github.com/owner/test/issues/34"
 BODY="context map body"
 BRANCH="codex/issue-34-context-map"
 BASE_BRANCH="main"
-export REPO_DIR SPEC_DIR_REL LOG REPO NUMBER TITLE URL BODY BRANCH BASE_BRANCH
+LABEL_NEEDS_DECISIONS="codex-needs-decisions"
+export REPO_DIR SPEC_DIR_REL LOG REPO NUMBER TITLE URL BODY BRANCH BASE_BRANCH LABEL_NEEDS_DECISIONS
 
 git init -q "$REPO_DIR"
 git -C "$REPO_DIR" checkout -q -b main

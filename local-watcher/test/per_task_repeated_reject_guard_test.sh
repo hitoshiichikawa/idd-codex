@@ -51,6 +51,17 @@ eval "$(extract_function "$WATCHER_SH" "pt_extract_learnings")"
 eval "$(extract_function "$WATCHER_SH" "build_per_task_implementer_prompt")"
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$WATCHER_SH" "build_per_task_reviewer_prompt")"
+# ── watcher refactor 追従: prompt builder が新規依存する module 関数 / env を追加ロード ──
+# build_per_task_{implementer,reviewer}_prompt は build_issue_context_block（watcher）と
+# cm_build_prompt_block（context-map module。既定 OFF 時は空文字を返す）を呼ぶ。
+# shellcheck source=../bin/idd-codex-modules/context-map.sh
+. "$SCRIPT_DIR/../bin/idd-codex-modules/context-map.sh"
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$WATCHER_SH" "build_issue_context_block")"
+LABEL_NEEDS_DECISIONS="${LABEL_NEEDS_DECISIONS:-codex-needs-decisions}"
+# pt_record_repeated_reject_warning_artifact は idd_secure_mktemp を呼ぶ。
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$SCRIPT_DIR/../bin/idd-codex-modules/core_utils.sh" "idd_secure_mktemp")"
 
 for fn in pt_collect_reject_fingerprints pt_collect_changed_test_paths pt_build_repeated_reject_warning pt_record_repeated_reject_warning_artifact pt_build_repeated_reject_redo_context pt_run_repeated_reject_warning_redo pt_extract_learnings build_per_task_implementer_prompt build_per_task_reviewer_prompt; do
   if ! declare -F "$fn" >/dev/null; then
