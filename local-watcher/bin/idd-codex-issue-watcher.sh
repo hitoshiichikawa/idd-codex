@@ -296,6 +296,14 @@ AUTO_MERGE_DESIGN_MAX_PRS="${AUTO_MERGE_DESIGN_MAX_PRS:-10}"
 AUTO_MERGE_DESIGN_GIT_TIMEOUT="${AUTO_MERGE_DESIGN_GIT_TIMEOUT:-60}"
 AUTO_MERGE_DESIGN_HEAD_PATTERN="${AUTO_MERGE_DESIGN_HEAD_PATTERN:-^codex/issue-.*-design}"
 
+# ─── auto-merge disarm 設定 (#145 / idd-claude #434 移植) ───
+# arm 済み（autoMergeRequest != null）で terminal ラベル（codex-failed /
+# codex-needs-decisions）へ遷移した open PR の native auto-merge を毎サイクル取り消す。
+# 専用 gate は持たず、arm 側 gate（AUTO_MERGE_ENABLED OR AUTO_MERGE_DESIGN_ENABLED）+
+# FULL_AUTO_ENABLED（#97）に相乗りする（arm しない環境では disarm も no-op = 後方互換）。
+# 1 サイクルで disarm を試行する PR 数上限（超過分は次サイクル持ち越し）。
+AUTO_MERGE_DISARM_MAX_PRS="${AUTO_MERGE_DISARM_MAX_PRS:-10}"
+
 # ─── Failed Recovery Processor 設定 (#101 / D-19) ───
 # `codex-failed` Issue（reviewer-reject 由来含む）と auto-merge 待ちで CI 失敗の PR を
 # 解析 → fresh codex で自動復旧する gate。`=true` 厳密一致のみ ON。`FULL_AUTO_ENABLED`
@@ -1326,7 +1334,7 @@ IDD_MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)/id
 # 3 プロセッサ（quota-aware / merge-queue / auto-rebase）、#181 Part 3 で切り出した
 # 3 プロセッサ（promote-pipeline / pr-iteration / stage-a-verify）を並べ、末尾に
 # #238 の scaffolding-health.sh と #239 の per-run evidence サマリ（run-summary.sh）を置く。
-REQUIRED_MODULES=( "core_utils.sh" "env-loader.sh" "guard-hook.sh" "quota-aware.sh" "merge-queue.sh" "auto-rebase.sh" "auto-merge.sh" "auto-merge-design.sh" "failed-recovery.sh" "needs-decisions-auto.sh" "slack-notify.sh" "stale-pickup-reaper.sh" "promote-pipeline.sh" "pr-iteration.sh" "pr-reviewer.sh" "adjudicator.sh" "stage-a-verify.sh" "scaffolding-health.sh" "context-map.sh" "run-summary.sh" )
+REQUIRED_MODULES=( "core_utils.sh" "env-loader.sh" "guard-hook.sh" "quota-aware.sh" "merge-queue.sh" "auto-rebase.sh" "auto-merge.sh" "auto-merge-design.sh" "auto-merge-disarm.sh" "failed-recovery.sh" "needs-decisions-auto.sh" "slack-notify.sh" "stale-pickup-reaper.sh" "promote-pipeline.sh" "pr-iteration.sh" "pr-reviewer.sh" "adjudicator.sh" "stage-a-verify.sh" "scaffolding-health.sh" "context-map.sh" "run-summary.sh" )
 for _idd_mod in "${REQUIRED_MODULES[@]}"; do
   _idd_mod_path="$IDD_MODULE_DIR/$_idd_mod"
   if [ ! -f "$_idd_mod_path" ]; then
@@ -1500,6 +1508,11 @@ process_auto_rebase || ar_warn "process_auto_rebase が想定外のエラーで�
 process_auto_merge || am_warn "process_auto_merge が想定外のエラーで終了しました（後続 Issue 処理は継続）"
 # 設計 PR auto-merge（#100）。impl 版の直後で head pattern により排他。gate OFF 時は no-op。
 process_auto_merge_design || amd_warn "process_auto_merge_design が想定外のエラーで終了しました（後続 Issue 処理は継続）"
+# auto-merge disarm（#145 / idd-claude #434 移植）。arm 済み（autoMergeRequest != null）で
+# terminal ラベル（codex-failed / codex-needs-decisions）へ遷移した open PR の native
+# auto-merge を毎サイクル取り消す。gate は arm 側（#99 / #100 の OR）+ #97 kill switch に
+# 相乗りし、gate OFF 時は外部呼び出しゼロの no-op。
+process_auto_merge_disarm || amx_warn "process_auto_merge_disarm が想定外のエラーで終了しました（後続 Issue 処理は継続）"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Phase B: Promote Pipeline Processor (#15) + Phase E: Path Overlap Checker (#18)
