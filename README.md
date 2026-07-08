@@ -2086,8 +2086,17 @@ review を dismissal API で剥がして `codex-ready-for-review` に戻し、�
 | 判定 | 条件 | 副作用 | 残るラベル |
 |---|---|---|---|
 | `mechanical` | rebase 後の変更ファイルが **すべて** `MECHANICAL_PATHS` に一致 | `codex-needs-rebase` 除去のみ。approve 維持・追加コメント無し | （元の approve がそのまま残り、auto-merge へ） |
-| `semantic` | 1 ファイルでも `MECHANICAL_PATHS` 外 / `MECHANICAL_PATHS` 未設定 | approve 全件 dismissal + `codex-needs-rebase` 除去 + `codex-ready-for-review` 付与 + 説明コメント 1 件 | `codex-ready-for-review` |
+| `mechanical`（加算的昇格 / #147） | `AUTO_REBASE_ADDITIVE_ENABLED=true` かつ 変更ファイルが **すべて** `AUTO_REBASE_ADDITIVE_PATHS`（bootstrap allowlist）に一致し、rebase 後累積 diff の各 hunk が **両 side 追加のみ**（削除/変更なし） | 既存 `mechanical` と **同一**（`codex-needs-rebase` 除去のみ・approve 維持・コメント無し） | （元の approve がそのまま残り、auto-merge へ） |
+| `semantic` | 1 ファイルでも `MECHANICAL_PATHS` 外 / `MECHANICAL_PATHS` 未設定（加算的昇格も成立しない場合を含む） | approve 全件 dismissal + `codex-needs-rebase` 除去 + `codex-ready-for-review` 付与 + 説明コメント 1 件 | `codex-ready-for-review` |
 | `failed` | Codex が conflict を解消できない / timeout / push 失敗 / dismissal API 失敗 | `codex-failed` 付与 + 原因種別コメント 1 件。`codex-needs-rebase` は **残置** | `codex-needs-rebase` + `codex-failed` |
+
+> **加算的 mechanical 昇格について（#147）**: `MECHANICAL_PATHS`（中身を問わない無条件
+> mechanical）で `semantic` に落ちる手前に、`AUTO_REBASE_ADDITIVE_ENABLED=true` が有効な
+> ときだけ動く二次判定です。判定は **構文的な「追加のみ」に限定**し、削除/変更行を 1 つでも
+> 含む hunk・rename / mode change / binary・diff 取得失敗はすべて安全側で `semantic` に倒します
+> （コードを誤って機械解決して破壊しないため）。昇格後の副作用・auto-merge ゲートは既存
+> `mechanical` と完全に同一で、必須 status check（CI / レビュー）を迂回しません。本緩和は
+> **Phase D（auto-rebase）のみ**が対象で、merge-queue（Phase A）の conflict 経路は scope 外です。
 
 ### 環境変数
 
@@ -2101,6 +2110,8 @@ review を dismissal API で剥がして `codex-ready-for-review` に戻し、�
 | `AUTO_REBASE_GIT_TIMEOUT` | `60` | git / gh の個別 timeout（秒）。`MERGE_QUEUE_GIT_TIMEOUT` と同既定 |
 | `AUTO_REBASE_MAX_PRS` | `3` | 1 サイクルで処理する PR 数の上限（残りは次サイクル持ち越し） |
 | `AUTO_REBASE_TEMPLATE` | `$HOME/bin/idd-codex-auto-rebase-prompt.tmpl` | prompt template の配置先（`install.sh` が自動配置） |
+| `AUTO_REBASE_ADDITIVE_ENABLED` | `false` | 加算的衝突緩和の opt-in 制御（#147）。`=true` 厳密一致でのみ有効化、それ以外（未設定 / `off` / `on` / `TRUE` / typo）はすべて `false` に正規化。**migration note**: 既定 `false` で本機能導入前と完全に no-op（判定結果・副作用・ログ・exit code が外形等価）。不正値は安全側（`false`）へ正規化 |
+| `AUTO_REBASE_ADDITIVE_PATHS` | （空） | 加算的判定を許す bootstrap path allowlist（カンマ区切り bash glob、`MECHANICAL_PATHS` と同構文）。空なら二次判定を一切起動せず従来判定へフォールバック。`MECHANICAL_PATHS`（中身不問の無条件 mechanical）とは意味が異なり、こちらは「追加のみ」という条件付きのため専用 env として分離している |
 
 ### `MECHANICAL_PATHS` 構文
 

@@ -11,6 +11,7 @@
 #   `AUTO_REBASE_MODE=codex` を明示したリポジトリでのみ起動し、未設定 / off / 不正値の
 #   リポジトリは導入前と完全に同一の挙動を維持する（opt-in）。
 #   - ar_fetch_candidates / ar_build_prompt / ar_run_codex_rebase / ar_classify_diff
+#   - ar_classify_additive（#147: bootstrap path の加算的衝突の二次判定）
 #   - ar_apply_mechanical / ar_dismiss_all_approvals / ar_apply_semantic
 #   - ar_escalate_to_failed / ar_handle_pr / process_auto_rebase
 #   semantic 自動解決（#103 / D-12, `AUTO_REBASE_SEMANTIC=on` + `FULL_AUTO_ENABLED` 配下）:
@@ -273,6 +274,157 @@ ar_run_codex_rebase() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ar_classify_additive: gate ON 時の加算的衝突の二次判定（純粋・副作用なし）。#147
+#   `ar_classify_diff` が `MECHANICAL_PATHS` allowlist 照合で `semantic` に落ちる手前で
+#   呼ばれ、「全変更 path が bootstrap allowlist に閉じ、かつ rebase 後累積 diff の各
+#   hunk が両 side 追加のみ（削除/変更なし）」を満たす場合のみ `additive`(=mechanical)
+#   を返す。それ以外はすべて安全側（= 非加算的）へ倒す。
+#
+#   入力: $1=pr_number, $2=base_ref, $3=head_ref
+#   出力 (stdout):
+#     1 行目: `additive` or `not-additive`
+#     2 行目: not-additive の場合は理由トークン
+#             （gate-off / paths-empty / path-out / non-additive-hunk / diff-failed）
+#   戻り値: 0=判定完了（additive / not-additive いずれも 0）,
+#           1=`git diff` 取得失敗（呼び出し側は not-additive 扱い）
+#
+#   純粋性: トップレベル副作用なし。env（AUTO_REBASE_ADDITIVE_ENABLED /
+#     AUTO_REBASE_ADDITIVE_PATHS / AUTO_REBASE_GIT_TIMEOUT）は遅延束縛参照で
+#     `extract_function` 抽出可能に保つ。working tree を変更しない。
+#   安全側 invariant: 削除/変更行（`^-`）を 1 つでも含む diff は決して additive を
+#     返さない（NFR2.2）。取得失敗・解釈不能（rename / mode / binary）も not-additive。
+#
+#   Req 1.1, 1.4, 2.1, 2.2, 2.3, 2.4, 2.5, NFR2.1, NFR2.2, NFR3.1
+# ─────────────────────────────────────────────────────────────────────────────
+ar_classify_additive() {
+  local pr_number="$1"
+  local base_ref="$2"
+  local head_ref="$3"
+
+  # 1. gate OFF → not-additive / gate-off（Req 1.1）。
+  #    gate OFF では no-op を守るため ar_log を呼ばない。
+  if [ "${AUTO_REBASE_ADDITIVE_ENABLED:-false}" != "true" ]; then
+    echo "not-additive"
+    echo "gate-off"
+    return 0
+  fi
+
+  # 2. bootstrap path allowlist が空 → not-additive / paths-empty（Req 1.4）。
+  if [ -z "${AUTO_REBASE_ADDITIVE_PATHS:-}" ]; then
+    ar_log "PR #${pr_number}: additive=not-additive reason=paths-empty"
+    echo "not-additive"
+    echo "paths-empty"
+    return 0
+  fi
+
+  local diff_range="origin/${base_ref}..origin/${head_ref}"
+
+  # AUTO_REBASE_ADDITIVE_PATHS をカンマ区切りで配列展開（MECHANICAL_PATHS と同構文）。
+  local -a patterns=()
+  local IFS=','
+  read -ra patterns <<< "$AUTO_REBASE_ADDITIVE_PATHS"
+  IFS=$' \t\n'
+
+  # 3. 変更 path 一覧を取得し、全 path が bootstrap allowlist glob に閉じるか照合（Req 2.3）。
+  local changed_paths
+  if ! changed_paths=$(timeout "$AUTO_REBASE_GIT_TIMEOUT" \
+      git diff --name-only "$diff_range" 2>/dev/null); then
+    # 取得失敗は保守的フォールバック（Req 2.4, NFR2.1, return 1）。
+    ar_log "PR #${pr_number}: additive=not-additive reason=diff-failed (git diff --name-only)"
+    echo "not-additive"
+    echo "diff-failed"
+    return 1
+  fi
+  if [ -z "$changed_paths" ]; then
+    # 変更 path ゼロは想定外。加算的と断定できないため安全側へ倒す。
+    ar_log "PR #${pr_number}: additive=not-additive reason=path-out (変更 path なし)"
+    echo "not-additive"
+    echo "path-out"
+    return 0
+  fi
+
+  local path matched pattern first_unmatched=""
+  while IFS= read -r path; do
+    [ -z "$path" ] && continue
+    matched=false
+    for pattern in "${patterns[@]}"; do
+      pattern="${pattern# }"
+      pattern="${pattern% }"
+      [ -z "$pattern" ] && continue
+      # MECHANICAL_PATHS 照合と同じ bash glob 比較。右辺の変数 glob は意図的。
+      # shellcheck disable=SC2053
+      if [[ "$path" == $pattern ]]; then
+        matched=true
+        break
+      fi
+    done
+    if [ "$matched" = "false" ]; then
+      first_unmatched="$path"
+      break
+    fi
+  done <<< "$changed_paths"
+
+  if [ -n "$first_unmatched" ]; then
+    # 1 件でも allowlist 外 → semantic 側（Req 2.3）。
+    ar_log "PR #${pr_number}: additive=not-additive reason=path-out unmatch=${first_unmatched}"
+    echo "not-additive"
+    echo "path-out"
+    return 0
+  fi
+
+  # 4. unified diff の各 hunk を走査し削除/変更行・解釈不能行を検出（Req 2.1, 2.2, NFR2.2）。
+  local diff_output
+  if ! diff_output=$(timeout "$AUTO_REBASE_GIT_TIMEOUT" \
+      git diff "$diff_range" 2>/dev/null); then
+    ar_log "PR #${pr_number}: additive=not-additive reason=diff-failed (git diff unified)"
+    echo "not-additive"
+    echo "diff-failed"
+    return 1
+  fi
+
+  # 行頭文字で機械判定する。安全側に倒すべき行（削除/変更・rename/mode/binary）を 1 つでも
+  # 検出したら non-additive。ファイルヘッダ（diff --git / index / `--- ` / `+++ `）は
+  # 加算性に影響しないため無視し、本体 hunk の `-` 行のみを削除/変更とみなす。
+  # 差分内容は未信頼入力だが、case パターンマッチのみで判定し eval / sed へは渡さない。
+  local diff_line is_non_additive=false
+  while IFS= read -r diff_line; do
+    case "$diff_line" in
+      # ファイルヘッダ行（加算性に無関係なので無視）。
+      "diff --git "*|"index "*|"--- "*|"+++ "*|"@@ "*|"\\ No newline at end of file"*)
+        : ;;
+      # rename / mode change / similarity（追加のみと断定不能 → 安全側除外）。
+      "rename from "*|"rename to "*|"old mode "*|"new mode "*|"new file mode "*|"deleted file mode "*|"similarity index "*|"copy from "*|"copy to "*|"dissimilarity index "*)
+        is_non_additive=true
+        break ;;
+      # binary 差分（追加のみと断定不能 → 安全側除外）。
+      "Binary files "*|"GIT binary patch"*)
+        is_non_additive=true
+        break ;;
+      # 本体 hunk の削除/変更行（`---` ファイルヘッダは上で除外済み）。
+      "-"*)
+        is_non_additive=true
+        break ;;
+      *)
+        : ;;
+    esac
+  done <<< "$diff_output"
+
+  if [ "$is_non_additive" = "true" ]; then
+    ar_log "PR #${pr_number}: additive=not-additive reason=non-additive-hunk"
+    echo "not-additive"
+    echo "non-additive-hunk"
+    return 0
+  fi
+
+  # 5. 全 path 閉 + 全 hunk 追加のみ → additive。根拠（対象 path と理由）をログ記録（Req 2.5, NFR3.1）。
+  local matched_paths
+  matched_paths=$(printf '%s' "$changed_paths" | tr '\n' ',' | sed 's/,$//')
+  ar_log "PR #${pr_number}: additive=additive reason=all-hunks-add-only paths=${matched_paths}"
+  echo "additive"
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # ar_classify_diff: rebase 後 head と base 間の累積 diff の path 集合を
 #   `MECHANICAL_PATHS` allowlist と照合し `mechanical` / `semantic` を判定。
 #
@@ -355,6 +507,22 @@ ar_classify_diff() {
   done <<< "$changed_paths"
 
   if [ -n "$first_unmatched" ]; then
+    # #147: MECHANICAL_PATHS 照合で semantic 確定する手前に、gate ON 時のみ加算的
+    # 二次判定をフックする。gate OFF（既定）では ar_classify_additive を一切呼ばず、
+    # stdout / ログとも導入前と完全に同一（Req 1.1, NFR1.1）。
+    if [ "${AUTO_REBASE_ADDITIVE_ENABLED:-false}" = "true" ]; then
+      local additive_output additive_verdict
+      additive_output=$(ar_classify_additive "$pr_number" "$base_ref" "$head_ref") || true
+      additive_verdict=$(printf '%s\n' "$additive_output" | sed -n '1p')
+      if [ "$additive_verdict" = "additive" ]; then
+        # 加算的成立 → mechanical 昇格。既存 mechanical の stdout 契約（1 行目のみ）に
+        # 合わせ 2 行目は出さない。根拠ログを記録（Req 1.2, 2.5）。
+        ar_log "PR #${pr_number}: classification=mechanical reason=additive unmatch=${first_unmatched}"
+        echo "mechanical"
+        return 0
+      fi
+    fi
+
     # Req 5.5: 判定結果と最初の unmatched path をログに含める
     ar_log "PR #${pr_number}: classification=semantic unmatch=${first_unmatched}"
     echo "semantic"
@@ -1026,7 +1194,7 @@ process_auto_rebase() {
   fi
 
   # Req 1.4: サイクル開始時に有効値をログ出力
-  ar_log "サイクル開始 (mode=${AUTO_REBASE_MODE}, paths=${MECHANICAL_PATHS:-(empty)}, max_prs=${AUTO_REBASE_MAX_PRS}, model=${AUTO_REBASE_MODEL}, max_turns=${AUTO_REBASE_MAX_TURNS}, timeout=${AUTO_REBASE_MAX_TURNS_SEC}s)"
+  ar_log "サイクル開始 (mode=${AUTO_REBASE_MODE}, paths=${MECHANICAL_PATHS:-(empty)}, max_prs=${AUTO_REBASE_MAX_PRS}, model=${AUTO_REBASE_MODEL}, max_turns=${AUTO_REBASE_MAX_TURNS}, timeout=${AUTO_REBASE_MAX_TURNS_SEC}s, additive=${AUTO_REBASE_ADDITIVE_ENABLED:-false}, additive-paths=${AUTO_REBASE_ADDITIVE_PATHS:-(empty)})"
 
   # Req 2.1〜2.5 / Req 8.4: 候補 PR 取得（API エラー時は空配列を扱う）
   local prs_json

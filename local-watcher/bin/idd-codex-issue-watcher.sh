@@ -227,6 +227,23 @@ AUTO_REBASE_MAX_PRS="${AUTO_REBASE_MAX_PRS:-3}"
 # Prompt template の配置先（install.sh が `*.tmpl` glob で自動配置）。
 AUTO_REBASE_TEMPLATE="${AUTO_REBASE_TEMPLATE:-$HOME/bin/idd-codex-auto-rebase-prompt.tmpl}"
 
+# ─── bootstrap 加算的衝突の mechanical 緩和 設定 (#147) ───
+# 加算的衝突緩和の opt-in gate (#147)。bootstrap path（`cmd/api/main.go` の DI 配線 /
+# Mount スロット等）に閉じた「両 side 追加のみ・削除/変更なし」の衝突を、`MECHANICAL_PATHS`
+# allowlist 照合で semantic に落ちる手前で二次判定し mechanical へ昇格させる。`=true`
+# 厳密一致のみ有効化、それ以外（未設定 / 空 / `on` / `false` / `TRUE` / typo 等）はすべて
+# `false`（OFF）に正規化する（既定 OFF の opt-in / NFR 1.1）。
+AUTO_REBASE_ADDITIVE_ENABLED="${AUTO_REBASE_ADDITIVE_ENABLED:-false}"
+case "$AUTO_REBASE_ADDITIVE_ENABLED" in
+  true) : ;;
+  *)    AUTO_REBASE_ADDITIVE_ENABLED="false" ;;
+esac
+# 加算的判定を許す bootstrap path allowlist。カンマ区切り bash glob（`MECHANICAL_PATHS` と
+# 同構文）。空 / 未設定なら二次判定を一切起動せず従来判定へフォールバックする。
+# `MECHANICAL_PATHS`（中身不問の無条件 mechanical）とは意味が異なり、こちらは「追加のみ」
+# という条件付きのため専用 env として分離する。
+AUTO_REBASE_ADDITIVE_PATHS="${AUTO_REBASE_ADDITIVE_PATHS:-}"
+
 # ─── semantic conflict 自動解決 設定 (#103 / D-12) ───
 # 既定の auto-rebase は semantic 判定の diff を dismiss + ready-for-review で「人間待ち」へ
 # 戻す。本フラグ `on` のとき（かつ `FULL_AUTO_ENABLED=true`）、semantic 解決を完全自動化
