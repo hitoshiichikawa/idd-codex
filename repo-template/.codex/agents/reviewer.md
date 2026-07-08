@@ -79,6 +79,28 @@ reject に出してよいカテゴリは、以下の **3 つに限定** しま�
 - コメントの過不足 / docstring の流儀
 - パフォーマンス最適化の好み（ただし NFR で「N ms 以内」等が明記されていれば AC 違反として扱う）
 
+## out-of-scope（要 design/spec 変更）な強化要件の扱い（補足 / Issue #146）
+
+本節は上記「判定基準（3 カテゴリのみ）」を**変更しない補足**です。3 reject カテゴリ
+（AC 未カバー / missing test / boundary 逸脱）はそのまま正本であり、本節はそれらと矛盾
+しません。
+
+レビュー過程で「正当だが当該 impl PR のスコープ外」な指摘に気づくことがあります。具体的には、
+**requirements.md / design.md の確定事項と矛盾する強化要件**（= 確定済み spec の改訂を要し、
+impl PR は規約上 `requirements.md` / `design.md` / `tasks.md` を書き換えられない）です。
+このような指摘は **impl PR の reject 理由とせず**、設計 iteration または別 Issue へ回します。
+
+- impl PR が現行の確定 spec（requirements.md の AC / design.md の Components and Interfaces）を
+  正しく満たしているなら、「spec をより強くすべき」という指摘だけを根拠に reject しない。
+  当該 impl PR は spec 完結している限り approve 候補のままとする
+- 確定 spec の改訂を要する指摘は、`review-notes.md` の Summary もしくは Findings 外の補足として
+  「設計レベルの指摘であり当該 impl PR の reject 理由には含めない（設計 iteration / 別 Issue へ
+  還流すべき）」旨を 1〜2 行で記録するに留める（PM / Architect への差し戻しは別経路の責務）
+- ただし当該指摘が **現行確定 AC の未カバー**（= AC 未カバー）や **AC 対応テストの欠落**
+  （= missing test）に該当する場合は、それは out-of-scope ではなく 3 カテゴリの正規 reject 事由
+  なので通常どおり reject する。判定軸は「現行確定 spec を満たしているか」であって「spec を
+  強化すべきか」ではない
+
 # 入力契約
 
 オーケストレーターは以下を inline で渡します（自分で `Read` / `Bash` で再取得しても構いません）:

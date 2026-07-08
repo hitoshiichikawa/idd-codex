@@ -152,3 +152,14 @@ prompt には差分本文を埋め込みません（Issue #97: 大差分時の `
 - 修正の影響範囲は line コメントが指摘する範囲に限定し、無関係なリファクタは行わないこと
 - requirements.md / design.md / tasks.md と矛盾するレビュー指摘があった場合は、返信本文で
   「設計と矛盾するため取り込まない / Issue で再提起を推奨」と明記してから先に進む
+- **out-of-scope の構造化マーカー出力（#146）**: レビュー指摘が「正当だが当該 impl PR の権限
+  では是正できない（requirements.md / design.md / tasks.md の確定事項の変更が必要／spec が
+  古い）」out-of-scope 指摘だと判断した場合、返信本文に **行頭・単独行**で次のいずれか 1 つの
+  厳密書式マーカーを出力すること（許容語彙は `design` / `spec-stale` の 2 つのみ）:
+  - `OUT-OF-SCOPE: design`   — 確定済みの requirements.md / design.md / tasks.md と矛盾し、
+    それらの改訂が必要な強化要件（impl PR では書き換え不可）
+  - `OUT-OF-SCOPE: spec-stale` — 現行実装は確定 spec を正しく満たしているが、指摘は spec 改訂を
+    前提にしている（spec が古い）
+  マーカーを出力するときは、**どの確定事項（どの AC / どの Component / どの spec ファイル / どの
+  境界）と矛盾し、なぜ当該 PR で是正不能か**を同じ返信本文に必ず併記する。out-of-scope か否か
+  確信が持てない場合はマーカーを出力せず、通常どおり返信本文で提起するに留めること（安全側）

@@ -59,6 +59,106 @@ adj_gate_enabled() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# adj_oos_enabled: out-of-scope（第 3 判定）機能の opt-in gate 評価 (#146 / idd-claude #437)
+#   入力: なし（env のみ参照）
+#   出力: なし
+#   戻り値: 0 = ON / 1 = OFF
+#
+#   idd-codex-issue-watcher.sh の Config ブロックで `PR_ITERATION_OOS_ENABLED` は
+#   `case true) :;; *) false` で `true` / `false` の 2 値に正規化済み。本関数は厳密 `=true`
+#   判定のみ行う（既定 OFF / opt-in / 未設定・typo・`false` は安全側 OFF。AGENTS.md「機能追加
+#   ガイドライン §3 opt-in ゲート」と同方針）。
+#
+#   gate OFF（既定）のとき本機能は完全 no-op:
+#     - adj_validate_decisions は既存 2 値（legitimate|excessive）厳密検証をバイト等価で維持
+#     - out-of-scope verdict は schema 違反として弾かれ、fallback モードに倒れる
+#     - 還流ルーティング（adj_route_out_of_scope）は早期 return
+# ─────────────────────────────────────────────────────────────────────────────
+adj_oos_enabled() {
+  if [ "${PR_ITERATION_OOS_ENABLED:-false}" = "true" ]; then
+    return 0
+  fi
+  return 1
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# adj_oos_prompt_block: out-of-scope（第 3 判定）gate ON 時に prompt へ注入する分類規約 (#146)
+#   入力: なし
+#   出力: stdout に注入用 markdown ブロック（末尾改行なし）
+#   戻り値: 0 固定
+#
+#   adj_classify_findings が idd-codex-adjudicator-prompt.tmpl の {OOS_INSTRUCTIONS}
+#   placeholder へ gate ON のとき本文字列を代入する。OFF では placeholder 行ごと除去する
+#   （既存 prompt と等価 / 後方互換）。本ブロックは adjudicator に out-of-scope を**生成**
+#   させる指示:
+#     (a) いつ out-of-scope と分類するか
+#     (b) 判定根拠（どの確定事項と矛盾し、なぜ当該 PR で是正不能か）を reason に含める
+#     (c) 「迷ったら legitimate」原則の再強調（安全側）
+#     (d) summary.out_of_scope 出力契約（出力 schema との整合）
+# ─────────────────────────────────────────────────────────────────────────────
+adj_oos_prompt_block() {
+  cat <<'OOS_BLOCK'
+
+## out-of-scope（第 3 判定）の分類規約（本機能が有効です）
+
+本起動では out-of-scope 第 3 判定が有効化されています。各指摘は
+`legitimate` / `excessive` に加えて **`out-of-scope`** の 3 値のいずれか 1 つに
+分類してください。
+
+### out-of-scope と分類する条件
+
+指摘内容が **requirements.md / design.md の確定事項と矛盾し、かつ当該 impl PR の
+権限では是正できない**とき、`out-of-scope` と分類します。典型例:
+
+- 確定済みの AC / Components and Interfaces をより強くする「強化要件」で、満たすには
+  requirements.md / design.md / tasks.md の改訂が必要なもの（impl PR は規約上これらを
+  書き換えられない）
+- spec が古く（spec-stale）、現行 impl は確定 spec を正しく満たしているが、指摘は spec 改訂を
+  前提にしているもの
+
+これらは「正当な指摘ではあるが当該 impl PR のスコープ外（設計フェーズ / 別 Issue で扱うべき）」
+であり、impl iteration の round を消費させない分類です。
+
+### 判定根拠の出力（必須）
+
+`out-of-scope` と分類した指摘の `reason` には、**どの確定事項（どの AC / どの
+Component / どの spec ファイル / どの境界）と矛盾し、なぜ当該 PR で是正不能か**を 200 文字以内で
+明記してください。
+
+### 「迷ったら legitimate」原則（最優先 / 安全側）
+
+out-of-scope か legitimate か確信が持てない場合は、`out-of-scope` ではなく **`legitimate`**
+を選んでください。out-of-scope への誤分類は「実害指摘を round 消費対象から外す」最悪シナリオに
+つながるため、確信が持てなければ通常の `legitimate` に倒します（実害を握り潰さない）。
+
+### 出力契約の拡張（本機能有効時）
+
+後述「出力契約」セクションの `verdict` 列挙に **`"out-of-scope"`** を加え、
+`summary` に **`out_of_scope`**（整数）フィールドを追加してください:
+
+```json
+{
+  "decisions": [
+    { "id": 1, "severity": "high|medium|low", "file": "path", "line": 42,
+      "verdict": "legitimate" | "excessive" | "out-of-scope",
+      "reason": "<日本語 200 文字以内>" }
+  ],
+  "summary": {
+    "total": <整数>,
+    "legitimate": <整数>,
+    "excessive": <整数>,
+    "out_of_scope": <整数>
+  }
+}
+```
+
+不変条件は `legitimate + excessive + out_of_scope == total` です。
+`summary.out_of_scope` は `verdict == "out-of-scope"` の件数と一致させて
+ください。
+OOS_BLOCK
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # adj_extract_findings: codex stdout から `## 指摘事項` 配下の bullet 行を抽出し JSON 配列化
 #   入力: $1 = review_text（codex stdout の全文）
 #   出力: stdout に [{"severity":"high|medium|low","file":"...","line":N,"message":"..."}, ...]
@@ -348,6 +448,19 @@ adj_classify_findings() {
   rendered="${rendered//\{SPEC_DIR\}/$spec_dir_val}"
   rendered="${rendered//\{REQUIREMENTS_MD\}/$requirements_md_val}"
 
+  # #146: out-of-scope（第 3 判定）gate ON のときだけ、adjudicator に out-of-scope を
+  # **生成**させる分類規約を {OOS_INSTRUCTIONS} placeholder へ注入する。gate OFF（既定）
+  # では placeholder 行（`{OOS_INSTRUCTIONS}\n`）を行ごと除去し、既存 prompt と等価にする
+  # （後方互換 no-op）。placeholder 不在の旧 template でも本置換は no-op（deployment skew 安全）。
+  if adj_oos_enabled; then
+    local oos_instructions
+    oos_instructions=$(adj_oos_prompt_block)
+    rendered="${rendered//\{OOS_INSTRUCTIONS\}/$oos_instructions}"
+  else
+    # placeholder 行を改行ごと除去（gate OFF で既存 prompt と等価を維持）。
+    rendered="${rendered//\{OOS_INSTRUCTIONS\}$'\n'/}"
+  fi
+
   # mktemp で prompt 一時ファイル / 出力 tempfile を作成し、trap で削除
   local prompt_file out_file err_file
   if ! prompt_file=$(mktemp -t idd-codex-adjudicator-prompt.XXXXXX 2>/dev/null); then
@@ -515,16 +628,33 @@ adj_validate_decisions() {
     return 1
   fi
 
-  # 各 decisions 要素に id / verdict / reason が存在し、verdict が legitimate|excessive 厳密一致か
-  if ! printf '%s' "$decisions_json" | jq -e '
-    .decisions | all(
-      (has("id") and (.id | type == "number")) and
-      (has("verdict") and (.verdict == "legitimate" or .verdict == "excessive")) and
-      (has("reason") and (.reason | type == "string"))
-    )
-  ' >/dev/null 2>&1; then
-    adj_warn "validation failed: decisions 各要素の id/verdict/reason 検証失敗"
-    return 1
+  # 各 decisions 要素に id / verdict / reason が存在し、verdict が許容値の厳密一致か。
+  # #146: gate ON のとき verdict ∈ {legitimate, excessive, out-of-scope} を許容。
+  # gate OFF（既定）のとき既存の 2 値（legitimate|excessive）厳密検証をバイト等価で維持する
+  # （後方互換 = no-op）。gate OFF では out-of-scope を含む decisions はここで schema 違反
+  # として弾かれ、呼び出し元の fallback モードに倒れる。
+  if adj_oos_enabled; then
+    if ! printf '%s' "$decisions_json" | jq -e '
+      .decisions | all(
+        (has("id") and (.id | type == "number")) and
+        (has("verdict") and (.verdict == "legitimate" or .verdict == "excessive" or .verdict == "out-of-scope")) and
+        (has("reason") and (.reason | type == "string"))
+      )
+    ' >/dev/null 2>&1; then
+      adj_warn "validation failed: decisions 各要素の id/verdict/reason 検証失敗（oos gate ON）"
+      return 1
+    fi
+  else
+    if ! printf '%s' "$decisions_json" | jq -e '
+      .decisions | all(
+        (has("id") and (.id | type == "number")) and
+        (has("verdict") and (.verdict == "legitimate" or .verdict == "excessive")) and
+        (has("reason") and (.reason | type == "string"))
+      )
+    ' >/dev/null 2>&1; then
+      adj_warn "validation failed: decisions 各要素の id/verdict/reason 検証失敗"
+      return 1
+    fi
   fi
 
   # id が 1〜N の連番（軽い sanity check / adjudicator-prompt.tmpl の id 採番規約と整合）
@@ -535,15 +665,33 @@ adj_validate_decisions() {
     return 1
   fi
 
-  # summary 検証: summary.total == decisions count / summary.legitimate + excessive == total
-  if ! printf '%s' "$decisions_json" | jq -e --argjson n "$decisions_count" '
-    (.summary.total == $n) and
-    ((.summary.legitimate + .summary.excessive) == .summary.total) and
-    (.summary.legitimate == ([.decisions[] | select(.verdict == "legitimate")] | length)) and
-    (.summary.excessive == ([.decisions[] | select(.verdict == "excessive")] | length))
-  ' >/dev/null 2>&1; then
-    adj_warn "validation failed: summary 集計が decisions の verdict 集計と不整合"
-    return 1
+  # summary 検証: summary.total == decisions count / 集計整合性。
+  # #146: gate ON のとき不変条件を `legitimate + excessive + out_of_scope == total` に
+  # 拡張し、summary.out_of_scope フィールドの集計一致も検証する。gate OFF（既定）の
+  # ときは既存の 2 値不変条件 `legitimate + excessive == total` をバイト等価で維持する
+  # （後方互換 / 集計整合性の保証）。
+  if adj_oos_enabled; then
+    if ! printf '%s' "$decisions_json" | jq -e --argjson n "$decisions_count" '
+      ((.summary.out_of_scope // 0) | type == "number") and
+      (.summary.total == $n) and
+      ((.summary.legitimate + .summary.excessive + (.summary.out_of_scope // 0)) == .summary.total) and
+      (.summary.legitimate == ([.decisions[] | select(.verdict == "legitimate")] | length)) and
+      (.summary.excessive == ([.decisions[] | select(.verdict == "excessive")] | length)) and
+      ((.summary.out_of_scope // 0) == ([.decisions[] | select(.verdict == "out-of-scope")] | length))
+    ' >/dev/null 2>&1; then
+      adj_warn "validation failed: summary 集計が decisions の verdict 集計と不整合（oos gate ON）"
+      return 1
+    fi
+  else
+    if ! printf '%s' "$decisions_json" | jq -e --argjson n "$decisions_count" '
+      (.summary.total == $n) and
+      ((.summary.legitimate + .summary.excessive) == .summary.total) and
+      (.summary.legitimate == ([.decisions[] | select(.verdict == "legitimate")] | length)) and
+      (.summary.excessive == ([.decisions[] | select(.verdict == "excessive")] | length))
+    ' >/dev/null 2>&1; then
+      adj_warn "validation failed: summary 集計が decisions の verdict 集計と不整合"
+      return 1
+    fi
   fi
 
   return 0
@@ -825,17 +973,26 @@ adj_post_decision_comment() {
 
   # ── サマリコメント本文の組み立て ──
   # decisions_json から legitimate / excessive 件数とサマリ表を組み立てる。
-  local total legitimate excessive
+  local total legitimate excessive out_of_scope
   total=$(printf '%s' "$decisions_json" | jq -r '.summary.total // 0' 2>/dev/null || echo "0")
   legitimate=$(printf '%s' "$decisions_json" | jq -r '.summary.legitimate // 0' 2>/dev/null || echo "0")
   excessive=$(printf '%s' "$decisions_json" | jq -r '.summary.excessive // 0' 2>/dev/null || echo "0")
+  out_of_scope=$(printf '%s' "$decisions_json" | jq -r '.summary.out_of_scope // 0' 2>/dev/null || echo "0")
   case "$total" in ''|*[!0-9]*) total=0 ;; esac
   case "$legitimate" in ''|*[!0-9]*) legitimate=0 ;; esac
   case "$excessive" in ''|*[!0-9]*) excessive=0 ;; esac
+  case "$out_of_scope" in ''|*[!0-9]*) out_of_scope=0 ;; esac
 
+  # #146: gate ON のとき summary 本文に out-of-scope 件数行を追加する。gate OFF（既定）では
+  # 従来通り 3 行（total / legitimate / excessive）のままで byte 互換（後方互換）。
   local summary_body
-  summary_body=$(printf '## 自動裁定サマリ\n\n- total: %s\n- legitimate: %s\n- excessive: %s\n\n<!-- idd-codex:pr-adjudicator sha=%s kind=decision -->\n' \
-    "$total" "$legitimate" "$excessive" "$sha")
+  if adj_oos_enabled; then
+    summary_body=$(printf '## 自動裁定サマリ\n\n- total: %s\n- legitimate: %s\n- excessive: %s\n- out-of-scope: %s\n\n<!-- idd-codex:pr-adjudicator sha=%s kind=decision -->\n' \
+      "$total" "$legitimate" "$excessive" "$out_of_scope" "$sha")
+  else
+    summary_body=$(printf '## 自動裁定サマリ\n\n- total: %s\n- legitimate: %s\n- excessive: %s\n\n<!-- idd-codex:pr-adjudicator sha=%s kind=decision -->\n' \
+      "$total" "$legitimate" "$excessive" "$sha")
+  fi
 
   if ! timeout "$timeout_s" \
       gh pr comment "$pr_number" --repo "$REPO" --body "$summary_body" >/dev/null 2>&1; then
@@ -872,6 +1029,40 @@ adj_post_decision_comment() {
         fi
         adj_log "PR #${pr_number}: excessive marker 投稿（id=${fid} sha=${sha}）"
       done <<<"$excessive_rows"
+    fi
+  fi
+
+  # ── #146: out-of-scope 個別 marker コメントの投稿（gate ON 時のみ）──
+  # verdict=out-of-scope の finding ごとに hidden marker
+  # `<!-- idd-codex:pr-adjudicator-out-of-scope id=<N> sha=<sha> -->` を含むコメントを 1 件
+  # 投稿する（pi 側 pi_general_filter_oos の除外キー / 内容ベース fingerprint の素材 /
+  # 分類根拠の追跡記録）。prefix `pr-adjudicator-out-of-scope` は既存 `pr-adjudicator-excessive`
+  # / `pr-iteration` のいずれとも前方一致しない（self-filter 非衝突）。gate OFF（既定）では
+  # out-of-scope は schema 検証で弾かれ out_of_scope=0 のため本ブロックは no-op。
+  # 未信頼値（codex / claude 出力由来）は jq でリテラル抽出後に printf へ渡す。
+  if adj_oos_enabled && [ "$out_of_scope" -gt 0 ]; then
+    local oos_rows
+    oos_rows=$(printf '%s' "$decisions_json" | jq -r '
+      .decisions
+      | map(select(.verdict == "out-of-scope"))
+      | .[]
+      | [ (.id | tostring), (.severity // ""), (.file // ""), ((.line // 0) | tostring), (.reason // "") ]
+      | @tsv
+    ' 2>/dev/null) || oos_rows=""
+
+    if [ -n "$oos_rows" ]; then
+      while IFS=$'\t' read -r oid oseverity ofile oline oreason; do
+        [ -z "$oid" ] && continue
+        local oos_body
+        oos_body=$(printf '## 自動裁定: out-of-scope\n\n- id: %s\n- severity: %s\n- file: %s\n- line: %s\n- 理由（矛盾する確定事項 / 是正不能の根拠）: %s\n\n<!-- idd-codex:pr-adjudicator-out-of-scope id=%s sha=%s -->\n' \
+          "$oid" "$oseverity" "$ofile" "$oline" "$oreason" "$oid" "$sha")
+        if ! timeout "$timeout_s" \
+            gh pr comment "$pr_number" --repo "$REPO" --body "$oos_body" >/dev/null 2>&1; then
+          adj_warn "PR #${pr_number}: out-of-scope marker コメント投稿失敗（id=${oid} sha=${sha}）"
+          continue
+        fi
+        adj_log "PR #${pr_number}: out-of-scope marker 投稿（id=${oid} sha=${sha}）"
+      done <<<"$oos_rows"
     fi
   fi
 
@@ -947,7 +1138,118 @@ adj_log_summary() {
   local total="${3:-0}"
   local legitimate="${4:-0}"
   local excessive="${5:-0}"
-  adj_log "裁定サマリ pr=#${pr_number} sha=${sha} total=${total} legitimate=${legitimate} excessive=${excessive}"
+  local out_of_scope="${6:-}"
+  # #146: gate ON かつ第 6 引数が渡されたとき out_of_scope=N を常時併記し、0 件 round でも
+  # 観測可能にする。gate OFF（既定）/ 引数省略時は既存書式をバイト等価で維持する（ログ書式不変）。
+  if adj_oos_enabled && [ -n "$out_of_scope" ]; then
+    adj_log "裁定サマリ pr=#${pr_number} sha=${sha} total=${total} legitimate=${legitimate} excessive=${excessive} out_of_scope=${out_of_scope}"
+  else
+    adj_log "裁定サマリ pr=#${pr_number} sha=${sha} total=${total} legitimate=${legitimate} excessive=${excessive}"
+  fi
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# adj_extract_legitimate_count: decisions_json から「round を消費させる legitimate 件数」を算出
+#   入力: $1 = decisions_json（adj_classify_findings 出力 / fallback 合成 decisions）
+#   出力: stdout に整数 1 行（不正値は 0）
+#   戻り値: 0 固定
+#   #146: out-of-scope を legitimate 件数から除外する（round 不消費）
+#
+#   挙動:
+#     - gate OFF（既定）: 既存と同一 = `.summary.legitimate // 0` をそのまま返す。
+#       out-of-scope は gate OFF では schema 違反で弾かれるため、ここに来る decisions には
+#       含まれない（既存挙動とバイト等価）。
+#     - gate ON: `.summary.legitimate // 0` を返す。出力契約により summary.legitimate は
+#       verdict=="legitimate" のみを数え、out-of-scope は summary.out_of_scope に分離されて
+#       いるため、本値は既に out-of-scope を除外済み。整合性は adj_validate_decisions で担保済み。
+# ─────────────────────────────────────────────────────────────────────────────
+adj_extract_legitimate_count() {
+  local decisions_json="${1:-}"
+  local legitimate
+  legitimate=$(printf '%s' "$decisions_json" | jq -r '.summary.legitimate // 0' 2>/dev/null || echo "0")
+  case "$legitimate" in ''|*[!0-9]*) legitimate=0 ;; esac
+  printf '%s\n' "$legitimate"
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# adj_extract_out_of_scope_count: decisions_json から out-of-scope 件数を算出
+#   入力: $1 = decisions_json
+#   出力: stdout に整数 1 行（不正値 / フィールド不在は 0）
+#   戻り値: 0 固定
+#
+#   gate OFF（既定）でも本関数は単に summary.out_of_scope（不在なら 0）を読むだけで副作用を
+#   持たない。gate OFF 経路では decisions に out-of-scope が含まれないため常に 0 を返す。
+# ─────────────────────────────────────────────────────────────────────────────
+adj_extract_out_of_scope_count() {
+  local decisions_json="${1:-}"
+  local oos
+  oos=$(printf '%s' "$decisions_json" | jq -r '.summary.out_of_scope // 0' 2>/dev/null || echo "0")
+  case "$oos" in ''|*[!0-9]*) oos=0 ;; esac
+  printf '%s\n' "$oos"
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# adj_route_out_of_scope: out-of-scope 裁定が出た PR を共通ルーティングヘルパへ委譲 (#146)
+#   入力: $1 = pr_number, $2 = sha, $3 = legitimate_count（round を消費させる件数）,
+#         $4 = out_of_scope_count, $5 = decisions_json
+#   出力: なし（委譲先 pi_route_out_of_scope_escalate の adj_log / pi_log / pi_warn のみ）
+#   戻り値: 0 = ok（委譲 / skip 含む）/ 2 = 入力検証失敗
+#
+#   設計判断（idd-claude #437 design 踏襲）:
+#     - ルーティングロジック本体は pr-iteration.sh の `pi_route_out_of_scope_escalate` に集約し、
+#       adjudicator.sh からは委譲する（重複実装回避 / 両 module は REQUIRED_MODULES で
+#       watcher 本体から source 済みの前提）。
+#     - 委譲条件: out-of-scope が 1 件以上 **かつ** legitimate が 0（round を消費させる in-scope
+#       実害指摘が残っていない）の場合のみ還流する（legitimate>=1 の PR は通常 iteration を
+#       継続させ、out-of-scope の存在を理由に還流・打ち切りしない）。
+#
+#   挙動:
+#     0. gate OFF → 即 return 0（no-op / 呼び出し元が gate 判定済みでも防御的に再確認）
+#     1. out_of_scope_count == 0 → 何もせず return 0（out-of-scope なし = 通常経路）
+#     2. legitimate_count >= 1 → 還流しない（通常 iteration 継続）。return 0。
+#     3. legitimate_count == 0 かつ out_of_scope_count >= 1 → pi_route_out_of_scope_escalate へ委譲。
+# ─────────────────────────────────────────────────────────────────────────────
+adj_route_out_of_scope() {
+  local pr_number="${1:-}"
+  local sha="${2:-}"
+  local legitimate_count="${3:-}"
+  local out_of_scope_count="${4:-}"
+  local decisions_json="${5:-}"
+
+  # 0. gate OFF → no-op（防御的二重確認）
+  if ! adj_oos_enabled; then
+    return 0
+  fi
+
+  # 入力検証
+  if ! [[ "$pr_number" =~ ^[0-9]+$ ]]; then
+    adj_warn "adj_route_out_of_scope: 無効な PR 番号 '${pr_number}'"
+    return 2
+  fi
+  if ! [[ "$sha" =~ ^[0-9a-f]{7,40}$ ]]; then
+    adj_warn "adj_route_out_of_scope: 無効な sha '${sha}'"
+    return 2
+  fi
+  case "$legitimate_count" in ''|*[!0-9]*) legitimate_count=0 ;; esac
+  case "$out_of_scope_count" in ''|*[!0-9]*) out_of_scope_count=0 ;; esac
+
+  # 1. out-of-scope なし → 通常経路（何もしない）
+  if [ "$out_of_scope_count" -eq 0 ]; then
+    return 0
+  fi
+
+  # 2. in-scope な実害指摘が残る → 還流せず通常 iteration 継続（呼び出し元に委ねる）。
+  if [ "$legitimate_count" -ge 1 ]; then
+    adj_log "PR #${pr_number}: out-of-scope=${out_of_scope_count} legitimate=${legitimate_count} route=continue（in-scope 実害残存のため iteration 継続）"
+    return 0
+  fi
+
+  # 3. legitimate_count == 0 かつ out-of-scope >= 1 → 共通ヘルパへ委譲。
+  #    pi_route_out_of_scope_escalate は両 module が source 済みの前提で呼べる。
+  pi_route_out_of_scope_escalate "$pr_number" "$sha" "$decisions_json" "adjudicator" "$out_of_scope_count" || true
   return 0
 }
 
@@ -1160,19 +1462,31 @@ adj_run_for_pr() {
   fi
 
   # 7. 正常経路（label → status → comment）
-  local total legitimate excessive
+  # #146: round を駆動する legitimate 件数は out-of-scope を**除外**して算出する。
+  # adj_extract_legitimate_count は gate OFF（既定）では既存と同一の summary.legitimate を
+  # 返すため、out-of-scope 機能なしの consumer は完全にバイト等価。
+  local total legitimate excessive out_of_scope
   total=$(printf '%s' "$decisions_json" | jq -r '.summary.total // 0' 2>/dev/null || echo "0")
-  legitimate=$(printf '%s' "$decisions_json" | jq -r '.summary.legitimate // 0' 2>/dev/null || echo "0")
+  legitimate=$(adj_extract_legitimate_count "$decisions_json")
   excessive=$(printf '%s' "$decisions_json" | jq -r '.summary.excessive // 0' 2>/dev/null || echo "0")
   case "$total" in ''|*[!0-9]*) total=0 ;; esac
-  case "$legitimate" in ''|*[!0-9]*) legitimate=0 ;; esac
   case "$excessive" in ''|*[!0-9]*) excessive=0 ;; esac
 
   adj_apply_label_decision "$pr_number" "$legitimate" || true
   adj_apply_status_decision "$pr_number" "$sha" "$legitimate" "$pr_url" "$head_ref" || true
   adj_post_decision_comment "$pr_number" "$sha" "$findings_json" "$decisions_json" || true
 
-  # 8. 1 行サマリ（NFR 1.1 観測ログ ≤10 行 / Req 4.2）
-  adj_log_summary "$pr_number" "$sha" "$total" "$legitimate" "$excessive"
+  # #146: gate ON のとき out-of-scope 裁定を還流先へ振り分ける。gate OFF では
+  # out_of_scope=0（schema 上 out-of-scope は弾かれている）かつ adj_route_out_of_scope が
+  # 早期 return するため完全 no-op。
+  if adj_oos_enabled; then
+    out_of_scope=$(adj_extract_out_of_scope_count "$decisions_json")
+    adj_route_out_of_scope "$pr_number" "$sha" "$legitimate" "$out_of_scope" "$decisions_json" || true
+    # 8. 1 行サマリ（out_of_scope=N を常時併記）
+    adj_log_summary "$pr_number" "$sha" "$total" "$legitimate" "$excessive" "$out_of_scope"
+  else
+    # 8. 1 行サマリ（gate OFF: 既存書式をバイト等価で維持 / NFR 1.1 観測ログ ≤10 行 / Req 4.2）
+    adj_log_summary "$pr_number" "$sha" "$total" "$legitimate" "$excessive"
+  fi
   return 0
 }
