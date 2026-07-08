@@ -368,7 +368,7 @@ adj_classify_findings() {
   # adjudicator は claude（codex ではない）であるため、CLI 呼び出しは claude のまま。
   local exec_rc=0
   local timeout_s="${PR_REVIEWER_ADJUDICATOR_EXEC_TIMEOUT:-300}"
-  local model="${PR_REVIEWER_ADJUDICATOR_MODEL:-claude-sonnet-4-5}"
+  local model="${PR_REVIEWER_ADJUDICATOR_MODEL:-claude-sonnet-4-6}"
 
   timeout "$timeout_s" claude \
     -p "$(cat "$prompt_file")" \
