@@ -31,8 +31,22 @@
 #   LABEL_NEEDS_DECISIONS, LABEL_NEEDS_QUOTA_WAIT, LABEL_BLOCKED, LABEL_AWAITING_SLOT,
 #   FAILED_RECOVERY_ENABLED, FAILED_RECOVERY_MAX_ATTEMPTS, FAILED_RECOVERY_MAX_PRS,
 #   FAILED_RECOVERY_GIT_TIMEOUT, FAILED_RECOVERY_DEV_MODEL, FAILED_RECOVERY_STATE_DIR,
+#   FAILED_RECOVERY_IMMEDIATE_FAIL_SECONDS(#137), FAILED_RECOVERY_IMMEDIATE_FAIL_MAX_STREAK(#137),
 #   full_auto_enabled()(#97), qa_run_codex_stage()/qa_handle_quota_exceeded()/
 #   qa_persist_reset_time()(#79), codex_exec_prompt(), rs_set_result(), idd_secure_mktemp()
+#
+#   **#137 即時失敗の budget 除外**: codex が起動直後（elapsed < FAILED_RECOVERY_IMMEDIATE_FAIL_SECONDS,
+#   既定 10 秒）に rc≠0 で即死する「即時失敗」（認証エラー等の決定論的失敗）は attempt budget を
+#   消費せず巻き戻し、state JSON の `immediate_failure_streak` のみ加算する。streak が
+#   FAILED_RECOVERY_IMMEDIATE_FAIL_MAX_STREAK（既定 3）に達したら max-attempts と区別された
+#   `immediate-failure-streak` 終端理由で停止する。`immediate_failure_streak` は state JSON の
+#   新キーで、欠落時は 0 継承（#137 導入前の state ファイルと後方互換）。
+#
+#   **#140 terminate の cross-cycle べき等化**: terminate 時（max-attempts / no-progress /
+#   immediate-failure-streak）に `last_status` を terminal 値で state JSON へ永続化し、以後の
+#   サイクルでは fr_fetch_* が terminal 状態の work-unit を候補列挙から除外する。これにより
+#   終端コメント・rs_set_result・sn_notify_intervention の cron tick ごとの再発火（コメント spam）
+#   を防ぐ。state 破損・欠落時は fail-open（従来の再投稿に退行 / silent fail なし）。
 #
 # Issue / PR コメントに埋め込む hidden marker。signature 計算時に recovery 自身の
 # コメントを除外し、no-progress ガードが自分のコメント増殖を「進捗」と誤認しないようにする。
@@ -102,11 +116,17 @@ fr_load_state() {
 # fr_save_state: work-unit の state JSON を atomic に書き出す
 #   入力: $1=kind $2=number $3=total_attempts $4=last_status
 #         $5=last_failure_signature $6=last_head_sha
+#         $7=immediate_failure_streak（#137 / 省略時は既存 state から継承 = 後方互換）
 #   戻り値: 0 = 永続化成功 / 1 = 失敗（WARN 済み・呼び出し側は継続）
 #   history[] は直近 8 件に truncate する。
+#   #137: last_status は "in-progress" | "succeeded" | "quota-wait" | "max-attempts" |
+#         "no-progress" | "immediate-failure-streak" を取りうる。$7 を省略した既存呼出側は
+#         prev_state の immediate_failure_streak を継承する（欠落時 0）。
 # ─────────────────────────────────────────────────────────────────────────────
 fr_save_state() {
   local kind="$1" number="$2" total="$3" status="$4" signature="${5:-}" head_sha="${6:-}"
+  # #137: 7 番目の引数は immediate_failure_streak（省略時は既存 state から継承）。
+  local immediate_streak="${7-}"
 
   if ! [[ "$total" =~ ^[0-9]+$ ]]; then
     total=0
@@ -121,6 +141,18 @@ fr_save_state() {
   path="$(fr_state_path "$kind" "$number")"
   prev="$(fr_load_state "$kind" "$number")"
 
+  # #137: immediate_failure_streak を省略時は既存 state から継承（NFR 後方互換）。
+  # 既存 state が当該フィールドを持たない（#137 導入前に書かれた）なら 0 fallback。
+  # 明示指定 / 継承後の値は数値検証し、非整数は 0 に正規化する。
+  if [ -z "$immediate_streak" ]; then
+    if ! immediate_streak=$(printf '%s' "$prev" | jq -r '.immediate_failure_streak // 0' 2>/dev/null); then
+      immediate_streak=0
+    fi
+  fi
+  if ! [[ "$immediate_streak" =~ ^[0-9]+$ ]]; then
+    immediate_streak=0
+  fi
+
   local new_json
   if ! new_json=$(printf '%s' "$prev" | jq -c \
       --arg kind "$kind" \
@@ -129,6 +161,7 @@ fr_save_state() {
       --arg status "$status" \
       --arg sig "$signature" \
       --arg head "$head_sha" \
+      --argjson streak "$immediate_streak" \
       '
       .kind = $kind
       | .number = $number
@@ -136,6 +169,7 @@ fr_save_state() {
       | .last_status = $status
       | .last_failure_signature = $sig
       | .last_head_sha = $head
+      | .immediate_failure_streak = $streak
       | .history = ((.history // []) + [{total: $total, status: $status, sig: $sig}] | .[-8:])
       ' 2>/dev/null); then
     fr_warn "${kind}=#${number}: state JSON 構築に失敗"
@@ -158,6 +192,137 @@ fr_save_state() {
     rm -f "$tmp"
     return 1
   fi
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# fr_classify_immediate_failure: codex 実行結果から「即時失敗」を判定する（純粋関数 / #137）
+#   入力: $1=codex_rc（int） $2=elapsed_seconds（int） $3=threshold_seconds（int）
+#   戻り値: 0 = 即時失敗（attempt budget から除外すべき）/ 1 = 通常の試行（budget 加算）
+#   判定ロジック（#137）:
+#     - codex_rc == 0（success） → 1（通常扱い）
+#     - elapsed >= threshold（一定時間継続して失敗） → 1（通常扱い）
+#     - 上記いずれにも該当しない（rc≠0 かつ短時間で終了） → 0（即時失敗）
+#   quota reached（rc=99）は本関数の呼び出し前に別経路で処理されるため引数に含めない。
+#   非整数入力は安全側に正規化（elapsed→0 / threshold→10）する。
+# ─────────────────────────────────────────────────────────────────────────────
+fr_classify_immediate_failure() {
+  local codex_rc="$1" elapsed_seconds="$2" threshold_seconds="$3"
+  # 正常終了は即時失敗ではない。
+  if [ "$codex_rc" = "0" ]; then
+    return 1
+  fi
+  if ! [[ "$elapsed_seconds" =~ ^[0-9]+$ ]]; then
+    elapsed_seconds=0
+  fi
+  if ! [[ "$threshold_seconds" =~ ^[0-9]+$ ]]; then
+    threshold_seconds=10
+  fi
+  # 閾値以上の時間継続していたら実質作業に着手したとみなし通常の試行として扱う。
+  if [ "$elapsed_seconds" -ge "$threshold_seconds" ]; then
+    return 1
+  fi
+  # rc≠0 かつ短時間終了 = 即時失敗。
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# fr_is_terminated: state JSON の last_status が terminal（cross-cycle 終端済み）かを
+#   判定する純粋関数（#140）。
+#   入力: $1=state_json（`{}` または schema 準拠 JSON。空可）
+#   出力: stdout に terminal 理由（"max-attempts" / "no-progress" /
+#         "immediate-failure-streak"）。未終端なら空文字。
+#   戻り値: 0 = 終端済み / 1 = 未終端（state 不在 / 破損 / それ以外の status → fail-open）
+#   state 不在・破損は呼出元 fr_load_state が `{}` に正規化するため、本関数は status を
+#   読めなければ未終端（rc 1）として扱い、cross-cycle べき等ガードを fail-open にする。
+# ─────────────────────────────────────────────────────────────────────────────
+fr_is_terminated() {
+  local state_json="${1-}"
+  if [ -z "$state_json" ]; then
+    return 1
+  fi
+  local status
+  if ! status=$(printf '%s' "$state_json" | jq -r '.last_status // ""' 2>/dev/null); then
+    return 1
+  fi
+  case "$status" in
+    max-attempts|no-progress|immediate-failure-streak)
+      printf '%s' "$status"
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# fr_filter_terminated_candidates: 候補列挙 JSON 配列から terminal 状態に永続化済みの
+#   work-unit を client-side で除外する（#140）。
+#   入力: $1=kind（issue|pr。ログ識別用） $2=candidates_json（JSON 配列文字列）
+#   出力: stdout に terminal 除外済み JSON 配列
+#   戻り値: 0 固定（fail-continue）
+#   - 各要素の `.number` で fr_load_state → fr_is_terminated を確認し、terminal なら除外。
+#   - state 不在 / 破損 → fr_is_terminated が rc 1（未終端）で fail-open（残す）。
+#   - number 非数値は fail-open で残す（列挙側の sanitize に委ねる）。
+#   - 抑止時は 1 行ログ（`<kind>=#<n> terminated reason=<status> suppressed=enumeration`）を
+#     残し、運用者が grep でコメント spam の収束を確認できるようにする。
+# ─────────────────────────────────────────────────────────────────────────────
+fr_filter_terminated_candidates() {
+  local kind="$1" candidates_json="${2-}"
+
+  case "$kind" in
+    issue|pr) : ;;
+    *)
+      fr_warn "fr_filter_terminated_candidates: 不正な kind=$(printf '%s' "$kind" | tr -cd '[:alnum:]_-' | head -c 16)"
+      printf '%s' "[]"
+      return 0
+      ;;
+  esac
+
+  if [ -z "$candidates_json" ]; then
+    printf '%s' "[]"
+    return 0
+  fi
+  if ! printf '%s' "$candidates_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    printf '%s' "[]"
+    return 0
+  fi
+
+  local count
+  count=$(printf '%s' "$candidates_json" | jq -r 'length' 2>/dev/null || echo "0")
+  if ! [[ "$count" =~ ^[0-9]+$ ]] || [ "$count" = "0" ]; then
+    printf '%s' "[]"
+    return 0
+  fi
+
+  local result="[]" idx=0
+  while [ "$idx" -lt "$count" ]; do
+    local item number state_json terminal_reason
+    item=$(printf '%s' "$candidates_json" | jq -c --argjson i "$idx" '.[$i]' 2>/dev/null || echo "")
+    if [ -z "$item" ]; then
+      idx=$((idx + 1))
+      continue
+    fi
+    number=$(printf '%s' "$item" | jq -r '.number // ""' 2>/dev/null || echo "")
+    if ! [[ "$number" =~ ^[0-9]+$ ]]; then
+      # 数値検証失敗は fail-open で残す（候補列挙側で再度 sanitize される）。
+      result=$(printf '%s' "$result" | jq -c --argjson it "$item" '. + [$it]' 2>/dev/null || printf '%s' "$result")
+      idx=$((idx + 1))
+      continue
+    fi
+    state_json=$(fr_load_state "$kind" "$number")
+    terminal_reason=""
+    if terminal_reason=$(fr_is_terminated "$state_json"); then
+      # terminal 済み → 除外 + 抑止ログ。
+      fr_log "${kind}=#${number} terminated reason=${terminal_reason} suppressed=enumeration"
+    else
+      result=$(printf '%s' "$result" | jq -c --argjson it "$item" '. + [$it]' 2>/dev/null || printf '%s' "$result")
+    fi
+    idx=$((idx + 1))
+  done
+
+  printf '%s' "$result"
   return 0
 }
 
@@ -241,7 +406,10 @@ fr_fetch_failed_issues() {
     printf '[]'
     return 0
   fi
-  printf '%s' "$issues_json"
+  # #140: terminal 状態（max-attempts / no-progress / immediate-failure-streak）に
+  # 永続化済みの Issue を除外し、終端コメントの cron tick ごとの再投稿を防ぐ。
+  # state 不在 / 破損は fr_is_terminated が未終端扱い（rc 1）で fail-open する。
+  printf '%s' "$(fr_filter_terminated_candidates "issue" "$issues_json")"
   return 0
 }
 
@@ -301,7 +469,9 @@ fr_fetch_failed_prs() {
     fi
   done <<< "$pr_iter"
 
-  printf '%s' "$result"
+  # #140: terminal 状態に永続化済みの PR を除外する（fail-open は
+  # fr_filter_terminated_candidates 内で担保）。
+  printf '%s' "$(fr_filter_terminated_candidates "pr" "$result")"
   return 0
 }
 
@@ -504,7 +674,8 @@ fr_finalize_success() {
       fr_warn "Issue #${number}: codex-failed ラベル除去に失敗（次サイクルで再評価）"
     fi
   fi
-  fr_save_state "$kind" "$number" "$total" "succeeded" "$signature" "$head_sha" || true
+  # #137: 成功時は immediate_failure_streak を 0 にリセットする。
+  fr_save_state "$kind" "$number" "$total" "succeeded" "$signature" "$head_sha" "0" || true
   local body
   body="$(printf 'Failed Recovery Processor (#101): 復旧を実行しました（通算 %s 回 / 修正を push 済み）。CI 再実行の結果を待ちます。' "$total")"
   fr_post_attempt_comment "$kind" "$number" "$body" || true
@@ -553,7 +724,11 @@ fr_handle_quota() {
 #   入力: $1=kind（issue|pr） $2=number $3=pr_json（PR のみ。Issue は空）
 #   戻り値: 0 = 復旧実行（成功）/ 1 = codex 失敗（codex-failed 据え置き・次サイクル再試行）
 #           / 2 = budget 到達（max-attempts 終端）/ 3 = no-progress 終端
+#           / 4 = 即時失敗連続上限到達（immediate-failure-streak 終端 / #137）
 #           / 99 = quota 待機（非終端・budget 不消費）
+#   #137: codex が閾値（FAILED_RECOVERY_IMMEDIATE_FAIL_SECONDS）未満で rc≠0 即死した
+#   「即時失敗」は attempt budget を消費せず state を巻き戻し、immediate_failure_streak
+#   のみ加算する。streak 上限到達で rc=4 を返し max-attempts と区別された終端に流す。
 # ─────────────────────────────────────────────────────────────────────────────
 fr_run_recovery_attempt() {
   local kind="$1" number="$2" pr_json="${3:-}"
@@ -564,6 +739,22 @@ fr_run_recovery_attempt() {
   [[ "$prev_total" =~ ^[0-9]+$ ]] || prev_total=0
   prev_sig=$(printf '%s' "$prev_state" | jq -r '.last_failure_signature // ""' 2>/dev/null || echo "")
   prev_head=$(printf '%s' "$prev_state" | jq -r '.last_head_sha // ""' 2>/dev/null || echo "")
+
+  # #137: 直前の immediate_failure_streak を読み出す（欠落時 0 継承 = 後方互換）。
+  local prev_streak
+  prev_streak=$(printf '%s' "$prev_state" | jq -r '.immediate_failure_streak // 0' 2>/dev/null || echo 0)
+  [[ "$prev_streak" =~ ^[0-9]+$ ]] || prev_streak=0
+
+  # #137: 連続即時失敗の上限事前チェック（attempt budget とは独立の終端経路）。
+  # 既に上限到達していたら budget を消費せず即 terminate 経路（rc=4）へ。
+  local streak_max="${FAILED_RECOVERY_IMMEDIATE_FAIL_MAX_STREAK:-3}"
+  if ! [[ "$streak_max" =~ ^[0-9]+$ ]] || [ "$streak_max" -le 0 ]; then
+    streak_max=3
+  fi
+  if [ "$prev_streak" -ge "$streak_max" ]; then
+    fr_log "${kind}=#${number} 即時失敗連続上限到達 streak=${prev_streak} max=${streak_max}"
+    return 4
+  fi
 
   # budget 到達は attempt 開始前に判定して終端（quota を燃やさない）。
   if ! fr_should_recover "$prev_total"; then
@@ -607,8 +798,16 @@ fr_run_recovery_attempt() {
     return 1
   fi
 
+  # #137: 即時失敗判定用にセッション継続時間を計測する（epoch 秒 / date 失敗時は 0 扱い）。
+  local invoke_start_epoch invoke_end_epoch elapsed_seconds
+  invoke_start_epoch=$(date +%s 2>/dev/null || echo 0)
   local codex_rc=0
   fr_invoke_codex "$stage_label" "$prompt" "$reset_file" "$head_ref" || codex_rc=$?
+  invoke_end_epoch=$(date +%s 2>/dev/null || echo "$invoke_start_epoch")
+  elapsed_seconds=$((invoke_end_epoch - invoke_start_epoch))
+  if [ "$elapsed_seconds" -lt 0 ]; then
+    elapsed_seconds=0
+  fi
 
   case "$codex_rc" in
     0)
@@ -625,7 +824,24 @@ fr_run_recovery_attempt() {
       ;;
     *)
       rm -f "$reset_file"
+      # #137: 即時失敗判定。rc≠0（quota 以外）かつ elapsed < 閾値なら「codex が実質作業前に
+      # 即死した」とみなし、attempt budget を消費せず state を巻き戻す（quota 経路と同型:
+      # total / no-progress baseline を据え置き）。immediate_failure_streak のみ加算する。
+      if fr_classify_immediate_failure "$codex_rc" "$elapsed_seconds" "${FAILED_RECOVERY_IMMEDIATE_FAIL_SECONDS:-10}"; then
+        local new_streak=$((prev_streak + 1))
+        fr_save_state "$kind" "$number" "$prev_total" "in-progress" "$prev_sig" "$prev_head" "$new_streak" || true
+        fr_log "${kind}=#${number} immediate-failure rc=${codex_rc} elapsed=${elapsed_seconds}s threshold=${FAILED_RECOVERY_IMMEDIATE_FAIL_SECONDS:-10}s streak=${new_streak}/${streak_max} budget-preserved total=${prev_total}"
+        if [ "$new_streak" -ge "$streak_max" ]; then
+          # 連続上限到達: caller (_fr_dispatch_candidate) が terminate 経路（rc=4）に流す。
+          return 4
+        fi
+        fr_post_attempt_comment "$kind" "$number" \
+          "$(printf 'Failed Recovery Processor (#101): codex が起動直後に即時失敗しました（rc=%s / %s 秒 / 連続 %s 回目・上限 %s 回）。attempt budget は消費しません（通算 %s 回のまま）。`codex-failed` を据え置き、次サイクルで再試行します。' "$codex_rc" "$elapsed_seconds" "$new_streak" "$streak_max" "$prev_total")" || true
+        return 1
+      fi
       # codex 失敗（70=git setup 失敗 含む）: codex-failed 据え置き・次サイクルで再試行。
+      # #137: 通常失敗（閾値以上継続した失敗）は immediate_failure_streak を 0 にリセットする。
+      fr_save_state "$kind" "$number" "$new_total" "in-progress" "$signature" "$head_sha" "0" || true
       fr_post_attempt_comment "$kind" "$number" \
         "$(printf 'Failed Recovery Processor (#101): 復旧 attempt %s/%s は失敗しました（codex rc=%s）。`codex-failed` を据え置き、次サイクルで再試行します（budget 残 %s）。' "$new_total" "$FAILED_RECOVERY_MAX_ATTEMPTS" "$codex_rc" "$((FAILED_RECOVERY_MAX_ATTEMPTS - new_total))")" || true
       fr_log "${kind}=#${number} attempt failed total=${new_total} codex_rc=${codex_rc}"
@@ -638,9 +854,23 @@ fr_run_recovery_attempt() {
 # fr_terminate_max_attempts: budget 超過時の確実な終端（codex-failed 据え置き）
 #   入力: $1=kind $2=number $3=total_attempts
 #   戻り値: 0 固定。run-summary 通知 1 回 + コメント 1 件。ラベルは据え置く（人間へ）。
+#   #140: last_status="max-attempts" を state JSON へ永続化し、以後のサイクルでは
+#   fr_fetch_* の terminal 除外 + 冒頭のべき等ガードで終端コメント・rs_set_result・
+#   sn_notify_intervention を再発火しない（cross-cycle 冪等化）。state 破損・欠落時は
+#   fail-open（従来の再投稿に退行 / silent fail なし）。
 # ─────────────────────────────────────────────────────────────────────────────
 fr_terminate_max_attempts() {
   local kind="$1" number="$2" total="$3"
+
+  # #140: cross-cycle べき等ガード。既に terminal なら再発火せず即 return 0。
+  # state 不在 / 破損は fr_load_state が {} を返し fr_is_terminated が未終端扱い（fail-open）。
+  local prev_state prev_status
+  prev_state="$(fr_load_state "$kind" "$number")"
+  if prev_status=$(fr_is_terminated "$prev_state"); then
+    fr_log "${kind}=#${number} terminated reason=${prev_status} suppressed=terminate-max-attempts"
+    return 0
+  fi
+
   local body
   body="$(printf 'Failed Recovery Processor (#101): 通算 attempt 上限に到達したため修正試行を停止します（通算 %s 回 / 上限 %s 回 / 終端理由: max-attempts）。\n\n`codex-failed` ラベルは据え置きます。手動レビューに移行してください。' "$total" "$FAILED_RECOVERY_MAX_ATTEMPTS")"
   fr_post_attempt_comment "$kind" "$number" "$body" || true
@@ -648,6 +878,16 @@ fr_terminate_max_attempts() {
   # Slack 介入通知（#105）。gate OFF（既定）では no-op。
   sn_notify_intervention "failed-recovery-budget" "$kind" "$number" \
     "通算 attempt 上限到達で codex-failed 据え置き（手動レビュー必要）" || true
+
+  # #140: terminal 状態を永続化する（以後のサイクルで fetch から除外され再発火しない）。
+  # signature / head_sha は前回値を継承、immediate_failure_streak は省略で自動継承。
+  # 永続化失敗は fr_warn で明示し fail-open（次サイクルは従来どおり再投稿に退行）。
+  local prev_sig prev_head
+  prev_sig=$(printf '%s' "$prev_state" | jq -r '.last_failure_signature // ""' 2>/dev/null || echo "")
+  prev_head=$(printf '%s' "$prev_state" | jq -r '.last_head_sha // ""' 2>/dev/null || echo "")
+  fr_save_state "$kind" "$number" "$total" "max-attempts" "$prev_sig" "$prev_head" \
+    || fr_warn "fr_terminate_max_attempts: fr_save_state 失敗 ${kind}=#${number}（cross-cycle 冪等性が失われる可能性）"
+
   fr_log "${kind}=#${number} terminated reason=max-attempts total=${total} max=${FAILED_RECOVERY_MAX_ATTEMPTS}"
   return 0
 }
@@ -656,6 +896,9 @@ fr_terminate_max_attempts() {
 # fr_terminate_no_progress: no-progress 検出時の確実な終端（codex-failed 据え置き）
 #   入力: $1=kind $2=number $3=total_attempts $4=signature（任意・ログ用）
 #   戻り値: 0 固定。run-summary 通知 1 回 + コメント 1 件。ラベルは据え置く。
+#   #140: last_status="no-progress" は fr_run_recovery_attempt（return 3 直前）で永続化
+#   済みのため本関数では保存しない。cross-cycle 冪等化は fr_fetch_* の terminal 除外が
+#   主機構（本関数に冒頭ガードを置くと初回の正当な終端コメントまで抑止されるため置かない）。
 # ─────────────────────────────────────────────────────────────────────────────
 fr_terminate_no_progress() {
   local kind="$1" number="$2" total="$3" signature="${4:-}"
@@ -671,6 +914,50 @@ fr_terminate_no_progress() {
     sig_prefix=" signature=$(printf '%s' "$signature" | cut -c1-8)"
   fi
   fr_log "${kind}=#${number} terminated reason=no-progress total=${total}${sig_prefix}"
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# fr_terminate_immediate_failure_streak: 即時失敗連続上限到達時の確実な終端（#137）
+#   入力: $1=kind $2=number $3=streak_count
+#   戻り値: 0 固定。run-summary 通知 1 回 + コメント 1 件。ラベルは据え置く（人間へ）。
+#   max-attempts と区別された終端理由 `immediate-failure-streak` を用いる（運用者が
+#   「codex が試行した結果ダメだった」と「codex が起動できなかった」を切り分け可能）。
+#   #140: last_status="immediate-failure-streak" を state JSON へ永続化し cross-cycle
+#   冪等化する。既に terminal なら再発火しない（state 破損・欠落時は fail-open）。
+# ─────────────────────────────────────────────────────────────────────────────
+fr_terminate_immediate_failure_streak() {
+  local kind="$1" number="$2" streak="${3:-0}"
+  if ! [[ "$streak" =~ ^[0-9]+$ ]]; then
+    streak=0
+  fi
+
+  # #140: cross-cycle べき等ガード。既に terminal なら再発火せず即 return 0。
+  local prev_state prev_status
+  prev_state="$(fr_load_state "$kind" "$number")"
+  if prev_status=$(fr_is_terminated "$prev_state"); then
+    fr_log "${kind}=#${number} terminated reason=${prev_status} suppressed=terminate-immediate-failure-streak"
+    return 0
+  fi
+
+  local body
+  body="$(printf 'Failed Recovery Processor (#101): codex の即時失敗（起動直後の rc≠0 終了）が連続 %s 回に達したため修正試行を停止します（上限 %s 回 / 終端理由: immediate-failure-streak）。codex が起動不能の可能性があります（認証エラー / CLI 環境差など）。\n\n`codex-failed` ラベルは据え置きます。手動レビューに移行してください。' "$streak" "${FAILED_RECOVERY_IMMEDIATE_FAIL_MAX_STREAK:-3}")"
+  fr_post_attempt_comment "$kind" "$number" "$body" || true
+  rs_set_result "$LABEL_FAILED" || true
+  # Slack 介入通知（#105）。gate OFF（既定）では no-op。
+  sn_notify_intervention "failed-recovery-immediate-failure-streak" "$kind" "$number" \
+    "即時失敗連続上限到達で codex-failed 据え置き（codex 起動不能の可能性 / 手動レビュー必要）" || true
+
+  # #140: terminal 状態を永続化する（以後のサイクルで fetch から除外され再発火しない）。
+  local prev_total prev_sig prev_head
+  prev_total=$(printf '%s' "$prev_state" | jq -r '.total_attempts // 0' 2>/dev/null || echo 0)
+  [[ "$prev_total" =~ ^[0-9]+$ ]] || prev_total=0
+  prev_sig=$(printf '%s' "$prev_state" | jq -r '.last_failure_signature // ""' 2>/dev/null || echo "")
+  prev_head=$(printf '%s' "$prev_state" | jq -r '.last_head_sha // ""' 2>/dev/null || echo "")
+  fr_save_state "$kind" "$number" "$prev_total" "immediate-failure-streak" "$prev_sig" "$prev_head" "$streak" \
+    || fr_warn "fr_terminate_immediate_failure_streak: fr_save_state 失敗 ${kind}=#${number}（cross-cycle 冪等性が失われる可能性）"
+
+  fr_log "${kind}=#${number} terminated reason=immediate-failure-streak streak=${streak} max=${FAILED_RECOVERY_IMMEDIATE_FAIL_MAX_STREAK:-3}"
   return 0
 }
 
@@ -700,6 +987,14 @@ _fr_dispatch_candidate() {
       total=$(printf '%s' "$st" | jq -r '.total_attempts // 0' 2>/dev/null || echo 0)
       sig=$(printf '%s' "$st" | jq -r '.last_failure_signature // ""' 2>/dev/null || echo "")
       fr_terminate_no_progress "$kind" "$number" "$total" "$sig"
+      ;;
+    4)
+      # #137: 即時失敗連続上限到達。streak は state JSON から再読み込みする。
+      local ifs_state ifs_streak
+      ifs_state="$(fr_load_state "$kind" "$number")"
+      ifs_streak=$(printf '%s' "$ifs_state" | jq -r '.immediate_failure_streak // 0' 2>/dev/null || echo 0)
+      [[ "$ifs_streak" =~ ^[0-9]+$ ]] || ifs_streak=0
+      fr_terminate_immediate_failure_streak "$kind" "$number" "$ifs_streak"
       ;;
     *)
       fr_warn "${kind}=#${number}: fr_run_recovery_attempt が想定外の rc=${rc} を返しました（skip）"

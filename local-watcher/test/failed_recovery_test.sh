@@ -33,6 +33,8 @@ REAL_FNS=(
   fr_finalize_success fr_handle_quota fr_run_recovery_attempt
   fr_terminate_max_attempts fr_terminate_no_progress _fr_dispatch_candidate
   fr_fetch_failed_issues fr_fetch_failed_prs process_failed_recovery
+  fr_classify_immediate_failure fr_is_terminated fr_filter_terminated_candidates
+  fr_terminate_immediate_failure_streak
 )
 for fn in "${REAL_FNS[@]}"; do
   # shellcheck disable=SC1090,SC2086
@@ -52,6 +54,13 @@ LABEL_NEEDS_DECISIONS="codex-needs-decisions"; LABEL_NEEDS_QUOTA_WAIT="codex-nee
 LABEL_BLOCKED="codex-blocked"; LABEL_AWAITING_SLOT="codex-awaiting-slot"
 FAILED_RECOVERY_MAX_ATTEMPTS=4; FAILED_RECOVERY_MAX_PRS=3; FAILED_RECOVERY_GIT_TIMEOUT=5
 FAILED_RECOVERY_DEV_MODEL="gpt-5.5"
+# #137: 本テストの fr_invoke_codex stub は即座に return するため、閾値を 0 にして
+# 即時失敗判定を無効化し（elapsed 0 >= 0 → 通常扱い）、従来の budget 消費 semantics を
+# 検証する。即時失敗の挙動自体は fr_immediate_fail_budget_test.sh で検証する。
+# shellcheck disable=SC2034  # eval 抽出した実関数が参照する
+FAILED_RECOVERY_IMMEDIATE_FAIL_SECONDS=0
+# shellcheck disable=SC2034  # eval 抽出した実関数が参照する
+FAILED_RECOVERY_IMMEDIATE_FAIL_MAX_STREAK=3
 FR_COMMENT_MARKER="idd-codex:failed-recovery"
 
 # ─── trace 変数（stub 呼び出しの記録）───
