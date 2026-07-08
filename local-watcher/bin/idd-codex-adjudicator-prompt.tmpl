@@ -21,6 +21,12 @@
 #   {REVIEW_TEXT}     codex stdout の review 本文（PR コメントに投稿された body 全体）
 #   {SPEC_DIR}        docs/specs/<N>-<slug>/ パス。解決不能時は `(none)` を埋める
 #   {REQUIREMENTS_MD} 上記 SPEC_DIR 配下 requirements.md の本文。解決不能時は `(none)`
+#   {OOS_INSTRUCTIONS} out-of-scope（第 3 判定）機能 gate ON 時に注入される分類規約ブロック
+#                     （#146 / idd-claude #437 移植）。adj_oos_enabled が ON のとき
+#                     `out-of-scope` verdict の分類条件・判定根拠出力・「迷ったら legitimate」
+#                     原則・summary.out_of_scope 出力契約を含む文字列
+#                     （adj_oos_prompt_block）を埋める。gate OFF（既定）のときは
+#                     placeholder 行ごと除去して既存 prompt と等価にする。
 #
 # NOTE: placeholder 規約は既存 `pr_default_prompt`（pr-reviewer.sh）の
 #       **単一波括弧 {PR} style** に整合させる（`iteration-prompt.tmpl` の
@@ -110,13 +116,23 @@ legitimate」原則（後述）を適用してください。
 - **(d) 主観的 / スタイル寄り**: 命名の好み・コメント文体・lint レベルの体裁指摘
   （CLAUDE.md「スタイル / lint 観点では reject しない」既存 Reviewer 規約と整合）
 
+### design.md 確定事項と矛盾する強化要件の扱い（補足 / #146）
+
+requirements.md / design.md の**確定事項と矛盾する強化要件**（= 確定済み spec の改訂を要し、
+impl PR は規約上 requirements.md / design.md / tasks.md を書き換えられない指摘）は、
+**impl PR の reject 理由（= legitimate による round 駆動の根拠）にしないでください**。
+現行実装が確定 spec を正しく満たしているなら、「spec をより強くすべき」という指摘だけを
+根拠に legitimate と分類しないこと（out-of-scope 第 3 判定が有効な起動ではそちらへ分類し、
+無効な起動では excessive 候補 (b) spec 外の追加要求として扱う）。判定軸は「現行確定 spec を
+満たしているか」であって「spec を強化すべきか」ではありません。
+
 ### 「迷ったら legitimate」の保守的判定原則（最重要）
 
 確信が持てない場合は **必ず legitimate を選んでください**。adjudicator の誤分類は
 「実害指摘の見落とし（excessive 誤判定 → 反復から除外 → merge 後にバグ発覚）」が
 最悪のシナリオです。逆に legitimate 過判定は反復 round が 1 つ増えるだけで実害は軽微です。
 保守的に判定してください。
-
+{OOS_INSTRUCTIONS}
 ## 全指摘に 1:1 対応する義務
 
 `## 指摘事項` 配下のすべての bullet 行に対して **1 件の decision を必ず返してください**。

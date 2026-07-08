@@ -1445,6 +1445,7 @@ idd-codex は基本フロー（Triage → 実装 → PR 作成）以外の機能
 | **Stage A の PM / Developer 分離**（impl mode で PM 要件定義と Developer 実装を別 `codex exec` に分離し context bleed を防ぐ。**impl 1 件あたり codex exec が +1 回**） | `STAGE_A_PM_SPLIT_ENABLED` | `true` | `=false` で従来の単一 exec（PM+Developer 同居）に戻る | — | 下記「Codex CLI 移植固有の harness 設計」節 | #82 |
 | **Debugger の live web search**（Debugger stage のみ `codex --search`（native `web_search` tool）を有効化） | `CODEX_DEBUGGER_WEB_SEARCH` | `true` | `=false` で検索なし | — | 下記「Codex CLI 移植固有の harness 設計」節 | #78 |
 | **PR Reviewer Adjudicator**（codex の指摘を Claude が **legitimate（実害）/ excessive（過剰）** に分類し、(1) `codex-needs-iteration` 反復を **legitimate 件数のみ**で駆動、(2) merge ゲートを `codex-review`（advisory）→ **`claude-review`（必須相当）** へシフト。codex の過剰指摘 / nitpick が merge を永久 block する事象を解消。「codex が指摘の源泉＝決定権・Claude が過剰指摘を裁定」。独立 Reviewer reject は legitimate 件数に依らず先行優先で `claude-review=failure`。**ON 時は #108 2nd gate を skip し adjudicator を `claude-review` の唯一の publisher にする**（single-publisher）。claude 失敗時 fallback は既定 `passthrough`（adjudicator 自体を実行しなかった扱い＝SPOF 緩和）。**#138 で opt-in 既定 OFF → 既定 ON / opt-out に反転**（下記 Migration Note 参照）） | `PR_REVIEWER_ADJUDICATOR_ENABLED` | `true` | `=false` 厳密一致のみ無効。それ以外（未設定 / 空文字 / `True` / `1` / `0` / typo）はすべて有効に正規化（#138 既定反転）。OFF では adjudicator 関数が早期 return し既存挙動と完全等価 | 前提: `PR_REVIEWER_ENABLED=true` + `claude` CLI install/認証済み（前提不成立時は既存ガードで従来どおり skip / fallback）。連動: `PR_REVIEWER_STATUS_CHECK_ENABLED`（#98）+ `FULL_AUTO_ENABLED`（#97）。推奨: `PR_REVIEWER_ADJUDICATOR_MODEL`（既定 `claude-sonnet-4-6`）、`_EXEC_TIMEOUT`（既定 `300`）、`_FALLBACK_ON_FAIL`（`passthrough`（既定）/ `legitimate`）、`_MAX_FINDINGS`（既定 `50`）、`_PROMPT`（prompt override）。**★ON 時は branch protection の required check を `codex-review` → `claude-review` へ切替**（codex-review を advisory 化） | [PR Reviewer Adjudicator (#404 / #138)](#pr-reviewer-adjudicator-404) | #404, #138 |
+| **PR Iteration out-of-scope 第 3 判定**（Adjudicator / PR Iteration が「正当だが当該 impl PR の権限では是正できない（requirements.md / design.md / tasks.md の確定事項の変更が必要・spec-stale）」指摘を **`out-of-scope`（第 3 判定）** に分類し、(1) その指摘で iteration round を消費させず（`summary.legitimate` から分離）、(2) legitimate=0 かつ out-of-scope≥1 のとき `codex-needs-iteration` を外して `codex-needs-decisions` へ人間判断還流、(3) Developer 応答の構造化マーカー `OUT-OF-SCOPE: design` / `OUT-OF-SCOPE: spec-stale` と内容ベース fingerprint no-progress 判定（SHA 非依存）で「設計レベル指摘の堂々巡りによる `max_rounds` 消尽 → `codex-failed`」を早期打ち切りで防ぐ。gate OFF 時は adjudicator の verdict 2 値・summary 不変条件・filter chain 件数・marker byte すべて導入前と等価） | `PR_ITERATION_OOS_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / 空文字 / `True` / `TRUE` / `1` / `0` / `on` / typo）はすべて OFF に正規化（安全側 no-op） | **前提**: `PR_REVIEWER_ADJUDICATOR_ENABLED=true`（out-of-scope verdict は adjudicator が生成）。任意: `PR_ITERATION_OOS_ROUTE`（既定 `needs-decisions` / `design-reflow` / `spawn-issue` は env 値として将来予約し本実装では `needs-decisions` に正規化）、`PR_ITERATION_OOS_NO_PROGRESS_LIMIT`（既定 `2` / 非数値・`<1` は `2` に正規化） | [PR Reviewer Adjudicator (#404)](#pr-reviewer-adjudicator-404) の「out-of-scope 第 3 判定」 | #146 |
 
 ### 完全自動化（full-auto）パイプライン概観
 
@@ -2799,6 +2800,41 @@ adjudicator も #108 2nd gate も発火しない PR（codex 永続 exec-failed /
   未設定（404）/ 権限不足 / API 失敗は fail-safe で skip
 - 専用 env gate は無し（read-only 判定 + ラベル操作のみの軽量 processor のため常時有効。
   `claude-review` を required にしていなければ実質 no-op）
+
+### out-of-scope 第 3 判定（#146 / idd-claude #437 移植 / opt-in・既定 OFF）
+
+`PR_ITERATION_OOS_ENABLED=true`（厳密一致）の opt-in 環境でのみ、adjudicator の verdict 語彙が
+`legitimate` / `excessive` / **`out-of-scope`** の 3 値に拡張される（summary 不変条件も
+`legitimate + excessive + out_of_scope == total` の 3 値整合に拡張。gate OFF では従来どおり
+2 値厳密検証で、`out-of-scope` を含む応答は schema 違反として fallback モードに倒れる）。
+
+- **分類対象**: 「正当だが当該 impl PR の権限では是正できない」指摘。確定済み spec
+  （requirements.md / design.md / tasks.md）の改訂を要する強化要件、または spec-stale
+  （現行実装は確定 spec を満たすが指摘が spec 改訂を前提にしている）。
+  **design.md 確定事項と矛盾する強化要件は impl PR の reject 理由にしない**（reviewer.md /
+  adjudicator prompt に明文化。迷ったら legitimate の安全側原則は維持）。
+- **round 不消費**: `out-of-scope` は `summary.legitimate` から分離されるため、
+  `codex-needs-iteration` の付与 / 解消（= round 駆動）に影響しない。個別 marker コメント
+  `<!-- idd-codex:pr-adjudicator-out-of-scope id=<N> sha=<sha> -->` が投稿され、PR Iteration の
+  `pi_general_filter_oos` が iteration 入力から除外する。
+- **還流ルーティング**: legitimate=0 かつ out-of-scope≥1 のとき、`codex-needs-iteration` を外し
+  `codex-needs-decisions` を付与して人間判断へ還流する（冪等 marker
+  `<!-- idd-codex:pr-iteration-oos-routed sha=<sha> -->` で同一 SHA の再還流を skip）。
+  `PR_ITERATION_OOS_ROUTE` は既定 `needs-decisions`。`design-reflow` / `spawn-issue` は env 値と
+  して将来予約し、本実装では `needs-decisions` に正規化する（外部への新規 Issue 自動作成は
+  opt-in gate 体系上の Non-Goal）。
+- **Developer 構造化マーカー（内容ベース早期打ち切り 1）**: Developer（Codex）が iteration 返信
+  本文の行頭・単独行に `OUT-OF-SCOPE: design` または `OUT-OF-SCOPE: spec-stale` を出力した round
+  は、SHA ベース no-progress とは独立に即座に還流ルーティングへ引き渡す（書式・使用条件は
+  `.codex/agents/developer.md`「out-of-scope 構造化マーカー宣言規約」を参照。語彙外 /
+  行中言及は検出されない安全側）。
+- **内容ベース fingerprint（内容ベース早期打ち切り 2）**: adjudicator の out-of-scope marker
+  コメント群から severity / file / 理由の fingerprint（sha256 / 順序非依存 / head SHA 非依存）を
+  算出し、PR body marker の `oos-no-progress-streak=J oos-fingerprint=<H>` に永続化。同一
+  fingerprint が `PR_ITERATION_OOS_NO_PROGRESS_LIMIT`（既定 2）round 連続したら max_rounds
+  到達前に打ち切って還流する（fingerprint 変化 / out-of-scope 指摘消滅でリセット）。
+- **観測**: cycle startup ログに `oos-enabled=`、裁定サマリに `out_of_scope=N`（gate ON 時）、
+  collect サマリに `filtered_oos=N`、還流時に `reason=out-of-scope route=<route>` の 1 行が出る。
 
 ### fallback（claude adjudicator 自体が失敗したとき）
 
