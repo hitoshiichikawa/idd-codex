@@ -1384,6 +1384,51 @@ pr_publish_claude_status() {
     approve) state="success"; description="claude: approve" ;;
     *)       state="failure"; description="claude: ${verdict}" ;;
   esac
+
+  # Issue #145 Defect B（idd-claude #434 移植）: terminal ラベル付き PR への
+  # claude-review=success を fail-closed する。terminal ラベル（codex-failed /
+  # codex-needs-decisions）確定後に in-flight だった Reviewer / adjudicator が success を
+  # publish すると merge gate が「失敗確定済み PR」に対して緑に戻り、auto-merge が誤発火する。
+  # これを防ぐため、success の publish 直前に当該 PR の現在ラベルを再取得し、terminal ラベルが
+  # あれば success を publish せず skip する（required check が pending のまま残り auto-merge は
+  # 発火しない / fail-closed）。
+  #
+  # 本ガードを claude-review の唯一の publisher である本関数 1 箇所に集約することで、
+  # 2nd gate 経路（pr_run_claude_second_gate → 本関数）と adjudicator 経路
+  # （adj_apply_status_decision → 本関数）が自動的に fail-closed 化される。
+  # reject（failure）は gate を閉じる方向なので terminal でもそのまま publish する
+  # （ガードは success 経路のみ）。
+  #
+  # idd-claude #482 相当のガード条件: status-check gate（PR_REVIEWER_STATUS_CHECK_ENABLED AND
+  # FULL_AUTO_ENABLED）OFF 時は、本ガードの `gh pr view` も含め外部呼び出しをゼロに保つ。
+  # gate OFF なら後段 pr_publish_commit_status が publish 自体を抑止（return 1）するため、
+  # publish を前提とする terminal ラベル再取得はそもそも不要。gate ON 時のみ本ガードを実行する。
+  if [ "$state" = "success" ] && pr_status_check_enabled; then
+    # 現在のラベル集合を再取得して terminal 判定する（未信頼値は jq --arg で渡す）。
+    local cur_labels_json gh_rc=0
+    cur_labels_json=$(timeout "${PR_REVIEWER_GIT_TIMEOUT:-120}" \
+      gh pr view "$pr_number" --repo "$REPO" --json labels 2>/dev/null) || gh_rc=$?
+    if [ "$gh_rc" -ne 0 ] || [ -z "$cur_labels_json" ]; then
+      # ラベル再取得失敗時は従来どおり publish を継続（fail-open / 可用性優先）。
+      # silent fail させず WARN を 1 行残す。
+      pr_warn "claude-review status publish: terminal ラベル再取得に失敗（fail-open で publish 継続 / pr=#${pr_number} sha=${sha} rc=${gh_rc}）"
+    else
+      # codex-failed / codex-needs-decisions のいずれかを持つなら success を publish しない。
+      local terminal_label=""
+      if printf '%s' "$cur_labels_json" | jq -e --arg l "$LABEL_FAILED" \
+          '.labels // [] | map(.name) | index($l)' >/dev/null 2>&1; then
+        terminal_label="$LABEL_FAILED"
+      elif printf '%s' "$cur_labels_json" | jq -e --arg l "$LABEL_NEEDS_DECISIONS" \
+          '.labels // [] | map(.name) | index($l)' >/dev/null 2>&1; then
+        terminal_label="$LABEL_NEEDS_DECISIONS"
+      fi
+      if [ -n "$terminal_label" ]; then
+        pr_warn "claude-review status publish: terminal label '${terminal_label}' present, skip claude-review=success (fail-closed / pr=#${pr_number} sha=${sha})"
+        return 0
+      fi
+    fi
+  fi
+
   pr_publish_commit_status "$pr_number" "$sha" "claude-review" "$state" "$description" "$pr_url"
 }
 

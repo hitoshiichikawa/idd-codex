@@ -1466,7 +1466,9 @@ kill switch）**かつ** 個別 gate=true の AND でのみ発火し、どちら
    全 green + mergeable に加え、current head SHA の PR Reviewer approve evidence と review status
    evidence が観測できる場合だけ GitHub native auto-merge が squash。branch protection だけを
    review gate の代替とは扱いません。CONFLICTING は merge-queue / auto-rebase（+ semantic 自動解決
-   `AUTO_REBASE_SEMANTIC`）へ委譲。
+   `AUTO_REBASE_SEMANTIC`）へ委譲。arm 後に `codex-failed` / `codex-needs-decisions` へ遷移した
+   PR は **Auto-Merge Disarm Processor（#145）** が毎サイクル `gh pr merge --disable-auto` で
+   自動的に arm を取り消す（失敗確定済み PR の誤 merge 防止）。
 5. **回復系**: CI 失敗 / `codex-failed` は **Failed Recovery**（`FAILED_RECOVERY_ENABLED`・通算
    budget=4）で自動修復。セッション喪失で残った `codex-picked-up` は **Stale Pickup Reaper**
    （`STALE_PICKUP_REAPER_ENABLED`）で復帰。依存循環は **blocked cycle 検出**
@@ -1507,6 +1509,7 @@ env が増えるため、crontab 行長限界を避けるには後述「per-repo
 | **PR レビュー結果の commit status publish**（codex Reviewer の verdict を `codex-review` commit status として publish。auto-merge #99 の required status check の source。`FULL_AUTO_ENABLED` との **AND 二重 opt-in**） | `PR_REVIEWER_STATUS_CHECK_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて OFF に正規化。OFF では従来どおりコメントのみ | 連動: `FULL_AUTO_ENABLED`（#97）。`PR_REVIEWER_ENABLED`（codex レビュー本体）も別途要有効化 | approve→`success` / iteration・conflict→`failure`。2nd gate（`claude-review`）は別 Issue（toggle・既定 OFF） | #98 |
 | **実装 PR auto-merge**（`codex-ready-for-review` 実装 PR に GitHub native auto-merge を有効化。watcher は直接 merge せず、current head SHA の PR Reviewer approve evidence + `codex-review`/`claude-review` 成功 status + 必須 check 全 green + mergeable で GitHub が squash merge。branch protection だけを review gate の代替とは扱わない。CONFLICTING は merge-queue/auto-rebase へ委譲） | `AUTO_MERGE_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて OFF に正規化 | 連動: `FULL_AUTO_ENABLED`（#97）との **AND 二重 opt-in**。推奨: `AUTO_MERGE_MAX_PRS`（既定 `10`）、`AUTO_MERGE_HEAD_PATTERN`（既定 `^codex/issue-.*-impl`）、`AUTO_MERGE_GIT_TIMEOUT`（既定 `60`）。**PR Reviewer status publish と branch protection の required checks 設定が前提**（#96/#98） | `gh pr merge --auto --squash --delete-branch`。既 enable は冪等 skip。review/status evidence が空・stale・取得不能なら skip して理由をログ出力 | #99 |
 | **設計 PR auto-merge**（設計 PR `^codex/issue-.*-design` に GitHub native auto-merge を有効化。merge 後の `codex-awaiting-design-review` 除去は既存 Design Review Release Processor が担当。設計 PR は ready ラベルを持たないため head pattern + 否定ラベルで判定） | `AUTO_MERGE_DESIGN_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて OFF に正規化 | 連動: `FULL_AUTO_ENABLED`（#97）との **AND 二重 opt-in**。推奨: `AUTO_MERGE_DESIGN_MAX_PRS`（既定 `10`）、`AUTO_MERGE_DESIGN_HEAD_PATTERN`（既定 `^codex/issue-.*-design`）、`AUTO_MERGE_DESIGN_GIT_TIMEOUT`（既定 `60`） | `codex-failed`/`codex-needs-decisions`/`codex-needs-iteration` 不在 + MERGEABLE で enable | #100 |
+| **Auto-Merge Disarm Processor**（arm 済み（`autoMergeRequest != null`）の open PR が `codex-failed` / `codex-needs-decisions` といった **terminal ラベル**へ遷移した時点で、`gh pr merge --disable-auto` により native auto-merge を取り消す（disarm）。arm 時点判定（#99 / #100）は arm 後の遷移を追えず「失敗確定済み PR が status checks 全 green 到達で誤 merge される」不具合（idd-claude #434 と同種）を毎サイクルの GitHub 直接クエリで補完。あわせて terminal ラベル付き PR への `claude-review=success` publish を publisher 側で fail-closed 抑止（failure publish は妨げない / ラベル再取得失敗時は fail-open で publish 継続 + WARN）） | （専用 gate なし。`FULL_AUTO_ENABLED` AND (`AUTO_MERGE_ENABLED` OR `AUTO_MERGE_DESIGN_ENABLED`) の **arm 源相乗り**） | arm 源に連動（arm 源が既定 `false` のため **既定 OFF**） | 専用の `AUTO_MERGE_DISARM_ENABLED` を新設しない（idd-claude #434 と同一の既定を採用）。理由: disarm は arm の安全弁であり「arm ON / disarm OFF」という失敗 PR が merge され得る危険な組合せを設定ミスで作らせないため。arm が起きない環境では gh API 呼び出しゼロの完全 no-op ＝導入前と等価 | 推奨: `AUTO_MERGE_DISARM_MAX_PRS`（1 サイクルの disarm 上限・既定 `10`・非数値 / 0 以下は 10 に正規化）。timeout は `AUTO_MERGE_GIT_TIMEOUT` を流用 | 下記「Auto-Merge Disarm Processor (#145)」節 | #145 |
 | **Failed Recovery Processor**（`codex-failed` Issue（reviewer-reject 由来含む）と auto-merge 待ちで CI 失敗の PR を解析 → fresh codex で自動復旧。**通算 attempt budget=4** を work-unit 単位で `$HOME/.idd-codex/failed-recovery/` に永続化（Reviewer 2/2・pr-iteration 3R と掛け算しない）。no-progress（同一失敗 signature + diff 無進捗）で即終端。budget 超過 / no-progress 時は `codex-failed` 据え置きで停止 + run-summary 通知＝無限ループ・沈黙死しない。quota reached（#79 rollout 検出）は **budget を消費せず待機**（Issue は `codex-needs-quota-wait` の resume rails へ委譲）。**#137**: codex が起動直後（`FAILED_RECOVERY_IMMEDIATE_FAIL_SECONDS` 秒未満）に rc≠0 で即死する「即時失敗」（認証エラー等の決定論的失敗）は **budget を消費せず** state を巻き戻し、`immediate_failure_streak` のみ加算。streak が `FAILED_RECOVERY_IMMEDIATE_FAIL_MAX_STREAK` 到達で max-attempts と区別された終端理由 `immediate-failure-streak` で停止（「codex が試行した結果ダメだった」と「codex が起動できなかった」を切り分け可能）。**#140**: 終端（max-attempts / no-progress / immediate-failure-streak）は state JSON の `last_status` に永続化され cross-cycle で冪等＝終端コメント・run-summary・Slack 通知は 1 回のみで cron tick ごとに再投稿されない（state 破損・欠落時は fail-open で従来動作に退行）。terminal 除外は `terminated reason=<理由> suppressed=enumeration` ログで観測可能） | `FAILED_RECOVERY_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて OFF に正規化。OFF では `codex-failed` は人間対応のまま（導入前と等価） | 連動: `FULL_AUTO_ENABLED`（#97）との **AND 二重 opt-in**。推奨: `FAILED_RECOVERY_MAX_ATTEMPTS`（既定 `4`）、`FAILED_RECOVERY_MAX_PRS`（既定 `3`）、`FAILED_RECOVERY_DEV_MODEL`（既定 `${DEV_MODEL:-gpt-5.5}`）、`FAILED_RECOVERY_STATE_DIR`（既定 `$HOME/.idd-codex/failed-recovery/<repo-slug>`）、`FAILED_RECOVERY_GIT_TIMEOUT`（既定 `60`）、`FAILED_RECOVERY_IMMEDIATE_FAIL_SECONDS`（#137 即時失敗判定の継続秒閾値・既定 `10`・非整数 / 0 以下は 10 に正規化）、`FAILED_RECOVERY_IMMEDIATE_FAIL_MAX_STREAK`（#137 連続即時失敗の上限・既定 `3`・非整数 / 0 以下は 3 に正規化） | reviewer-reject も label 同定で区別なく対象（D-19a）。対応内容を Issue/PR コメントに残す | #101 |
 | **needs-decisions 自動続行**（Triage が `codex-needs-decisions` 判定した Issue を、Triage JSON の `decisions[].classification == "safe"` に限り PM 第一推奨で自動続行＝audit コメント + `codex-claimed` 除去で次サイクル再 pickup。**機密・コンプラ・不可逆・外部影響は `human-only` 分類とし、どのモードでも自動続行しない**。分類欠落 / 不明値 / 混在 / 破損は安全側 `human-only` に畳む。同一 Issue の自動続行回数を audit marker でカウントし `NEEDS_DECISIONS_AUTO_MAX` 到達で人間据え置きへフォールバック＝無限続行しない） | `NEEDS_DECISIONS_MODE` | `all-human` | `all-human`（既定・全件据え置き=導入前と等価）/ `classified`（safe→続行・human-only→据え置き）/ `all-auto`（safe のみ続行・human-only は据え置き）。不正値 / 未設定 / 空 / typo はすべて `all-human` に正規化 | 連動: `FULL_AUTO_ENABLED`（#97）との **AND 二重 opt-in**（mode∈{classified,all-auto} かつ kill switch ON で発火）。推奨: `NEEDS_DECISIONS_AUTO_MAX`（既定 `4`）、`NEEDS_DECISIONS_GIT_TIMEOUT`（既定 `60`） | 分類は Triage JSON の `classification` フィールド（label ではない）。本体 Triage ルートに thin guard を挿入。per-task #90 ルートは対象外（自動続行は Triage ルートのみ） | #102 |
 | **semantic conflict 自動解決**（Phase D auto-rebase の semantic 判定 diff を「人間待ち」から自動続行へ。codex 解決 commit を push したまま approve を dismiss し、**Issue 02 の二重ゲート（`codex-review`（+2nd gate `claude-review`））を新 SHA で再発火**させ再レビュー→auto-merge へ流す＝**無検証では merge しない**。解決不能（rebase 失敗 / budget 超過 / dismissal 失敗）は `codex-failed` ではなく **`codex-needs-decisions`** で人間へフォールバック。同一 PR の自動解決回数を audit marker でカウントし `AUTO_REBASE_SEMANTIC_MAX` 到達でフォールバック＝無限解決しない） | `AUTO_REBASE_SEMANTIC` | `off` | `on` 厳密一致のみ有効。それ以外（未設定 / `true` / `ON` / typo）はすべて `off`。OFF では従来どおり dismiss + ready-for-review（人間待ち）で導入前と等価 | 前提: `AUTO_REBASE_MODE=codex`（Phase D auto-rebase 起動）。連動: `FULL_AUTO_ENABLED`（#97）との **AND 二重 opt-in**。推奨: `AUTO_REBASE_SEMANTIC_MAX`（既定 `3`）、`MECHANICAL_PATHS`（mechanical 判定の allowlist） | mechanical conflict は既存 auto-rebase 経路（本機能は touch しない）。codex 解決自体は既存 `ar_run_codex_rebase` が実施済みで、本機能は disposition のみ切替 | #103 |
@@ -2823,6 +2826,81 @@ adjudicator も #108 2nd gate も発火しない PR（codex 永続 exec-failed /
   `git status --porcelain` 検査で tracked 変更を検出したら破棄 + 失敗扱い。
 - 未信頼入力（codex 出力 / PR コメント）は jq `--arg` でリテラル渡し（filter inline 展開禁止）。
 - 1:1 件数検証・verdict allowlist（`legitimate` / `excessive`）・summary 整合で claude 出力の崩れを検出。
+
+---
+
+## Auto-Merge Disarm Processor (#145)
+
+local watcher は実装 PR auto-merge（#99）/ 設計 PR auto-merge（#100）の**直後**で、
+**`FULL_AUTO_ENABLED=true` AND (`AUTO_MERGE_ENABLED=true` OR `AUTO_MERGE_DESIGN_ENABLED=true`)**
+が成立するときのみ起動する Auto-Merge Disarm Processor を実行します。これは、**arm 済み**
+（GitHub native auto-merge が有効化済み = `autoMergeRequest != null`）の open PR が、その後
+`codex-failed` / `codex-needs-decisions` といった **terminal ラベル**へ遷移した場合に、
+`gh pr merge --disable-auto` で **arm を取り消す（disarm）** processor です
+（idd-claude #434 の移植 / 新モジュール `idd-codex-modules/auto-merge-disarm.sh`・関数 prefix `amx_`）。
+
+### 解決する不具合（#145 / idd-claude #434）
+
+arm 時点判定（#99 の `am_should_enable_for_pr`）は `codex-failed` / `codex-needs-decisions` を
+除外しますが、これは **arm 時点のワンショット**です。arm 後に PR が terminal ラベルへ遷移しても
+arm はそのまま残るため、必須 status checks が全 green に到達した瞬間に「失敗確定済み PR」が
+GitHub の auto-merge state machine によって誤って merge されてしまいます。本 processor は
+毎サイクル GitHub を**直接クエリ**し（state dir 非依存）、「arm 済み かつ terminal ラベル付き
+かつ open」な PR を head pattern（impl / design 双方の OR）+ fork 除外でフィルタして列挙し、
+disarm することでこの不具合を解消します。
+
+加えて、in-flight だった Reviewer / adjudicator が terminal ラベル確定後に
+`claude-review=success` を publish して merge gate を緑へ戻すのを防ぐため、claude-review の
+唯一の publisher（`pr-reviewer.sh` の `pr_publish_claude_status`。adjudicator 経路
+`adj_apply_status_decision` もここへ集約される）に **fail-closed ガード**を追加しています。
+success の publish 直前に対象 PR の現在ラベルを再取得し、terminal ラベルがあれば success を
+publish せず skip します（required check が pending のまま残り auto-merge は発火しません）。
+failure（reject / iteration）は gate を閉じる方向のため terminal でもそのまま publish します。
+ラベル再取得に失敗した場合は従来どおり publish を継続（fail-open / 可用性優先）し WARN を
+1 行残します。このガードは status-check gate（`PR_REVIEWER_STATUS_CHECK_ENABLED` AND
+`FULL_AUTO_ENABLED`）ON 時のみ実行され、gate OFF では追加の gh 呼び出しもゼロです
+（idd-claude #482 の後追い修正も取り込み済み）。
+
+### 設定 env
+
+| env | 既定 | 説明 |
+|---|---|---|
+| （gate 専用 env なし） | — | opt-in gate は arm 源に相乗りです。`FULL_AUTO_ENABLED=true` AND (`AUTO_MERGE_ENABLED=true` OR `AUTO_MERGE_DESIGN_ENABLED=true`) のときのみ動作します。新規 gate env は追加しません |
+| `AUTO_MERGE_DISARM_MAX_PRS` | `10` | 1 サイクルで disarm する PR 数の上限（残りは次回サイクルに持ち越し）。非数値 / 0 以下は既定 `10` に正規化 |
+
+timeout は既存 `AUTO_MERGE_GIT_TIMEOUT`（既定 `60`）を流用します（新規 timeout env は追加しません）。
+
+### 既定値の判断（専用 `AUTO_MERGE_DISARM_ENABLED` を新設しない理由）
+
+idd-claude #434 と同一の既定を採用しています。disarm は arm の**安全弁**であり、専用 gate を
+新設すると「arm は ON だが disarm は OFF」という、失敗 PR が merge され得る危険な組合せを
+設定ミスで作れてしまいます。arm 源に相乗りさせることで、auto-merge が動く環境では disarm も
+必ず動き、arm が起きない環境（両 arm 源 OFF / `FULL_AUTO_ENABLED=false`・いずれも既定）では
+disarm も **gh API 呼び出しゼロの完全 no-op** で本修正導入前と等価＝idd-codex の
+「新機能は既定 OFF」規約も同時に満たします。
+
+### 後方互換 / 不具合時の停止
+
+- gate を arm 源（`AUTO_MERGE_ENABLED` / `AUTO_MERGE_DESIGN_ENABLED`）に相乗りさせているため、
+  arm が起きない環境では disarm も完全 no-op（gh API 呼び出しゼロ）で導入前と等価です
+- claude-review status の fail-closed ガードは既存の claude-review publish opt-in gate
+  （`PR_REVIEWER_STATUS_CHECK_ENABLED` 系）の内側で動作し、新たな外部サービス呼び出し用 gate を
+  追加しません
+- disarm の失敗は WARN 1 行を残して継続（1 件失敗で残り対象を中断しない / パイプライン本体を
+  止めない）。既に disarm 済み / merge 済み / 未 arm の PR は no-op（冪等）
+- ログ識別語: `auto-merge-disarm:`（成功 `auto-merge disarmed` / サマリ
+  `auto-merge-disarm summary: disarmed=N failed=M`。fail-closed skip は pr-reviewer 側の
+  `skip claude-review=success (fail-closed ...)` を grep）
+
+### ⚠️ merge 後の再配置が必要
+
+本機能は新規モジュール `idd-codex-modules/auto-merge-disarm.sh` を追加します。既存 watcher を
+使っている場合は merge 後に install.sh を再実行して `$HOME/bin/idd-codex-modules/` を更新して
+ください（未配置だと `REQUIRED_MODULES` のローダが起動時にエラーで停止します）:
+
+```bash
+cd ~/.idd-codex && git pull && ./install.sh --local
+```
 
 ---
 

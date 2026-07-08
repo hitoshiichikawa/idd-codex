@@ -756,6 +756,10 @@ adj_apply_status_decision() {
   fi
 
   # target_url は呼び出し元から渡された PR URL を流用（pr_publish_codex_status と対称）。
+  # Issue #145（idd-claude #434 移植）: terminal ラベル（codex-failed / codex-needs-decisions）
+  # 付き PR への success の fail-closed 抑止は、唯一の claude-review publisher である
+  # pr_publish_claude_status 側に集約されている（本経路も publish 直前にラベル再取得で
+  # 自動的に fail-closed 化される。二重に gh を呼ばないためここでは判定しない）。
   pr_publish_claude_status "$pr_number" "$sha" "$result" "$pr_url"
   return $?
 }
