@@ -235,13 +235,24 @@ pr_build_marker() {
 #   入力: $1 = pr_number, $2 = sha, $3 = kind
 #   出力: なし
 #   戻り値: 0 = 既存（skip すべき）/ 1 = 未存在（処理を続行してよい）
-#   AC: 3.3, 6.2, 6.3, NFR 4.1
+#   AC: 3.3, 6.2, 6.3, NFR 4.1, Issue #141（idd-claude #420 移植）
 #
-#   - `gh api /repos/$REPO/issues/<n>/comments` で全コメントを取得し、jq で
-#     marker（sha と kind の双方一致）の存在を test する（tool 属性は照合に使わない
-#     = Decision 6 の (sha, kind) 単位重複判定）。
+#   - `gh api --paginate --slurp /repos/$REPO/issues/<n>/comments?per_page=100`
+#     で全ページを 1 配列にまとめて取得し、jq で marker（sha と kind の双方一致）の
+#     存在を test する（tool 属性は照合に使わない = Decision 6 の (sha, kind) 単位
+#     重複判定）。
+#   - `--paginate --slurp` は各ページ JSON 配列を outer JSON 配列 `[[page1...],
+#     [page2...]]` にラップして返すため、jq 側で `add // []` により単一の配列に
+#     平坦化して `any(...)` で走査する（0 ページ / 単ページ / 複数ページいずれも同じ
+#     fold で扱える）。
+#   - `per_page=100` は GitHub REST API の最大値（既定 30 件）。これによりコメント
+#     100 件以下の PR は 1 ページのみで完結し、API 呼び出し回数は導入前と同一に保たれる。
+#     101 件以上のときのみ追加ページが発火する。
 #   - sha は hex、kind は固定語彙のため正規表現メタ文字を含まず test() に安全。
-#   - gh API 失敗時は **安全側（重複投稿回避）** に倒し「既存扱い (rc=0)」で skip。
+#   - gh API 失敗（authentication / rate-limit / timeout / 途中ページ失敗）時は
+#     **安全側（重複投稿回避）** に倒し「既存扱い (rc=0)」で skip。`gh api --paginate`
+#     は途中ページ取得失敗時に非ゼロ終了するため、それまでに取得済みのページに
+#     marker が無くても全体としてフォールバック経路に合流する。
 #     SHA が不変なら次サイクルで再評価されるため self-heal する（NFR 3.1 で WARN 記録）。
 # ─────────────────────────────────────────────────────────────────────────────
 pr_already_processed() {
@@ -251,15 +262,19 @@ pr_already_processed() {
 
   local comments_json
   if ! comments_json=$(timeout "$PR_REVIEWER_GIT_TIMEOUT" \
-      gh api "/repos/${REPO}/issues/${pr_number}/comments" 2>/dev/null); then
+      gh api --paginate --slurp \
+      "/repos/${REPO}/issues/${pr_number}/comments?per_page=100" 2>/dev/null); then
     pr_warn "PR #${pr_number}: コメント取得に失敗（marker 重複判定をスキップ＝安全側で既存扱い）"
     return 0
   fi
 
+  # --paginate --slurp の戻りは [[page1...], [page2...], ...] 形式。`add // []` で
+  # 平坦化して any(...) で走査する。空配列・単ページ・複数ページの全パターンで同一
+  # フィルタが機能する。
   if echo "$comments_json" | jq -e \
       --arg sha "$sha" \
       --arg kind "$kind" \
-      'any(.[]; (.body // "") | test("idd-codex:pr-reviewer sha=" + $sha + "[^>]*kind=" + $kind))' \
+      '(add // []) | any(.[]; (.body // "") | test("idd-codex:pr-reviewer sha=" + $sha + "[^>]*kind=" + $kind))' \
       >/dev/null 2>&1; then
     return 0
   fi
