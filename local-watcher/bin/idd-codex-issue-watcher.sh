@@ -848,6 +848,13 @@ CONTEXT_INDEXER_MAX_TURNS="${CONTEXT_INDEXER_MAX_TURNS:-10}"
 # Reviewer サブエージェント用の env。既存の TRIAGE_* / DEV_* と独立に扱う。
 REVIEWER_MODEL="${REVIEWER_MODEL:-gpt-5.5}"
 REVIEWER_MAX_TURNS="${REVIEWER_MAX_TURNS:-30}"
+# Issue #149（idd-claude #442 移植 / 「拡張 turn リトライ」→「拡張 timeout リトライ」に読み替え）:
+# Codex CLI には `--max-turns` が無く *_MAX_TURNS は事実上無効なため、独立 Reviewer の予算切れは
+# CODEX_DEFAULT_TIMEOUT_SEC ベースの wall-clock timeout（`timeout` の rc=124）として現れる。
+# その timeout 起因失敗時に同一 round 内で 1 回だけ再試行する拡張 timeout 予算（秒）。
+# 未設定 / 非数値 → 基準 timeout（CODEX_DEFAULT_TIMEOUT_SEC）の 2 倍。基準未満の値は基準に
+# 引き上げ正規化する。基準 timeout が無効（`0` / 空）なら拡張リトライ自体を行わない（従来挙動）。
+REVIEWER_TIMEOUT_EXTENDED_SEC="${REVIEWER_TIMEOUT_EXTENDED_SEC:-}"
 
 # ─── Debugger subagent 設定 (#22 Phase 3) ───
 # 新規 opt-in 機能。明示的に `=true` を指定したときだけ Reviewer Round 2 reject 直前 /
@@ -1171,6 +1178,49 @@ codex_effective_timeout_sec() {
   if [ -n "$def" ] && [ "$def" != "0" ]; then
     printf '%s\n' "$def"
   fi
+}
+
+# ─── Issue #149: 独立 Reviewer の wall-clock timeout（rc=124）拡張リトライ ヘルパー群 ───
+# Codex CLI に `--max-turns` が無いため（idd-claude の error_max_turns 相当が存在しない）、
+# Reviewer の予算切れは `timeout` の rc=124（wall-clock timeout）として現れる。idd-claude #442 の
+# 「拡張 turn リトライ」を「拡張 timeout リトライ」に読み替えた移植。
+
+# Reviewer stage に適用される基準 timeout 秒を stdout に返す（空 = timeout 無効 = 従来挙動）。
+# codex_effective_timeout_sec と同一の優先順位（CODEX_EXEC_TIMEOUT_SEC → CODEX_DEFAULT_TIMEOUT_SEC）。
+reviewer_base_timeout_sec() {
+  codex_effective_timeout_sec
+}
+
+# 拡張 timeout 予算（秒）を決定的に正規化して stdout に返す。
+#   引数 $1 = 基準 timeout 秒
+#   - 基準が空 / 非数値 / 0 → 空を返す（timeout 無効時は拡張リトライ非適用 = 後方互換）
+#   - REVIEWER_TIMEOUT_EXTENDED_SEC が 1 以上の整数かつ基準以上 → その値
+#   - 基準未満の 1 以上の整数 → 基準に引き上げ（基準未満の拡張は無意味なため）
+#   - 未設定 / 非数値 → 基準の 2 倍（既定）
+reviewer_normalize_extended_timeout_sec() {
+  local base="${1:-}"
+  case "$base" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  if [ "$base" -le 0 ]; then
+    return 0
+  fi
+  local default_ext=$(( base * 2 ))
+  local raw="${REVIEWER_TIMEOUT_EXTENDED_SEC:-}"
+  case "$raw" in
+    ''|*[!0-9]*) printf '%s\n' "$default_ext"; return 0 ;;
+  esac
+  if [ "$raw" -lt "$base" ]; then
+    printf '%s\n' "$base"
+  else
+    printf '%s\n' "$raw"
+  fi
+}
+
+# 直近 codex 実行 rc が wall-clock timeout 起因（`timeout` の rc=124）か判定する。
+# quota（rc=99）/ codex crash / parse 失敗 とは区別され、拡張 timeout リトライの対象を絞る。
+reviewer_is_timeout_rc() {
+  [ "${1:-}" = "124" ]
 }
 
 # ─── 当該 stage で codex の live web search（--search）を付与すべきか（#17）───
@@ -3842,6 +3892,32 @@ pt_run_repeated_reject_warning_redo() {
   return 0
 }
 
+# ─── pt_marker_matches_task_with_suffix <subject> <task_id> ───
+#
+# subject が `docs(tasks): mark <task_id> as done (#<number>)`（canonical + trailing
+# issue-ref suffix）に一致すれば 0、しなければ 1 を返す（Issue #142 / idd-claude #421 移植）。
+# 許容する suffix は「`as done` と `(` の間に半角空白 1 つ・`#` 直後に 1 桁以上の数字・
+# 閉じ括弧 `)` で終端」の canonical 形のみ。空白なし / 括弧なし / 閉じ括弧後の追加文字列 /
+# 非数字は非許容（無関係 suffix を誤マッチしない）。
+#
+# 未信頼 subject を sed / eval / 動的パターンに渡さず、glob（case）とパラメータ展開の
+# リテラル処理のみで判定する（AGENTS.md「未信頼入力」規約 / セキュリティ）。suffix の
+# <number> 値は照合にのみ使い、path / git revision / 外部コマンド引数へは渡さない。
+pt_marker_matches_task_with_suffix() {
+  local subject="$1" task_id="$2"
+  local prefix="docs(tasks): mark ${task_id} as done (#"
+  # `<canonical> (#` で始まり `)` で終端すること（粗判定）。quote 済み $prefix は
+  # リテラル、`*` のみ glob。task_id の `.` も glob ではリテラル扱い（誤マッチしない）。
+  case "$subject" in
+    "$prefix"*")") ;;
+    *) return 1 ;;
+  esac
+  local num="${subject#"$prefix"}"
+  num="${num%)}"
+  # 残余が 1 桁以上の数字のみであること（`(#abc)` 等を拒否）。
+  [[ "$num" =~ ^[0-9]+$ ]]
+}
+
 # ─── pt_resolve_diff_range <task_id> ───
 #
 # per-task Reviewer に渡す diff range の開始 SHA / 終了 SHA を解決して
@@ -3873,8 +3949,18 @@ pt_run_repeated_reject_warning_redo() {
 #   - <ids> 部を `/` / `,` / 空白で正規化した後 word 単位で完全一致照合するため、task_id `1`
 #     が `1.1` や `11` に誤マッチしない
 #
+# Trailing issue-ref suffix 許容（Issue #142 / idd-claude #421 移植）:
+#   - Developer が Conventional Commits / GitHub 慣習で付けがちな
+#     `docs(tasks): mark <id> as done (#<number>)` の trailing issue-ref suffix を、単記 /
+#     連記いずれの経路でも当該 task の marker として解決する（表記ゆれ 1 点で codex-failed に
+#     落とさない）。許容する suffix は canonical 形（`as done` と `(` の間に半角空白 1 つ・
+#     `#` 直後に 1 桁以上の数字・閉じ括弧 `)` で終端）のみで、空白なし / 括弧なし / 閉じ括弧後の
+#     追加文字列 / 非数字は非許容。suffix 無し canonical marker のみの履歴では本変更前と同一の
+#     SHA pair を返す（後方互換 / 単記照合の via タグ `single-id-marker` も不変）。
+#
 # Requirements: Issue #23 Req 1.4, 2.1, 2.2, 2.3, 2.4, 3.3, 3.4, 5.1,
-#               Issue #164 Req 2.1, 2.2, 2.3, 2.4, 2.5, 3.1, 3.2, NFR 2.1
+#               Issue #164 Req 2.1, 2.2, 2.3, 2.4, 2.5, 3.1, 3.2, NFR 2.1,
+#               Issue #142（marker trailing issue-ref suffix 許容）
 pt_resolve_diff_range() {
   local task_id="$1"
   local base="${BASE_BRANCH:-main}"
@@ -3887,12 +3973,17 @@ pt_resolve_diff_range() {
   fi
 
   # ─── (a) 単記 marker を優先検索（subject 完全一致 / Req 3.1 後方互換） ───
+  # canonical（suffix 無し）完全一致を最優先し、無ければ canonical + trailing issue-ref
+  # suffix `(#<number>)`（Issue #142）を許容する。canonical のみの履歴では本変更前と同一挙動。
   local current_mark="" via="" sha subject id_list tok found
   while IFS=$'\t' read -r sha subject; do
     [ -n "$sha" ] || continue
     if [ "$subject" = "docs(tasks): mark ${task_id} as done" ]; then
       current_mark="$sha"
       via="single-id-marker"
+    elif pt_marker_matches_task_with_suffix "$subject" "$task_id"; then
+      current_mark="$sha"
+      via="single-id-marker-with-suffix"
     fi
   done <<<"$all_pairs"
 
@@ -3901,8 +3992,10 @@ pt_resolve_diff_range() {
     while IFS=$'\t' read -r sha subject; do
       [ -n "$sha" ] || continue
       # subject から <ids> 部を抽出（`docs(tasks): mark <ids> as done`）。
-      # 末尾アンカで「as done」以降にコメント等が付いた変則 subject は対象外とする。
-      id_list=$(printf '%s' "$subject" | sed -nE 's/^docs\(tasks\): mark (.+) as done$/\1/p')
+      # 末尾は optional な trailing issue-ref suffix ` (#<number>)`（Issue #142）まで許容し、
+      # それ以外（閉じ括弧後の追加文字列 / 括弧なし / 非数字）が続く変則 subject は対象外。
+      # sed パターンは固定で、未信頼 subject は data として pipe に渡す（パターン側へ展開しない）。
+      id_list=$(printf '%s' "$subject" | sed -nE 's/^docs\(tasks\): mark (.+) as done( \(#[0-9]+\))?$/\1/p')
       [ -n "$id_list" ] || continue
       # `/` / `,` を空白に正規化し、word 単位で task_id と完全一致する token を探す。
       # word splitting は IFS のデフォルト（空白）で行われ、任意連続空白に対応する。
@@ -3915,7 +4008,11 @@ pt_resolve_diff_range() {
       done
       if [ "$found" = "true" ]; then
         current_mark="$sha"
-        via="multi-id-marker"
+        # suffix 付き連記かどうかで via タグを分ける（観測用）。canonical 連記は従来と同一。
+        case "$subject" in
+          *" as done (#"*")") via="multi-id-marker-with-suffix" ;;
+          *) via="multi-id-marker" ;;
+        esac
       fi
     done <<<"$all_pairs"
   fi
@@ -3945,12 +4042,15 @@ pt_resolve_diff_range() {
     fi
   fi
 
-  # NFR 2.1: 連記経由で解決した場合は stderr ログに識別可能な印を残す（運用者が
-  # `grep via=multi-id-marker` で件数把握できる）。単記経由は出力しない（既存ログ量を
-  # 増やさない後方互換）。関数の主出力（SHA pair）と区別するため stderr に出す。
-  if [ "$via" = "multi-id-marker" ]; then
-    echo "[$(date '+%F %T')] per-task: diff-range resolved via=multi-id-marker task_id=${task_id} sha=${current_mark}" >&2
-  fi
+  # NFR 2.1: 連記経由 / suffix 経由で解決した場合は stderr ログに識別可能な印を残す（運用者が
+  # `grep via=multi-id-marker` / `grep via=.*-with-suffix` で件数把握できる）。suffix 無し単記
+  # 経由（既存 canonical）は出力しない（既存ログ量を増やさない後方互換）。既存の
+  # `via=multi-id-marker` 文字列・発火条件は不変（NFR 1.1）。主出力（SHA pair）と区別するため stderr。
+  case "$via" in
+    multi-id-marker|single-id-marker-with-suffix|multi-id-marker-with-suffix)
+      echo "[$(date '+%F %T')] per-task: diff-range resolved via=${via} task_id=${task_id} sha=${current_mark}" >&2
+      ;;
+  esac
 
   local range_end="$current_mark"
   local head_sha
@@ -4640,6 +4740,10 @@ pt_guard_reviewer_range_fresh() {
 #   3  = diff range 解決失敗（marker commit が単記でも連記でも見つからない / Issue #164）
 #   4  = ファイル不在で 1 回限定リトライ後も生成されず（Issue #296 Req 2 / Req 4.2 で導入）
 #   5  = stale diff range guard（round>1 で range_end が HEAD ではないため Reviewer 起動前停止）
+#   6  = wall-clock timeout（rc=124）が拡張 timeout での同一 round 内 1 回限定リトライ後も
+#        継続（Issue #149 / idd-claude #442 移植）。呼び出し側は
+#        `per-task-reviewer-timeout-exhausted` カテゴリで `codex-failed` 付与する
+#        （codex crash / parse 失敗 = rc=2 の `per-task-reviewer-error` と grep で区別可能）。
 #   99 = quota 超過
 #
 # 戻り値 2 / 3 / 4 の使い分け:
@@ -4700,6 +4804,13 @@ run_per_task_reviewer() {
     pt_log "task=$task_id reviewer warning-context injected round=$round kind=repeated-reject" >> "$LOG"
   fi
 
+  # Issue #149: wall-clock timeout（rc=124）の拡張 timeout リトライ予算を解決する。
+  # 基準 timeout が無効（空 / 0）なら _to_ext は空になり、拡張リトライ経路自体が非適用
+  # （従来挙動 / 後方互換）。リトライは同一 round 内で 1 回限定（missing-file リトライと直交）。
+  local _to_base _to_ext _to_retry_used="false"
+  _to_base=$(reviewer_base_timeout_sec)
+  _to_ext=$(reviewer_normalize_extended_timeout_sec "$_to_base")
+
   # Issue #296 Req 2.4 / NFR 3.1 / Req 4.2: per-task 経路でもファイル不在起因の再起動は
   # 同一 round 内で最大 1 回まで（単発経路 run_reviewer_stage と対称）。
   local attempt
@@ -4713,13 +4824,36 @@ run_per_task_reviewer() {
       echo "--- per-task Reviewer 実行 (task=$task_id, round=$round) ---" >> "$LOG"
     fi
 
-    local _qa_reset_file _qa_rc=0 _qa_ts _qa_stage_label
-    _qa_ts=$(date +%Y%m%d-%H%M%S)
-    _qa_reset_file=$(idd_secure_mktemp "qa-reset-${REPO_SLUG}-${NUMBER}-pt-rev-${task_id}-r${round}-a${attempt}-${_qa_ts}") || return 2
-    _qa_stage_label="PerTask-Rev-${task_id}-r${round}-a${attempt}"
-    qa_run_codex_stage "$_qa_stage_label" "$_qa_reset_file" -- \
-      codex_exec_prompt "$_qa_stage_label" "$REVIEWER_MODEL" "$prompt" \
-      >> "$LOG" 2>&1 || _qa_rc=$?
+    # Issue #149: timeout（rc=124）起因失敗のみ、同一 round 内で 1 回だけ拡張 timeout
+    # （REVIEWER_TIMEOUT_EXTENDED_SEC / 既定は基準の 2 倍）で再試行する内側ループ。
+    # quota（rc=99）/ その他非ゼロ exit / rc=0 経路は従来と同一（後方互換）。
+    local _qa_reset_file _qa_rc=0 _qa_ts _qa_stage_label _to_inner
+    for _to_inner in 1 2; do
+      _qa_rc=0
+      _qa_ts=$(date +%Y%m%d-%H%M%S)
+      _qa_reset_file=$(idd_secure_mktemp "qa-reset-${REPO_SLUG}-${NUMBER}-pt-rev-${task_id}-r${round}-a${attempt}-t${_to_inner}-${_qa_ts}") || return 2
+      _qa_stage_label="PerTask-Rev-${task_id}-r${round}-a${attempt}"
+      if [ "$_to_inner" = "2" ]; then
+        # 拡張 timeout での再試行。CODEX_EXEC_TIMEOUT_SEC は codex_effective_timeout_sec の
+        # 最優先経路のため、この 1 呼び出しに限り拡張予算が適用される（env は一時 prefix のみ）。
+        CODEX_EXEC_TIMEOUT_SEC="$_to_ext" \
+          qa_run_codex_stage "$_qa_stage_label" "$_qa_reset_file" -- \
+          codex_exec_prompt "$_qa_stage_label" "$REVIEWER_MODEL" "$prompt" \
+          >> "$LOG" 2>&1 || _qa_rc=$?
+      else
+        qa_run_codex_stage "$_qa_stage_label" "$_qa_reset_file" -- \
+          codex_exec_prompt "$_qa_stage_label" "$REVIEWER_MODEL" "$prompt" \
+          >> "$LOG" 2>&1 || _qa_rc=$?
+      fi
+      if reviewer_is_timeout_rc "$_qa_rc" && [ "$_to_retry_used" != "true" ] && [ -n "$_to_ext" ]; then
+        _to_retry_used="true"
+        rm -f "$_qa_reset_file"
+        pt_log "task=$task_id reviewer round=$round attempt=$attempt result=timeout rc=124 retry reason=extended-timeout base-timeout-sec=${_to_base} extended-timeout-sec=${_to_ext}" >> "$LOG"
+        echo "--- per-task Reviewer 実行 (task=$task_id, round=$round, retry / extended-timeout ${_to_ext}s) ---" >> "$LOG"
+        continue
+      fi
+      break
+    done
 
     case "$_qa_rc" in
       0)
@@ -4732,6 +4866,17 @@ run_per_task_reviewer() {
         rm -f "$_qa_reset_file"
         pt_log "task=$task_id reviewer end round=$round attempt=$attempt result=quota-exceeded" >> "$LOG"
         return 99
+        ;;
+      124)
+        rm -f "$_qa_reset_file"
+        if [ "$_to_retry_used" = "true" ]; then
+          # Issue #149: 拡張 timeout リトライ後もなお timeout → 区別された理由で escalation。
+          pt_log "task=$task_id reviewer end round=$round attempt=$attempt result=error reason=timeout-exhausted rc=124 base-timeout-sec=${_to_base} extended-timeout-sec=${_to_ext}" >> "$LOG"
+          return 6
+        fi
+        # 拡張予算が解決できない（timeout 無効設定等）場合は従来どおり rc=2（後方互換）。
+        pt_log "task=$task_id reviewer end round=$round attempt=$attempt result=error reason=codex-exit-nonzero rc=$_qa_rc" >> "$LOG"
+        return 2
         ;;
       *)
         rm -f "$_qa_reset_file"
@@ -5604,6 +5749,14 @@ run_per_task_loop() {
                   mark_issue_failed "per-task-reviewer-missing-file" "per-task ループの Debugger 経由 Reviewer (task=\`${task_id}\`, round=3) が rc=0 で終了しましたが、\`${SPEC_DIR_REL}/review-notes.md\` が同一 round 内の 1 回限定リトライ後も生成されませんでした（Issue #296 ファイル不在経路）。Reviewer subagent の Write 漏れが疑われます。\`$LOG\` を確認してください。"
                   return 1
                   ;;
+                6)
+                  # Issue #149: timeout（rc=124）が拡張 timeout リトライ後も継続 →
+                  # `per-task-reviewer-timeout-exhausted` カテゴリ（codex crash / parse 失敗と区別）。
+                  dbg_log "trigger=round2-reject issue=#${NUMBER} task=${task_id} round3 result=timeout-exhausted" >> "$LOG"
+                  echo "❌ #$NUMBER: per-task Reviewer (task=$task_id, round=3) timeout（拡張 timeout リトライ後も継続）→ codex-failed (per-task-reviewer-timeout-exhausted)" | tee -a "$LOG"
+                  mark_issue_failed "per-task-reviewer-timeout-exhausted" "per-task ループの Debugger 経由 Reviewer (task=\`${task_id}\`, round=3) が wall-clock timeout（rc=124）で終了し、拡張 timeout（\`REVIEWER_TIMEOUT_EXTENDED_SEC\`、既定は基準の 2 倍）での同一 round 内 1 回限定リトライ後もなお timeout しました（Issue #149 timeout 枯渇経路）。codex crash / parse 失敗（per-task-reviewer-error）とは区別される timeout 起因の失敗です。大規模 spec / diff の可能性があるため、\`REVIEWER_TIMEOUT_EXTENDED_SEC\` または \`CODEX_DEFAULT_TIMEOUT_SEC\` の引き上げを検討してください。\`$LOG\` を確認してください。"
+                  return 1
+                  ;;
                 *)
                   dbg_log "trigger=round2-reject issue=#${NUMBER} task=${task_id} round3 result=error" >> "$LOG"
                   echo "❌ #$NUMBER: per-task Reviewer (task=$task_id, round=3) 異常終了 → codex-failed" | tee -a "$LOG"
@@ -5653,6 +5806,13 @@ run_per_task_loop() {
             mark_issue_failed "per-task-reviewer-missing-file" "per-task ループの Reviewer (task=\`${task_id}\`, round=2) が rc=0 で終了しましたが、\`${SPEC_DIR_REL}/review-notes.md\` が同一 round 内の 1 回限定リトライ後も生成されませんでした（Issue #296 ファイル不在経路）。Reviewer subagent の Write 漏れが疑われます。\`$LOG\` を確認してください。"
             return 1
             ;;
+          6)
+            # Issue #149: timeout（rc=124）が拡張 timeout リトライ後も継続 →
+            # `per-task-reviewer-timeout-exhausted` カテゴリ（codex crash / parse 失敗と区別）。
+            echo "❌ #$NUMBER: per-task Reviewer (task=$task_id, round=2) timeout（拡張 timeout リトライ後も継続）→ codex-failed (per-task-reviewer-timeout-exhausted)" | tee -a "$LOG"
+            mark_issue_failed "per-task-reviewer-timeout-exhausted" "per-task ループの Reviewer (task=\`${task_id}\`, round=2) が wall-clock timeout（rc=124）で終了し、拡張 timeout（\`REVIEWER_TIMEOUT_EXTENDED_SEC\`、既定は基準の 2 倍）での同一 round 内 1 回限定リトライ後もなお timeout しました（Issue #149 timeout 枯渇経路）。codex crash / parse 失敗（per-task-reviewer-error）とは区別される timeout 起因の失敗です。大規模 spec / diff の可能性があるため、\`REVIEWER_TIMEOUT_EXTENDED_SEC\` または \`CODEX_DEFAULT_TIMEOUT_SEC\` の引き上げを検討してください。\`$LOG\` を確認してください。"
+            return 1
+            ;;
           *)
             echo "❌ #$NUMBER: per-task Reviewer (task=$task_id, round=2) 異常終了 → codex-failed" | tee -a "$LOG"
             mark_issue_failed "per-task-reviewer-error" "per-task ループの Reviewer (task=\`${task_id}\`, round=2) が異常終了しました（codex crash / parse 失敗）。\`$LOG\` を確認してください。"
@@ -5676,6 +5836,13 @@ run_per_task_loop() {
         # → `per-task-reviewer-missing-file` カテゴリで `codex-failed`（round=1）。
         echo "❌ #$NUMBER: per-task Reviewer (task=$task_id, round=1) ファイル不在（リトライ後も未生成）→ codex-failed (per-task-reviewer-missing-file)" | tee -a "$LOG"
         mark_issue_failed "per-task-reviewer-missing-file" "per-task ループの Reviewer (task=\`${task_id}\`, round=1) が rc=0 で終了しましたが、\`${SPEC_DIR_REL}/review-notes.md\` が同一 round 内の 1 回限定リトライ後も生成されませんでした（Issue #296 ファイル不在経路）。Reviewer subagent の Write 漏れが疑われます。\`$LOG\` を確認してください。"
+        return 1
+        ;;
+      6)
+        # Issue #149: timeout（rc=124）が拡張 timeout リトライ後も継続 →
+        # `per-task-reviewer-timeout-exhausted` カテゴリ（codex crash / parse 失敗と区別）。
+        echo "❌ #$NUMBER: per-task Reviewer (task=$task_id, round=1) timeout（拡張 timeout リトライ後も継続）→ codex-failed (per-task-reviewer-timeout-exhausted)" | tee -a "$LOG"
+        mark_issue_failed "per-task-reviewer-timeout-exhausted" "per-task ループの Reviewer (task=\`${task_id}\`, round=1) が wall-clock timeout（rc=124）で終了し、拡張 timeout（\`REVIEWER_TIMEOUT_EXTENDED_SEC\`、既定は基準の 2 倍）での同一 round 内 1 回限定リトライ後もなお timeout しました（Issue #149 timeout 枯渇経路）。codex crash / parse 失敗（per-task-reviewer-error）とは区別される timeout 起因の失敗です。大規模 spec / diff の可能性があるため、\`REVIEWER_TIMEOUT_EXTENDED_SEC\` または \`CODEX_DEFAULT_TIMEOUT_SEC\` の引き上げを検討してください。\`$LOG\` を確認してください。"
         return 1
         ;;
       *)
@@ -6758,6 +6925,9 @@ parse_review_result() {
 #   1 = reject
 #   2 = 異常終了（codex crash / parse 失敗 / RESULT 行欠落 = 装飾起因 parse 失敗）
 #   4 = ファイル不在で 1 回限定リトライ後も生成されず（Issue #296 Req 2 で導入）
+#   6 = wall-clock timeout（rc=124）が拡張 timeout での同一 round 内 1 回限定リトライ後も
+#       継続（Issue #149 / idd-claude #442 移植）。呼び出し側は `reviewer-timeout-exhausted`
+#       カテゴリで `codex-failed` 付与する（rc=2 の `reviewer-error` と grep で区別可能）
 #   99 = quota 超過
 #
 # Issue #296（ファイル不在検出 + 1 回限定リトライ）:
@@ -6787,6 +6957,13 @@ run_reviewer_stage() {
   local prompt
   prompt=$(build_reviewer_prompt "$round" "$prev_result")
 
+  # Issue #149: wall-clock timeout（rc=124）の拡張 timeout リトライ予算を解決する
+  # （per-task 経路 run_per_task_reviewer と対称）。基準 timeout が無効（空 / 0）なら
+  # _to_ext_rv は空になり、拡張リトライ経路自体が非適用（従来挙動 / 後方互換）。
+  local _to_base_rv _to_ext_rv _to_retry_used_rv="false"
+  _to_base_rv=$(reviewer_base_timeout_sec)
+  _to_ext_rv=$(reviewer_normalize_extended_timeout_sec "$_to_base_rv")
+
   # Issue #296 Req 2.4 / NFR 3.1: ファイル不在起因の再起動は同一 round 内で最大 1 回まで。
   # ループ展開はせず attempt=1（初回）/ attempt=2（リトライ）の 2 段固定で実装する。
   local attempt
@@ -6803,13 +6980,35 @@ run_reviewer_stage() {
 
     # Issue #66: Quota-Aware Watcher 経由で codex を起動。99 を受領した場合は
     # quota 超過検出として呼び出し側（run_impl_pipeline）に伝搬する。
-    local _qa_reset_file_rv _qa_rc_rv=0 _qa_ts_rv _qa_stage_label_rv
-    _qa_ts_rv=$(date +%Y%m%d-%H%M%S)
-    _qa_reset_file_rv=$(idd_secure_mktemp "qa-reset-${REPO_SLUG}-${NUMBER}-reviewer-r${round}-a${attempt}-${_qa_ts_rv}") || return 2
-    _qa_stage_label_rv="Reviewer-r${round}-a${attempt}"
-    qa_run_codex_stage "$_qa_stage_label_rv" "$_qa_reset_file_rv" -- \
-      codex_exec_prompt "$_qa_stage_label_rv" "$REVIEWER_MODEL" "$prompt" \
-      >> "$LOG" 2>&1 || _qa_rc_rv=$?
+    # Issue #149: timeout（rc=124）起因失敗のみ、同一 round 内で 1 回だけ拡張 timeout で
+    # 再試行する内側ループ（per-task 経路と対称）。他経路は従来と同一（後方互換）。
+    local _qa_reset_file_rv _qa_rc_rv=0 _qa_ts_rv _qa_stage_label_rv _to_inner_rv
+    for _to_inner_rv in 1 2; do
+      _qa_rc_rv=0
+      _qa_ts_rv=$(date +%Y%m%d-%H%M%S)
+      _qa_reset_file_rv=$(idd_secure_mktemp "qa-reset-${REPO_SLUG}-${NUMBER}-reviewer-r${round}-a${attempt}-t${_to_inner_rv}-${_qa_ts_rv}") || return 2
+      _qa_stage_label_rv="Reviewer-r${round}-a${attempt}"
+      if [ "$_to_inner_rv" = "2" ]; then
+        # 拡張 timeout での再試行。CODEX_EXEC_TIMEOUT_SEC は codex_effective_timeout_sec の
+        # 最優先経路のため、この 1 呼び出しに限り拡張予算が適用される（env は一時 prefix のみ）。
+        CODEX_EXEC_TIMEOUT_SEC="$_to_ext_rv" \
+          qa_run_codex_stage "$_qa_stage_label_rv" "$_qa_reset_file_rv" -- \
+          codex_exec_prompt "$_qa_stage_label_rv" "$REVIEWER_MODEL" "$prompt" \
+          >> "$LOG" 2>&1 || _qa_rc_rv=$?
+      else
+        qa_run_codex_stage "$_qa_stage_label_rv" "$_qa_reset_file_rv" -- \
+          codex_exec_prompt "$_qa_stage_label_rv" "$REVIEWER_MODEL" "$prompt" \
+          >> "$LOG" 2>&1 || _qa_rc_rv=$?
+      fi
+      if reviewer_is_timeout_rc "$_qa_rc_rv" && [ "$_to_retry_used_rv" != "true" ] && [ -n "$_to_ext_rv" ]; then
+        _to_retry_used_rv="true"
+        rm -f "$_qa_reset_file_rv"
+        rv_log "round=$round attempt=$attempt result=timeout rc=124 retry reason=extended-timeout base-timeout-sec=${_to_base_rv} extended-timeout-sec=${_to_ext_rv}" >> "$LOG"
+        echo "--- Reviewer 実行 (round=$round, retry / extended-timeout ${_to_ext_rv}s) ---" >> "$LOG"
+        continue
+      fi
+      break
+    done
     case "$_qa_rc_rv" in
       0)
         rm -f "$_qa_reset_file_rv"
@@ -6823,6 +7022,20 @@ run_reviewer_stage() {
         # run サマリ: Reviewer quota（独立 context で起動したが quota 超過 / Req 3.1, 3.3）
         rs_record_reviewer independent quota "$round"
         return 99
+        ;;
+      124)
+        rm -f "$_qa_reset_file_rv"
+        if [ "$_to_retry_used_rv" = "true" ]; then
+          # Issue #149: 拡張 timeout リトライ後もなお timeout → 区別された理由で escalation。
+          rv_log "round=$round attempt=$attempt result=error reason=timeout-exhausted rc=124 base-timeout-sec=${_to_base_rv} extended-timeout-sec=${_to_ext_rv}" >> "$LOG"
+          # run サマリ: Reviewer degraded（timeout 枯渇で verdict 取得不能）
+          rs_record_reviewer degraded "" "$round"
+          return 6
+        fi
+        # 拡張予算が解決できない（timeout 無効設定等）場合は従来どおり rc=2（後方互換）。
+        rv_log "round=$round attempt=$attempt result=error reason=codex-exit-nonzero" >> "$LOG"
+        rs_record_reviewer degraded "" "$round"
+        return 2
         ;;
       *)
         rm -f "$_qa_reset_file_rv"
@@ -8408,6 +8621,14 @@ run_impl_pipeline() {
                     mark_issue_failed "reviewer-missing-file" "Debugger 経由の Reviewer round=3 が rc=0 で終了しましたが、\`${SPEC_DIR_REL}/review-notes.md\` が同一 round 内の 1 回限定リトライ後も生成されませんでした（Issue #296 ファイル不在経路）。Reviewer subagent の Write 漏れが疑われます。\`$LOG\` を確認してください。"
                     return 1
                     ;;
+                  6)
+                    # Issue #149: timeout（rc=124）が拡張 timeout リトライ後も継続 →
+                    # `reviewer-timeout-exhausted` カテゴリ（codex crash / parse 失敗の reviewer-error と区別）。
+                    dbg_log "trigger=round2-reject issue=#${NUMBER} task=none round3 result=timeout-exhausted" >> "$LOG"
+                    echo "❌ #$NUMBER: Reviewer round=3 timeout（拡張 timeout リトライ後も継続）→ codex-failed (reviewer-timeout-exhausted)" | tee -a "$LOG"
+                    mark_issue_failed "reviewer-timeout-exhausted" "Debugger 経由の Reviewer round=3 が wall-clock timeout（rc=124）で終了し、拡張 timeout（\`REVIEWER_TIMEOUT_EXTENDED_SEC\`、既定は基準の 2 倍）での同一 round 内 1 回限定リトライ後もなお timeout しました（Issue #149 timeout 枯渇経路）。codex crash / parse 失敗（reviewer-error）とは区別される timeout 起因の失敗です。大規模 spec / diff の可能性があるため、\`REVIEWER_TIMEOUT_EXTENDED_SEC\` または \`CODEX_DEFAULT_TIMEOUT_SEC\` の引き上げを検討してください。\`$LOG\` を確認してください。"
+                    return 1
+                    ;;
                   *)
                     dbg_log "trigger=round2-reject issue=#${NUMBER} task=none round3 result=error" >> "$LOG"
                     echo "❌ #$NUMBER: Reviewer round=3 異常終了 → codex-failed" | tee -a "$LOG"
@@ -8455,6 +8676,13 @@ run_impl_pipeline() {
               mark_issue_failed "reviewer-missing-file" "Reviewer round=2 が rc=0 で終了しましたが、\`${SPEC_DIR_REL}/review-notes.md\` が同一 round 内の 1 回限定リトライ後も生成されませんでした（Issue #296 ファイル不在経路）。Reviewer subagent の Write 漏れが疑われます。\`$LOG\` を確認してください。"
               return 1
               ;;
+            6)
+              # Issue #149: timeout（rc=124）が拡張 timeout リトライ後も継続 →
+              # `reviewer-timeout-exhausted` カテゴリ（codex crash / parse 失敗の reviewer-error と区別）。
+              echo "❌ #$NUMBER: Reviewer round=2 timeout（拡張 timeout リトライ後も継続）→ codex-failed (reviewer-timeout-exhausted)" | tee -a "$LOG"
+              mark_issue_failed "reviewer-timeout-exhausted" "Reviewer round=2 が wall-clock timeout（rc=124）で終了し、拡張 timeout（\`REVIEWER_TIMEOUT_EXTENDED_SEC\`、既定は基準の 2 倍）での同一 round 内 1 回限定リトライ後もなお timeout しました（Issue #149 timeout 枯渇経路）。codex crash / parse 失敗（reviewer-error）とは区別される timeout 起因の失敗です。大規模 spec / diff の可能性があるため、\`REVIEWER_TIMEOUT_EXTENDED_SEC\` または \`CODEX_DEFAULT_TIMEOUT_SEC\` の引き上げを検討してください。\`$LOG\` を確認してください。"
+              return 1
+              ;;
             *)
               # round=2 reviewer error
               echo "❌ #$NUMBER: Reviewer round=2 異常終了 → codex-failed" | tee -a "$LOG"
@@ -8468,6 +8696,13 @@ run_impl_pipeline() {
           # → `reviewer-missing-file` カテゴリで `codex-failed`（round=1）。
           echo "❌ #$NUMBER: Reviewer round=1 ファイル不在（リトライ後も未生成）→ codex-failed (reviewer-missing-file)" | tee -a "$LOG"
           mark_issue_failed "reviewer-missing-file" "Reviewer round=1 が rc=0 で終了しましたが、\`${SPEC_DIR_REL}/review-notes.md\` が同一 round 内の 1 回限定リトライ後も生成されませんでした（Issue #296 ファイル不在経路）。Reviewer subagent の Write 漏れが疑われます。\`$LOG\` を確認してください。"
+          return 1
+          ;;
+        6)
+          # Issue #149: timeout（rc=124）が拡張 timeout リトライ後も継続 →
+          # `reviewer-timeout-exhausted` カテゴリ（codex crash / parse 失敗の reviewer-error と区別）。
+          echo "❌ #$NUMBER: Reviewer round=1 timeout（拡張 timeout リトライ後も継続）→ codex-failed (reviewer-timeout-exhausted)" | tee -a "$LOG"
+          mark_issue_failed "reviewer-timeout-exhausted" "Reviewer round=1 が wall-clock timeout（rc=124）で終了し、拡張 timeout（\`REVIEWER_TIMEOUT_EXTENDED_SEC\`、既定は基準の 2 倍）での同一 round 内 1 回限定リトライ後もなお timeout しました（Issue #149 timeout 枯渇経路）。codex crash / parse 失敗（reviewer-error）とは区別される timeout 起因の失敗です。大規模 spec / diff の可能性があるため、\`REVIEWER_TIMEOUT_EXTENDED_SEC\` または \`CODEX_DEFAULT_TIMEOUT_SEC\` の引き上げを検討してください。\`$LOG\` を確認してください。"
           return 1
           ;;
         *)
