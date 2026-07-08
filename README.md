@@ -1406,8 +1406,10 @@ kill switch）**かつ** 個別 gate=true の AND でのみ発火し、どちら
    （`PR_REVIEWER_STATUS_CHECK_ENABLED`）。任意で **2nd gate**（`claude-review` /
    `PR_REVIEWER_SECOND_GATE=claude`）を独立レビューとして併設。
 4. **実装 PR auto-merge**（`AUTO_MERGE_ENABLED`）: 必須 check（CI + `codex-review`（+`claude-review`））
-   全 green + mergeable で GitHub native auto-merge が squash。CONFLICTING は merge-queue /
-   auto-rebase（+ semantic 自動解決 `AUTO_REBASE_SEMANTIC`）へ委譲。
+   全 green + mergeable に加え、current head SHA の PR Reviewer approve evidence と review status
+   evidence が観測できる場合だけ GitHub native auto-merge が squash。branch protection だけを
+   review gate の代替とは扱いません。CONFLICTING は merge-queue / auto-rebase（+ semantic 自動解決
+   `AUTO_REBASE_SEMANTIC`）へ委譲。
 5. **回復系**: CI 失敗 / `codex-failed` は **Failed Recovery**（`FAILED_RECOVERY_ENABLED`・通算
    budget=4）で自動修復。セッション喪失で残った `codex-picked-up` は **Stale Pickup Reaper**
    （`STALE_PICKUP_REAPER_ENABLED`）で復帰。依存循環は **blocked cycle 検出**
@@ -1445,7 +1447,7 @@ env が増えるため、crontab 行長限界を避けるには後述「per-repo
 |---|---|---|---|---|---|---|
 | **完全自動化 kill switch**（full-auto 系 processor を一括 gate する umbrella。個別 gate と **AND** の二重 opt-in = `FULL_AUTO_ENABLED=true` かつ個別 gate=true で発火。配下 processor（#98〜#105 / #108 / F6）はすべて実装・main 反映済みで、各々が `full_auto_enabled` を AND 条件として参照する（全 gate 既定 OFF のため未設定時は導入前と等価）） | `FULL_AUTO_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `on` / `True` / `TRUE` / `1` / 前後空白 / typo）はすべて OFF に正規化 | — | 上記「完全自動化（full-auto）パイプライン概観」節 + 下記各機能行を参照 | #97 |
 | **PR レビュー結果の commit status publish**（codex Reviewer の verdict を `codex-review` commit status として publish。auto-merge #99 の required status check の source。`FULL_AUTO_ENABLED` との **AND 二重 opt-in**） | `PR_REVIEWER_STATUS_CHECK_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて OFF に正規化。OFF では従来どおりコメントのみ | 連動: `FULL_AUTO_ENABLED`（#97）。`PR_REVIEWER_ENABLED`（codex レビュー本体）も別途要有効化 | approve→`success` / iteration・conflict→`failure`。2nd gate（`claude-review`）は別 Issue（toggle・既定 OFF） | #98 |
-| **実装 PR auto-merge**（`codex-ready-for-review` 実装 PR に GitHub native auto-merge を有効化。watcher は直接 merge せず、必須 check 全 green + mergeable で GitHub が squash merge。CONFLICTING は merge-queue/auto-rebase へ委譲） | `AUTO_MERGE_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて OFF に正規化 | 連動: `FULL_AUTO_ENABLED`（#97）との **AND 二重 opt-in**。推奨: `AUTO_MERGE_MAX_PRS`（既定 `10`）、`AUTO_MERGE_HEAD_PATTERN`（既定 `^codex/issue-.*-impl`）、`AUTO_MERGE_GIT_TIMEOUT`（既定 `60`）。**branch protection で required checks 設定が前提**（#96） | `gh pr merge --auto --squash --delete-branch`。既 enable は冪等 skip | #99 |
+| **実装 PR auto-merge**（`codex-ready-for-review` 実装 PR に GitHub native auto-merge を有効化。watcher は直接 merge せず、current head SHA の PR Reviewer approve evidence + `codex-review`/`claude-review` 成功 status + 必須 check 全 green + mergeable で GitHub が squash merge。branch protection だけを review gate の代替とは扱わない。CONFLICTING は merge-queue/auto-rebase へ委譲） | `AUTO_MERGE_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて OFF に正規化 | 連動: `FULL_AUTO_ENABLED`（#97）との **AND 二重 opt-in**。推奨: `AUTO_MERGE_MAX_PRS`（既定 `10`）、`AUTO_MERGE_HEAD_PATTERN`（既定 `^codex/issue-.*-impl`）、`AUTO_MERGE_GIT_TIMEOUT`（既定 `60`）。**PR Reviewer status publish と branch protection の required checks 設定が前提**（#96/#98） | `gh pr merge --auto --squash --delete-branch`。既 enable は冪等 skip。review/status evidence が空・stale・取得不能なら skip して理由をログ出力 | #99 |
 | **設計 PR auto-merge**（設計 PR `^codex/issue-.*-design` に GitHub native auto-merge を有効化。merge 後の `codex-awaiting-design-review` 除去は既存 Design Review Release Processor が担当。設計 PR は ready ラベルを持たないため head pattern + 否定ラベルで判定） | `AUTO_MERGE_DESIGN_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて OFF に正規化 | 連動: `FULL_AUTO_ENABLED`（#97）との **AND 二重 opt-in**。推奨: `AUTO_MERGE_DESIGN_MAX_PRS`（既定 `10`）、`AUTO_MERGE_DESIGN_HEAD_PATTERN`（既定 `^codex/issue-.*-design`）、`AUTO_MERGE_DESIGN_GIT_TIMEOUT`（既定 `60`） | `codex-failed`/`codex-needs-decisions`/`codex-needs-iteration` 不在 + MERGEABLE で enable | #100 |
 | **Failed Recovery Processor**（`codex-failed` Issue（reviewer-reject 由来含む）と auto-merge 待ちで CI 失敗の PR を解析 → fresh codex で自動復旧。**通算 attempt budget=4** を work-unit 単位で `$HOME/.idd-codex/failed-recovery/` に永続化（Reviewer 2/2・pr-iteration 3R と掛け算しない）。no-progress（同一失敗 signature + diff 無進捗）で即終端。budget 超過 / no-progress 時は `codex-failed` 据え置きで停止 + run-summary 通知＝無限ループ・沈黙死しない。quota reached（#79 rollout 検出）は **budget を消費せず待機**（Issue は `codex-needs-quota-wait` の resume rails へ委譲）） | `FAILED_RECOVERY_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて OFF に正規化。OFF では `codex-failed` は人間対応のまま（導入前と等価） | 連動: `FULL_AUTO_ENABLED`（#97）との **AND 二重 opt-in**。推奨: `FAILED_RECOVERY_MAX_ATTEMPTS`（既定 `4`）、`FAILED_RECOVERY_MAX_PRS`（既定 `3`）、`FAILED_RECOVERY_DEV_MODEL`（既定 `${DEV_MODEL:-gpt-5.5}`）、`FAILED_RECOVERY_STATE_DIR`（既定 `$HOME/.idd-codex/failed-recovery/<repo-slug>`）、`FAILED_RECOVERY_GIT_TIMEOUT`（既定 `60`） | reviewer-reject も label 同定で区別なく対象（D-19a）。対応内容を Issue/PR コメントに残す | #101 |
 | **needs-decisions 自動続行**（Triage が `codex-needs-decisions` 判定した Issue を、Triage JSON の `decisions[].classification == "safe"` に限り PM 第一推奨で自動続行＝audit コメント + `codex-claimed` 除去で次サイクル再 pickup。**機密・コンプラ・不可逆・外部影響は `human-only` 分類とし、どのモードでも自動続行しない**。分類欠落 / 不明値 / 混在 / 破損は安全側 `human-only` に畳む。同一 Issue の自動続行回数を audit marker でカウントし `NEEDS_DECISIONS_AUTO_MAX` 到達で人間据え置きへフォールバック＝無限続行しない） | `NEEDS_DECISIONS_MODE` | `all-human` | `all-human`（既定・全件据え置き=導入前と等価）/ `classified`（safe→続行・human-only→据え置き）/ `all-auto`（safe のみ続行・human-only は据え置き）。不正値 / 未設定 / 空 / typo はすべて `all-human` に正規化 | 連動: `FULL_AUTO_ENABLED`（#97）との **AND 二重 opt-in**（mode∈{classified,all-auto} かつ kill switch ON で発火）。推奨: `NEEDS_DECISIONS_AUTO_MAX`（既定 `4`）、`NEEDS_DECISIONS_GIT_TIMEOUT`（既定 `60`） | 分類は Triage JSON の `classification` フィールド（label ではない）。本体 Triage ルートに thin guard を挿入。per-task #90 ルートは対象外（自動続行は Triage ルートのみ） | #102 |
@@ -2534,6 +2536,10 @@ alias の順）:
 
 PR を伴わない Issue 単体は `gh pr list` の対象外のため自然に除外されます。1 サイクルで処理する
 件数は `PR_REVIEWER_MAX_PRS`（既定 `5`）で上限を設け、超過分は次サイクルに持ち越します。
+手動作成または外部ツール作成の PR であっても、same-owner、非 draft、managed head pattern、
+`codex-ready-for-review` の条件を満たす実装 PR は watcher-created PR と同じ review gate 対象です。
+`reviewDecision`、既存レビュー、status check rollup が空の PR も未レビューの ready PR として候補から
+除外しません。
 
 ### 動作フロー（1 PR あたり）
 
@@ -2596,6 +2602,11 @@ GitHub formal review が作れなかった場合でも watcher cycle は失敗�
 formal review が使われなかった理由を出し、current head SHA の marker approval を後段へ渡します。
 old-SHA marker は stale として無効なため、PR の head が更新された後は PR Reviewer が再レビューし、
 新しい SHA の verdict を出す必要があります。
+
+Auto Merge Processor はこの marker approval または GitHub formal approval に加え、current head SHA の
+`codex-review` または `claude-review` status 成功を確認できる場合だけ auto-merge を arm します。
+レビュー証跡、review status、status check rollup が空・pending・failure・stale・取得不能の場合は
+安全側で skip し、PR 番号と不足している gate category をログに残します。
 
 ### 環境変数
 
