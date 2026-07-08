@@ -1903,7 +1903,8 @@ Phase A により `BASE_BRANCH` に merge された変更を System Test（ST）
 ### 目的
 
 - approved PR の `BASE_BRANCH` merge 後 → closing refs / managed PR の branch・title・body reference
-  から対象 Issue を解決し、`codex-staged-for-release` 自動付与
+  から対象 Issue を解決し、`codex-staged-for-release` 自動付与 + stale な `codex-ready-for-review`
+  除去（`BASE_BRANCH` が repo default branch かどうかに依存せず除去経路が発火 / #139）
 - `codex-staged-for-release` 付き Issue の ST check-run を watcher サイクル内でポーリング
 - ST success → ラベル除去 + 昇格対象集合へ（`PROMOTE_MODE` に応じて昇格タイミング制御）
 - ST failure → `git revert -m 1` + Issue reopen + `codex-st-failed` 付与（fail-continue 維持）
@@ -1974,6 +1975,8 @@ Phase B の判断・操作結果は `[$REPO] promote-pipeline:` prefix と以下
 |---|---|
 | `promote-pipeline: サマリ:` | サイクル終了時のサマリ行 |
 | `issue=#N action=label-add label=codex-staged-for-release source=auto resolver_sources=... prs=...` | 自動付与（Req 2.1.1）。`resolver_sources` は `closing-ref` / `head` / `title` / `body-plain` 等 |
+| `issue=#N action=label-remove label=codex-ready-for-review source=auto` | merge 済 Issue からの stale な `codex-ready-for-review` 除去（#139 / base ブランチが default かどうかに依存しない） |
+| `issue=#N codex-ready-for-review 除去に失敗（後続 Issue は継続）` | merge 済 Issue からの `codex-ready-for-review` 除去 API 失敗（WARN） |
 | `pr=#N issue=#M headRefName=codex/issue-M-design-... design-pr auto-label skip` | 設計 PR merge の自動付与除外 |
 | `issue=#N ST=success action=label-remove+promote-queued` | ST success による除去 |
 | `issue=#N ST=success mode=on-demand action=hold-label-await-human-trigger` | on-demand mode の hold |
