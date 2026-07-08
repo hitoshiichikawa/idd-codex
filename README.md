@@ -531,6 +531,7 @@ bash .github/scripts/idd-codex-labels.sh --repo owner/repo
 | `codex-awaiting-slot` | 薄水色 (`c5def5`) | hot file 競合予防で同サイクル dispatch を見送り中（Phase E Path Overlap Checker が付与・自動除去）。Issue に適用 |
 | `codex-blocked` | 濃赤 (`b60205`) | 依存 Issue 未 merge により codex-auto-dev 進行不能（PM phase の Dependency Resolver Gate #146 が付与）。Issue に適用 |
 | `codex-hotfix` | 橙赤 (`d93f0b`) | codex-hotfix 優先処理対象。Dispatcher が候補を Issue 番号昇順（FIFO）で処理する際、本ラベル付き Issue を非 codex-hotfix より先に投入する（#200）。人間が手動付与。Issue に適用 |
+| `codex-needs-merge-gate-attention` | 薄桃 (`f9d0c4`) | `claude-review` が required だが adjudicator も #108 2nd gate も発火せず merge gate を満たせない停滞状態（Merge Gate Visibility #138 が付与・解消時に自動除去）。PR に適用 |
 
 #### 手動で作成する場合
 
@@ -551,6 +552,7 @@ gh label create codex-st-failed               --repo owner/repo --color d73a4a -
 gh label create codex-awaiting-slot           --repo owner/repo --color c5def5 --description "hot file 競合予防で同サイクル dispatch を見送り中（Phase E Path Overlap Checker が付与・除去）"
 gh label create codex-blocked                 --repo owner/repo --color b60205 --description "【Issue 用】 依存 Issue 未 merge により codex-auto-dev 進行不能"
 gh label create codex-hotfix                  --repo owner/repo --color d93f0b --description "【Issue 用】 codex-hotfix 優先処理対象（Dispatcher が非 codex-hotfix より先に投入）"
+gh label create codex-needs-merge-gate-attention --repo owner/repo --color f9d0c4 --description "【PR 用】 claude-review が required だが adjudicator も 2nd gate も発火せず merge gate を満たせない停滞状態（#138）"
 ```
 
 #### Branch protection（任意）
@@ -1126,6 +1128,7 @@ commit 済みだった artifact を含む既存 ahead commit が origin branch �
 | `codex-awaiting-slot` | Issue | hot file 競合予防で同サイクル dispatch を見送り中（Phase E Path Overlap Checker 付与） | Codex（Phase E Path Overlap Checker）／解除は同 Phase が次サイクルで自動除去（先行 Issue PR merge で in-flight 集合縮小 → overlap empty）、または運用者が手動除去 |
 | `codex-blocked` | Issue | 依存 Issue 未 merge により codex-auto-dev 進行不能（PM phase の Dependency Resolver Gate #146 が付与） | Codex（PM Phase Orchestrator / Dependency Resolver Gate）／解除は人間が依存先 Issue を merge した後に手動除去、または `DEPENDENCY_AUTO_UNBLOCK_ENABLED=true` 時に Dependency Auto-Unblock Processor が自動除去 |
 | `codex-hotfix` | Issue | codex-hotfix 優先処理対象。Dispatcher が候補を FIFO（番号昇順）で処理する際、本ラベル付き Issue を非 codex-hotfix より先に投入する（#200） | 人間が手動付与（自動付与なし）／緊急対応の完了後に運用者が手動除去 |
+| `codex-needs-merge-gate-attention` | PR | `claude-review` が required だが adjudicator も #108 2nd gate も発火せず merge gate を満たせない停滞状態（#138 Merge Gate Visibility） | Codex（Merge Gate Visibility Processor）／解除は adjudicator / 2nd gate の後発 publish・required 設定変更を検知した同 Processor が次サイクルで自動除去 |
 
 ポーリングクエリ:
 ```
@@ -1360,6 +1363,29 @@ idd-codex は基本フロー（Triage → 実装 → PR 作成）以外の機能
 > `QUOTA_AWARE_ENABLED` / `IMPL_RESUME_PRESERVE_COMMITS`。
 > `IMPL_RESUME_PROGRESS_TRACKING` は #67 導入時から `true` 既定で据え置き。
 
+> **Migration Note (#138, 2026-07-09)**: `PR_REVIEWER_ADJUDICATOR_ENABLED`（#404 / #127 で
+> 移植した PR Reviewer Adjudicator）を opt-in（既定 `false`）から **デフォルト `true` に
+> 反転**しました（idd-claude #412 / PR #423 の移植）。idd-codex は codex が primary reviewer
+> のため adjudicator 経路は production の主経路であり、opt-in 既定 OFF のままでは codex の
+> marginal 指摘がそのまま pr-iteration を駆動して scope-creep するためです。
+> 本反転は「新機能は既定 OFF」規約（AGENTS.md 機能追加ガイドライン §3）に対する
+> **既移植機能の既定値変更としての明示的な例外**です。
+>
+> - 値の解釈は #112 系と同じ「**`=false` 厳密一致のみ無効**」になります（未設定 / 空文字 /
+>   `0` / `True` / typo はすべて有効）。`=false` を明示している既存 cron / launchd は
+>   本変更前と完全に等価な挙動を維持します。
+> - adjudicator の**実発動には前提**（`PR_REVIEWER_ENABLED=true` + `claude` CLI install/認証
+>   済み + status publish には `PR_REVIEWER_STATUS_CHECK_ENABLED` / `FULL_AUTO_ENABLED`）が
+>   別途必要です。前提不成立の環境では既存ガード（早期 return / fallback=`passthrough`）が
+>   そのまま働き、観測可能な挙動は変わりません。
+> - `PR_REVIEWER_ADJUDICATOR_ENABLED` 以外の env 名 / 既定値 / ラベル名 / commit status 名 /
+>   exit code / log prefix は不変です。cycle startup ログに `pr-reviewer-adjudicator=` の
+>   解決値が追記され、grep で有効 / 無効状態を事後確認できます。
+> - 併せて **Merge Gate Visibility**（`claude-review` が required なのに adjudicator も
+>   #108 2nd gate も発火せず merge gate を満たせない停滞 PR の可視化 WARN +
+>   `codex-needs-merge-gate-attention` ラベル）を追加しました。詳細は
+>   [PR Reviewer Adjudicator (#404)](#pr-reviewer-adjudicator-404) 節を参照。
+
 > **Migration Note (#161, 2026-05-23)**: 下記 2 表に **「正規化規則」列**と
 > **「追加 env（必須/推奨）」列**を追加しました。`PROMOTE_PIPELINE_ENABLED=true` を有効化しても
 > `ST_CHECK_RUN_NAME` 未設定で Phase B が静かに skip される、`AUTO_REBASE_MODE=on` と書いて
@@ -1418,6 +1444,7 @@ idd-codex は基本フロー（Triage → 実装 → PR 作成）以外の機能
 | **役割定義の prompt 注入**（Codex には Claude の subagent 機構が無いため `.codex/agents/<role>.md` を各 stage の prompt へ注入する。Developer 出力品質のキーストーン） | `CODEX_INJECT_ROLE_DEFS` | `true` | `=false` で注入なし（移植直後の挙動に戻す） | — | 下記「Codex CLI 移植固有の harness 設計」節 | #74 |
 | **Stage A の PM / Developer 分離**（impl mode で PM 要件定義と Developer 実装を別 `codex exec` に分離し context bleed を防ぐ。**impl 1 件あたり codex exec が +1 回**） | `STAGE_A_PM_SPLIT_ENABLED` | `true` | `=false` で従来の単一 exec（PM+Developer 同居）に戻る | — | 下記「Codex CLI 移植固有の harness 設計」節 | #82 |
 | **Debugger の live web search**（Debugger stage のみ `codex --search`（native `web_search` tool）を有効化） | `CODEX_DEBUGGER_WEB_SEARCH` | `true` | `=false` で検索なし | — | 下記「Codex CLI 移植固有の harness 設計」節 | #78 |
+| **PR Reviewer Adjudicator**（codex の指摘を Claude が **legitimate（実害）/ excessive（過剰）** に分類し、(1) `codex-needs-iteration` 反復を **legitimate 件数のみ**で駆動、(2) merge ゲートを `codex-review`（advisory）→ **`claude-review`（必須相当）** へシフト。codex の過剰指摘 / nitpick が merge を永久 block する事象を解消。「codex が指摘の源泉＝決定権・Claude が過剰指摘を裁定」。独立 Reviewer reject は legitimate 件数に依らず先行優先で `claude-review=failure`。**ON 時は #108 2nd gate を skip し adjudicator を `claude-review` の唯一の publisher にする**（single-publisher）。claude 失敗時 fallback は既定 `passthrough`（adjudicator 自体を実行しなかった扱い＝SPOF 緩和）。**#138 で opt-in 既定 OFF → 既定 ON / opt-out に反転**（下記 Migration Note 参照）） | `PR_REVIEWER_ADJUDICATOR_ENABLED` | `true` | `=false` 厳密一致のみ無効。それ以外（未設定 / 空文字 / `True` / `1` / `0` / typo）はすべて有効に正規化（#138 既定反転）。OFF では adjudicator 関数が早期 return し既存挙動と完全等価 | 前提: `PR_REVIEWER_ENABLED=true` + `claude` CLI install/認証済み（前提不成立時は既存ガードで従来どおり skip / fallback）。連動: `PR_REVIEWER_STATUS_CHECK_ENABLED`（#98）+ `FULL_AUTO_ENABLED`（#97）。推奨: `PR_REVIEWER_ADJUDICATOR_MODEL`（既定 `claude-sonnet-4-6`）、`_EXEC_TIMEOUT`（既定 `300`）、`_FALLBACK_ON_FAIL`（`passthrough`（既定）/ `legitimate`）、`_MAX_FINDINGS`（既定 `50`）、`_PROMPT`（prompt override）。**★ON 時は branch protection の required check を `codex-review` → `claude-review` へ切替**（codex-review を advisory 化） | [PR Reviewer Adjudicator (#404 / #138)](#pr-reviewer-adjudicator-404) | #404, #138 |
 
 ### 完全自動化（full-auto）パイプライン概観
 
@@ -1464,9 +1491,10 @@ kill switch）**かつ** 個別 gate=true の AND でのみ発火し、どちら
    `BLOCKED_CYCLE_DETECTION_ENABLED`（#104・要 `DEPENDENCY_AUTO_UNBLOCK_ENABLED=true`）/
    `SLACK_NOTIFY_ENABLED`（#105）
 5. 任意: `PR_REVIEWER_SECOND_GATE=claude`（#108・publish 開始後に `claude-review` を required 化）
-6. 任意（過剰指摘対策）: `PR_REVIEWER_ADJUDICATOR_ENABLED=true`（#404）。codex を advisory 化し Claude
-   が legitimate/excessive を裁定 → merge ゲートを `claude-review` へシフト。**ON 時は required check を
-   `codex-review` → `claude-review` へ切替**（#108 2nd gate は adjudicator に publish 権を委譲して skip）
+6. 過剰指摘対策: PR Reviewer Adjudicator（#404）は **#138 以降デフォルト ON**（`=false` 明示のみ OFF）。
+   codex を advisory 化し Claude が legitimate/excessive を裁定 → merge ゲートを `claude-review` へシフト。
+   **ON 時は required check を `codex-review` → `claude-review` へ切替**（#108 2nd gate は adjudicator に
+   publish 権を委譲して skip）。OFF に戻す場合は `PR_REVIEWER_ADJUDICATOR_ENABLED=false` を明示
 
 env が増えるため、crontab 行長限界を避けるには後述「per-repo env ファイル」節の env ファイルへ
 `*_ENABLED` をまとめるとよい。各機能の既定 / 正規化 / 連動 env は下表を参照。
@@ -1485,7 +1513,6 @@ env が増えるため、crontab 行長限界を避けるには後述「per-repo
 | **blocked 依存の cycle 検出**（Dependency Resolver の auto-unblock 評価時に、`codex-blocked` Issue 同士が **相互依存（A→B→A 等）でデッドロック**している循環を検出し、**自動解除不能**なため `codex-needs-decisions` で人間へ確実に終端させる pre-pass。非 cycle の Issue は既存 auto-unblock（#56）にそのまま流れる。cycle 判定は blocked set 内 dep のみで構成（相互ブロックのみ）、marker 冪等・needs-decisions 終端で無限ループしない。D-15 自動解除は既存 `DEPENDENCY_AUTO_UNBLOCK_ENABLED`(#56) が担当、本機能は D-16 cycle 検出を上乗せ） | `BLOCKED_CYCLE_DETECTION_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて OFF に正規化 | 前提: `DEPENDENCY_AUTO_UNBLOCK_ENABLED=true`（#56 auto-unblock processor が起動）。連動: `FULL_AUTO_ENABLED`（#97）との **AND 二重 opt-in**。`DEPENDENCY_AUTO_UNBLOCK_LIMIT`（既定 `20`）が graph 評価対象数の上限 | 依存記法（`Depends on:` / `前提依存:` / `Blocked by:`）は既存仕様を踏襲。付与/解除ロジックは #56 のまま、cycle escalation のみ追加 | #104 |
 | **Slack 外部通知**（完全自動下で「人間の介入が必要になった瞬間」を Slack incoming webhook へ push。通知対象は**介入要求イベント（既定）**＝ failed-recovery budget 超過 / no-progress 終端（#101）・needs-decisions 据え置き（#102 / Triage）・blocked cycle 検出（#104）。通常進行では通知しない（ノイズ抑制）。加えて `SLACK_NOTIFY_PROGRESS_EVENTS=true`（既定 `false`）の per-event トグルで、impl 着手（`codex-picked-up` 遷移）等の**主要進捗イベント**（#135）も通知対象に追加できる（介入要求 gate の上乗せ opt-in、既定 OFF では従来どおり進捗イベントは通知しない）。run-summary + ログを補完する。**`SLACK_WEBHOOK_URL` は秘匿情報としてログ/コメント/エラーに一切出力しない**。webhook 失敗でも本体は継続） | `SLACK_NOTIFY_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて OFF に正規化 | **必須**: `SLACK_WEBHOOK_URL`（incoming webhook URL・秘匿。未設定なら通知 no-op）。連動: `FULL_AUTO_ENABLED`（#97）との **AND 二重 opt-in**。推奨: `SLACK_NOTIFY_TIMEOUT`（POST タイムアウト秒・既定 `10`）。任意: `SLACK_NOTIFY_PROGRESS_EVENTS`（既定 `false`。`=true` 厳密一致で進捗イベント通知 ON。介入要求 gate の三重 AND に加えた追加 opt-in／#135） | 各介入終端（fr_terminate / dr_escalate_cycle / Triage needs-decisions）から `sn_notify_intervention` を hook。impl 着手（`LABEL_PICKED` 付与成功直後）から `sn_notify_pickup` を hook（#135）。Block Kit / 双方向操作は将来拡張 | #105, #135 |
 | **PR Reviewer 2nd gate（claude-review）**（#98 の 1st gate `codex-review` に加え、真に独立した 2nd gate として `claude` CLI に同一 SHA を独立レビューさせ `claude-review` commit status を publish する **feature toggle**。1st gate の直後に同一 PR 流れで実行（新 SHA で両 status が再 publish）。`claude` 不在/未認証/実行失敗/空出力 → WARN + **publish せず skip**（required 化されていれば pending 維持＝未検証 merge を防ぐ保守的挙動）。auto-merge は `codex-review` 単独で成立するため critical path 外の hardening。**OFF（既定）では `claude-review` を一切 publish しない**） | `PR_REVIEWER_SECOND_GATE` | `off` | `=claude` 厳密一致で ON。それ以外（既定 `off` / 未設定 / `Claude` / typo）はすべて `off` に正規化 | 前提: `PR_REVIEWER_ENABLED=true`（pr-reviewer 起動）+ `claude` CLI が install/認証済み（watcher 実行環境）。連動: `PR_REVIEWER_STATUS_CHECK_ENABLED=true`（#98）+ `FULL_AUTO_ENABLED`（#97）。推奨: `PR_REVIEWER_CLAUDE_CMD`（既定 `claude -p "$(cat '{PROMPT_FILE}')"`）、`PR_REVIEWER_CLAUDE_AUTH_CMD`（空=skip）。**★branch protection で `claude-review` を required 化するのは toggle ON で publish 開始後**（OFF のまま required 化すると全 PR 永久 pending） | レビュー prompt / verdict 抽出（`VERDICT: approve` / `codex-needs-iteration`）は 1st gate と共通。`pr_publish_commit_status`(#98) を context `claude-review` で再利用 | #108 |
-| **PR Reviewer Adjudicator**（codex の指摘を Claude が **legitimate（実害）/ excessive（過剰）** に分類し、(1) `codex-needs-iteration` 反復を **legitimate 件数のみ**で駆動、(2) merge ゲートを `codex-review`（advisory）→ **`claude-review`（必須相当）** へシフト。codex の過剰指摘 / nitpick が merge を永久 block する事象を解消。「codex が指摘の源泉＝決定権・Claude が過剰指摘を裁定」。独立 Reviewer reject は legitimate 件数に依らず先行優先で `claude-review=failure`。**ON 時は #108 2nd gate を skip し adjudicator を `claude-review` の唯一の publisher にする**（single-publisher）。claude 失敗時 fallback は既定 `passthrough`（adjudicator 自体を実行しなかった扱い＝SPOF 緩和）） | `PR_REVIEWER_ADJUDICATOR_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて OFF に正規化。OFF では adjudicator 関数が早期 return し既存挙動と完全等価 | 前提: `PR_REVIEWER_ENABLED=true` + `claude` CLI install/認証済み。連動: `PR_REVIEWER_STATUS_CHECK_ENABLED`（#98）+ `FULL_AUTO_ENABLED`（#97）。推奨: `PR_REVIEWER_ADJUDICATOR_MODEL`（既定 `claude-sonnet-4-6`）、`_EXEC_TIMEOUT`（既定 `300`）、`_FALLBACK_ON_FAIL`（`passthrough`（既定）/ `legitimate`）、`_MAX_FINDINGS`（既定 `50`）、`_PROMPT`（prompt override）。**★ON 時は branch protection の required check を `codex-review` → `claude-review` へ切替**（codex-review を advisory 化） | [PR Reviewer Adjudicator (#404)](#pr-reviewer-adjudicator-404) | #404 |
 | **Stale Pickup Reaper**（watcher セッションのクラッシュ / OOM / 再起動で `codex-picked-up` / `codex-claimed` が残り dispatcher が「処理中」と誤認して永久除外する停止状態を自動復旧。**3 観点 AND（marker 経過時間 ≥ 閾値 + slot ロック未保持 + セッション pid 非生存）**で「非アクティブ」と確定した Issue のみ `codex-auto-dev` へ戻して再 pickup させる。1 つでも「アクティブの可能性」を示せば keep（誤検出回避優先・全観点 fail-safe）。branch は一切触らない（`git` 非呼出）。failed-recovery(#101 / `codex-failed` のみ) の gap を埋める。idd-claude #379/F6 移植） | `STALE_PICKUP_REAPER_ENABLED` | `false` | `=true` 厳密一致のみ ON。それ以外（未設定 / typo）は OFF に正規化 | **単独 opt-in**（`FULL_AUTO_ENABLED` 不要＝full-auto 非利用環境でも有用）。推奨: `STALE_PICKUP_REAPER_THRESHOLD_MINUTES`（既定 `45`・stale 判定の経過時間閾値）、`STALE_PICKUP_REAPER_MAX_ISSUES`（既定 `20`）、`STALE_PICKUP_REAPER_STATE_DIR`（既定 `$HOME/.idd-codex/stale-pickup/<repo-slug>`）、`STALE_PICKUP_REAPER_GH_TIMEOUT`（既定 `60`） | slot ロック命名 `$SLOT_LOCK_DIR/<repo-slug>-slot-*.lock` / session 検出は `fuser`(Linux)/`lsof`(macOS)。marker JSON で経過時間を起算。需要待ち系ラベルは候補から除外 | F6 |
 | **Phase B: Promote Pipeline Processor**（`BASE_BRANCH` merge 後の ST 結果連動 + fast-forward 昇格 + revert） | `PROMOTE_PIPELINE_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `on` / `True` / `1` / typo）はすべて OFF | **必須**: `ST_CHECK_RUN_NAME`（ST check-run 名。未設定だと ST 連動停止 + WARN で**サイレント skip**）。推奨: `PROMOTION_TARGET_BRANCH`（既定 `main`。`BASE_BRANCH` と等しいと no-op）、`PROMOTE_MODE`（`on-demand` / `continuous` / `batched`、既定 `on-demand`） | [Promote Pipeline Processor (Phase B)](#promote-pipeline-processor-phase-b) | #15 |
 | **Phase C: Issue 入口並列化**（複数 codex-auto-dev Issue を slot 単位で並列処理） | `PARALLEL_SLOTS` | `1`（直列） | 整数。`1` で直列（本機能導入前と同一挙動）、`>=2` で並列。`0` / 負数 / 非数値 / 空文字 / 先頭ゼロは ERROR ログ + `exit 1`（サイクル中断） | 推奨: `SLOT_INIT_HOOK`（言語ランタイム / 依存ツール準備が必要な repo のみ。絶対パス指定）、`WORKTREE_BASE_DIR`（既定 `$HOME/.idd-codex/issue-watcher/worktrees`） | [並列実行 (Phase C, #16)](#並列実行-phase-c-16) | #16 |
@@ -2702,9 +2729,12 @@ cron / launchd の watcher 起動行に `PR_REVIEWER_ENABLED=true` と使用ツ�
 
 ## PR Reviewer Adjudicator (#404)
 
-> **opt-in / 既定 OFF**。`PR_REVIEWER_ADJUDICATOR_ENABLED=true` かつ `FULL_AUTO_ENABLED=true` で発火。
-> idd-claude #404 の移植。OFF では adjudicator 関数群が早期 return し、既存のレビュー / ラベル /
-> status publish 挙動と**完全に等価**。
+> **既定 ON / opt-out（#138 で既定反転）**。`PR_REVIEWER_ADJUDICATOR_ENABLED=false` を明示した
+> 場合のみ OFF。それ以外（未設定 / 空文字 / `True` / `1` / `0` / typo）はすべて ON に正規化される。
+> idd-claude #404 / #412 の移植。実発動には前提（`PR_REVIEWER_ENABLED=true` + `claude` CLI
+> install/認証済み。status publish には `FULL_AUTO_ENABLED=true` + `PR_REVIEWER_STATUS_CHECK_ENABLED=true`）
+> が別途必要で、前提不成立時は既存ガードで skip / fallback する。OFF では adjudicator 関数群が
+> 早期 return し、既存のレビュー / ラベル / status publish 挙動と**完全に等価**。
 
 ### 解決する課題
 
@@ -2748,6 +2778,25 @@ PR Iteration 側は `pi_general_filter_excessive` が `idd-codex:pr-adjudicator-
   （#403 で 3 回連続後に抑止）した PR は `claude-review` が未 publish のまま**人間待ち**になる
   （idd-claude のように自動 success にはしない＝未検証 merge を作らない保守側）。
 
+### Merge Gate Visibility（#138 / idd-claude #412 移植）
+
+`claude-review` を branch protection の **required status check** に採用した repo では、
+adjudicator も #108 2nd gate も発火しない PR（codex 永続 exec-failed / claude 不在 / 前提 env
+不成立等）は `claude-review` が publish されず merge gate を満たせないまま停滞し、admin-merge
+依存になる。watcher は毎サイクル `process_pr_reviewer` の直後に停滞 PR を scan して可視化する:
+
+- **停滞判定**: `claude-review` が required + head sha に `claude-review` status 未 publish +
+  adjudicator decision marker（`<!-- idd-codex:pr-adjudicator sha=<sha> kind=decision -->`）不在
+  → `codex-needs-merge-gate-attention` ラベル付与 + `WARN` ログ
+  （`merge-gate-visibility: PR #<N> sha=<sha> 停滞検知...`）
+- **解消判定（冪等取り消し）**: adjudicator / 2nd gate が後発で publish に成功、または
+  required 設定から `claude-review` が外れた場合、次サイクルでラベルを冪等に除去
+- **後方互換性**: `claude-review` が required でない repo では read-only の gh 呼び出し
+  （`gh pr list` + branch protection 取得各 1 回）以外の副作用ゼロで即 skip。branch protection
+  未設定（404）/ 権限不足 / API 失敗は fail-safe で skip
+- 専用 env gate は無し（read-only 判定 + ラベル操作のみの軽量 processor のため常時有効。
+  `claude-review` を required にしていなければ実質 no-op）
+
 ### fallback（claude adjudicator 自体が失敗したとき）
 
 `PR_REVIEWER_ADJUDICATOR_FALLBACK_ON_FAIL`:
@@ -2761,7 +2810,7 @@ PR Iteration 側は `pi_general_filter_excessive` が `idd-codex:pr-adjudicator-
 
 | env | 既定 | 説明 |
 |---|---|---|
-| `PR_REVIEWER_ADJUDICATOR_ENABLED` | `false` | `=true` 厳密一致で ON（要 `FULL_AUTO_ENABLED=true`） |
+| `PR_REVIEWER_ADJUDICATOR_ENABLED` | `true`（#138 で既定反転） | `=false` 厳密一致のみ OFF。それ以外はすべて ON に正規化（status publish には要 `FULL_AUTO_ENABLED=true`） |
 | `PR_REVIEWER_ADJUDICATOR_MODEL` | `claude-sonnet-4-6` | adjudicator の claude モデル |
 | `PR_REVIEWER_ADJUDICATOR_EXEC_TIMEOUT` | `300`（秒） | claude 実行 timeout（非数値 / 0 以下は既定） |
 | `PR_REVIEWER_ADJUDICATOR_FALLBACK_ON_FAIL` | `passthrough` | `passthrough` / `legitimate`。他値は `passthrough` |

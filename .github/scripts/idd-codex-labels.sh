@@ -78,6 +78,7 @@ LABELS=(
   "codex-awaiting-slot|c5def5|【Issue 用】 hot file 競合予防で同サイクル dispatch を見送り中（Phase E Path Overlap Checker が付与・除去）"
   "codex-blocked|b60205|【Issue 用】 依存 Issue 未 merge により codex-auto-dev 進行不能"
   "codex-hotfix|d93f0b|【Issue 用】 codex-hotfix 優先処理対象（Dispatcher が非 codex-hotfix より先に投入）"
+  "codex-needs-merge-gate-attention|f9d0c4|【PR 用】 claude-review が required だが adjudicator も 2nd gate も発火せず merge gate を満たせない停滞状態（#138）"
 )
 
 echo "📌 idd-codex ラベルを作成します"
