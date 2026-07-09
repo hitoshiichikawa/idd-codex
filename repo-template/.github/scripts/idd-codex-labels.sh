@@ -72,7 +72,7 @@ LABELS=(
   "codex-skip-triage|95a5a6|【Issue 用】 Triage をスキップ"
   "codex-needs-rebase|fbca04|【PR 用】 approved PR で base が古い／conflict が発生済み（Phase A: Merge Queue Processor が付与）"
   "codex-needs-iteration|d4c5f9|【PR 用】 PR レビューコメントの反復対応待ち（#26 PR Iteration Processor が処理）"
-  "codex-needs-quota-wait|c5def5|【Issue 用】 Codex Max quota 超過で reset 待ち（Quota Resume Processor が自動除去）"
+  "codex-needs-quota-wait|c5def5|【Issue/PR 用】 Codex Max quota 超過で reset 待ち（watcher が自動復帰）"
   "codex-staged-for-release|b8e0d2|【Issue 用】 develop に merge 済み、main 到達待ち（multi-branch 運用専用）"
   "codex-st-failed|d73a4a|【Issue 用】 ST failure 検知後 revert 済み（Phase B Promote Pipeline が付与）"
   "codex-awaiting-slot|c5def5|【Issue 用】 hot file 競合予防で同サイクル dispatch を見送り中（Phase E Path Overlap Checker が付与・除去）"
