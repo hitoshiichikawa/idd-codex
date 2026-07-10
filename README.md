@@ -1511,7 +1511,7 @@ env が増えるため、crontab 行長限界を避けるには後述「per-repo
 | **実装 PR auto-merge**（`codex-ready-for-review` 実装 PR に GitHub native auto-merge を有効化。watcher は直接 merge せず、current head SHA の PR Reviewer approve evidence + `codex-review`/`claude-review` 成功 status + 必須 check 全 green + mergeable で GitHub が squash merge。branch protection だけを review gate の代替とは扱わない。CONFLICTING は merge-queue/auto-rebase へ委譲） | `AUTO_MERGE_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて OFF に正規化 | 連動: `FULL_AUTO_ENABLED`（#97）との **AND 二重 opt-in**。推奨: `AUTO_MERGE_MAX_PRS`（既定 `10`）、`AUTO_MERGE_HEAD_PATTERN`（既定 `^codex/issue-.*-impl`）、`AUTO_MERGE_GIT_TIMEOUT`（既定 `60`）。**PR Reviewer status publish と branch protection の required checks 設定が前提**（#96/#98） | `gh pr merge --auto --squash --delete-branch`。既 enable は冪等 skip。review/status evidence が空・stale・取得不能なら skip して理由をログ出力 | #99 |
 | **設計 PR auto-merge**（設計 PR `^codex/issue-.*-design` に GitHub native auto-merge を有効化。merge 後の `codex-awaiting-design-review` 除去は既存 Design Review Release Processor が担当。設計 PR は ready ラベルを持たないため head pattern + 否定ラベルで判定） | `AUTO_MERGE_DESIGN_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて OFF に正規化 | 連動: `FULL_AUTO_ENABLED`（#97）との **AND 二重 opt-in**。推奨: `AUTO_MERGE_DESIGN_MAX_PRS`（既定 `10`）、`AUTO_MERGE_DESIGN_HEAD_PATTERN`（既定 `^codex/issue-.*-design`）、`AUTO_MERGE_DESIGN_GIT_TIMEOUT`（既定 `60`） | `codex-failed`/`codex-needs-decisions`/`codex-needs-iteration` 不在 + MERGEABLE で enable | #100 |
 | **Auto-Merge Disarm Processor**（arm 済み（`autoMergeRequest != null`）の open PR が `codex-failed` / `codex-needs-decisions` といった **terminal ラベル**へ遷移した時点で、`gh pr merge --disable-auto` により native auto-merge を取り消す（disarm）。arm 時点判定（#99 / #100）は arm 後の遷移を追えず「失敗確定済み PR が status checks 全 green 到達で誤 merge される」不具合（idd-claude #434 と同種）を毎サイクルの GitHub 直接クエリで補完。あわせて terminal ラベル付き PR への `claude-review=success` publish を publisher 側で fail-closed 抑止（failure publish は妨げない / ラベル再取得失敗時は fail-open で publish 継続 + WARN）） | （専用 gate なし。`FULL_AUTO_ENABLED` AND (`AUTO_MERGE_ENABLED` OR `AUTO_MERGE_DESIGN_ENABLED`) の **arm 源相乗り**） | arm 源に連動（arm 源が既定 `false` のため **既定 OFF**） | 専用の `AUTO_MERGE_DISARM_ENABLED` を新設しない（idd-claude #434 と同一の既定を採用）。理由: disarm は arm の安全弁であり「arm ON / disarm OFF」という失敗 PR が merge され得る危険な組合せを設定ミスで作らせないため。arm が起きない環境では gh API 呼び出しゼロの完全 no-op ＝導入前と等価 | 推奨: `AUTO_MERGE_DISARM_MAX_PRS`（1 サイクルの disarm 上限・既定 `10`・非数値 / 0 以下は 10 に正規化）。timeout は `AUTO_MERGE_GIT_TIMEOUT` を流用 | 下記「Auto-Merge Disarm Processor (#145)」節 | #145 |
-| **Failed Recovery Processor**（`codex-failed` Issue（reviewer-reject 由来含む）と auto-merge 待ちで CI 失敗の PR を解析 → fresh codex で自動復旧。**通算 attempt budget=4** を work-unit 単位で `$HOME/.idd-codex/failed-recovery/` に永続化（Reviewer 2/2・pr-iteration 3R と掛け算しない）。no-progress（同一失敗 signature + diff 無進捗）で即終端。budget 超過 / no-progress 時は `codex-failed` 据え置きで停止 + run-summary 通知＝無限ループ・沈黙死しない。quota reached（#79 rollout 検出）は **budget を消費せず待機**（Issue は `codex-needs-quota-wait` の resume rails へ委譲）。**#137**: codex が起動直後（`FAILED_RECOVERY_IMMEDIATE_FAIL_SECONDS` 秒未満）に rc≠0 で即死する「即時失敗」（認証エラー等の決定論的失敗）は **budget を消費せず** state を巻き戻し、`immediate_failure_streak` のみ加算。streak が `FAILED_RECOVERY_IMMEDIATE_FAIL_MAX_STREAK` 到達で max-attempts と区別された終端理由 `immediate-failure-streak` で停止（「codex が試行した結果ダメだった」と「codex が起動できなかった」を切り分け可能）。**#140**: 終端（max-attempts / no-progress / immediate-failure-streak）は state JSON の `last_status` に永続化され cross-cycle で冪等＝終端コメント・run-summary・Slack 通知は 1 回のみで cron tick ごとに再投稿されない（state 破損・欠落時は fail-open で従来動作に退行）。terminal 除外は `terminated reason=<理由> suppressed=enumeration` ログで観測可能） | `FAILED_RECOVERY_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて OFF に正規化。OFF では `codex-failed` は人間対応のまま（導入前と等価） | 連動: `FULL_AUTO_ENABLED`（#97）との **AND 二重 opt-in**。推奨: `FAILED_RECOVERY_MAX_ATTEMPTS`（既定 `4`）、`FAILED_RECOVERY_MAX_PRS`（既定 `3`）、`FAILED_RECOVERY_DEV_MODEL`（既定 `${DEV_MODEL:-gpt-5.5}`）、`FAILED_RECOVERY_STATE_DIR`（既定 `$HOME/.idd-codex/failed-recovery/<repo-slug>`）、`FAILED_RECOVERY_GIT_TIMEOUT`（既定 `60`）、`FAILED_RECOVERY_IMMEDIATE_FAIL_SECONDS`（#137 即時失敗判定の継続秒閾値・既定 `10`・非整数 / 0 以下は 10 に正規化）、`FAILED_RECOVERY_IMMEDIATE_FAIL_MAX_STREAK`（#137 連続即時失敗の上限・既定 `3`・非整数 / 0 以下は 3 に正規化） | reviewer-reject も label 同定で区別なく対象（D-19a）。対応内容を Issue/PR コメントに残す | #101 |
+| **Failed Recovery Processor**（`codex-failed` Issue（reviewer-reject 由来含む）と auto-merge 待ちで CI 失敗の PR を解析 → fresh codex で自動復旧。**通算 attempt budget=4** を work-unit 単位で `$HOME/.idd-codex/failed-recovery/` に永続化（Reviewer 2/2・pr-iteration 3R と掛け算しない）。no-progress（同一失敗 signature + diff 無進捗）で即終端。budget 超過 / no-progress 時は `codex-failed` 据え置きで停止 + run-summary 通知＝無限ループ・沈黙死しない。quota reached（#79 rollout 検出）は **budget を消費せず待機**（Issue は `codex-needs-quota-wait` の resume rails へ委譲）。**#137**: codex が起動直後（`FAILED_RECOVERY_IMMEDIATE_FAIL_SECONDS` 秒未満）に rc≠0 で即死する「即時失敗」（認証エラー等の決定論的失敗）は **budget を消費せず** state を巻き戻し、`immediate_failure_streak` のみ加算。streak が `FAILED_RECOVERY_IMMEDIATE_FAIL_MAX_STREAK` 到達で max-attempts と区別された終端理由 `immediate-failure-streak` で停止（「codex が試行した結果ダメだった」と「codex が起動できなかった」を切り分け可能）。**#140**: 終端（max-attempts / no-progress / immediate-failure-streak）は state JSON の `last_status` に永続化され cross-cycle で冪等＝終端コメント・run-summary・Slack 通知は 1 回のみで cron tick ごとに再投稿されない（state 破損・欠落時は fail-open で従来動作に退行）。terminal 除外は `terminated reason=<理由> suppressed=enumeration` ログで観測可能） | `FAILED_RECOVERY_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて OFF に正規化。OFF では `codex-failed` は人間対応のまま（導入前と等価） | 連動: `FULL_AUTO_ENABLED`（#97）との **AND 二重 opt-in**。推奨: `FAILED_RECOVERY_MAX_ATTEMPTS`（既定 `4`）、`FAILED_RECOVERY_MAX_PRS`（既定 `3`）、`FAILED_RECOVERY_DEV_MODEL`（既定 `${DEV_MODEL:-gpt-5.6-terra}`）、`FAILED_RECOVERY_STATE_DIR`（既定 `$HOME/.idd-codex/failed-recovery/<repo-slug>`）、`FAILED_RECOVERY_GIT_TIMEOUT`（既定 `60`）、`FAILED_RECOVERY_IMMEDIATE_FAIL_SECONDS`（#137 即時失敗判定の継続秒閾値・既定 `10`・非整数 / 0 以下は 10 に正規化）、`FAILED_RECOVERY_IMMEDIATE_FAIL_MAX_STREAK`（#137 連続即時失敗の上限・既定 `3`・非整数 / 0 以下は 3 に正規化） | reviewer-reject も label 同定で区別なく対象（D-19a）。対応内容を Issue/PR コメントに残す | #101 |
 | **needs-decisions 自動続行**（Triage が `codex-needs-decisions` 判定した Issue を、Triage JSON の `decisions[].classification == "safe"` に限り PM 第一推奨で自動続行＝audit コメント + `codex-claimed` 除去で次サイクル再 pickup。**機密・コンプラ・不可逆・外部影響は `human-only` 分類とし、どのモードでも自動続行しない**。分類欠落 / 不明値 / 混在 / 破損は安全側 `human-only` に畳む。同一 Issue の自動続行回数を audit marker でカウントし `NEEDS_DECISIONS_AUTO_MAX` 到達で人間据え置きへフォールバック＝無限続行しない） | `NEEDS_DECISIONS_MODE` | `all-human` | `all-human`（既定・全件据え置き=導入前と等価）/ `classified`（safe→続行・human-only→据え置き）/ `all-auto`（safe のみ続行・human-only は据え置き）。不正値 / 未設定 / 空 / typo はすべて `all-human` に正規化 | 連動: `FULL_AUTO_ENABLED`（#97）との **AND 二重 opt-in**（mode∈{classified,all-auto} かつ kill switch ON で発火）。推奨: `NEEDS_DECISIONS_AUTO_MAX`（既定 `4`）、`NEEDS_DECISIONS_GIT_TIMEOUT`（既定 `60`） | 分類は Triage JSON の `classification` フィールド（label ではない）。本体 Triage ルートに thin guard を挿入。per-task #90 ルートは対象外（自動続行は Triage ルートのみ） | #102 |
 | **semantic conflict 自動解決**（Phase D auto-rebase の semantic 判定 diff を「人間待ち」から自動続行へ。codex 解決 commit を push したまま approve を dismiss し、**Issue 02 の二重ゲート（`codex-review`（+2nd gate `claude-review`））を新 SHA で再発火**させ再レビュー→auto-merge へ流す＝**無検証では merge しない**。解決不能（rebase 失敗 / budget 超過 / dismissal 失敗）は `codex-failed` ではなく **`codex-needs-decisions`** で人間へフォールバック。同一 PR の自動解決回数を audit marker でカウントし `AUTO_REBASE_SEMANTIC_MAX` 到達でフォールバック＝無限解決しない） | `AUTO_REBASE_SEMANTIC` | `off` | `on` 厳密一致のみ有効。それ以外（未設定 / `true` / `ON` / typo）はすべて `off`。OFF では従来どおり dismiss + ready-for-review（人間待ち）で導入前と等価 | 前提: `AUTO_REBASE_MODE=codex`（Phase D auto-rebase 起動）。連動: `FULL_AUTO_ENABLED`（#97）との **AND 二重 opt-in**。推奨: `AUTO_REBASE_SEMANTIC_MAX`（既定 `3`）、`MECHANICAL_PATHS`（mechanical 判定の allowlist） | mechanical conflict は既存 auto-rebase 経路（本機能は touch しない）。codex 解決自体は既存 `ar_run_codex_rebase` が実施済みで、本機能は disposition のみ切替 | #103 |
 | **blocked 依存の cycle 検出**（Dependency Resolver の auto-unblock 評価時に、`codex-blocked` Issue 同士が **相互依存（A→B→A 等）でデッドロック**している循環を検出し、**自動解除不能**なため `codex-needs-decisions` で人間へ確実に終端させる pre-pass。非 cycle の Issue は既存 auto-unblock（#56）にそのまま流れる。cycle 判定は blocked set 内 dep のみで構成（相互ブロックのみ）、marker 冪等・needs-decisions 終端で無限ループしない。D-15 自動解除は既存 `DEPENDENCY_AUTO_UNBLOCK_ENABLED`(#56) が担当、本機能は D-16 cycle 検出を上乗せ） | `BLOCKED_CYCLE_DETECTION_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて OFF に正規化 | 前提: `DEPENDENCY_AUTO_UNBLOCK_ENABLED=true`（#56 auto-unblock processor が起動）。連動: `FULL_AUTO_ENABLED`（#97）との **AND 二重 opt-in**。`DEPENDENCY_AUTO_UNBLOCK_LIMIT`（既定 `20`）が graph 評価対象数の上限 | 依存記法（`Depends on:` / `前提依存:` / `Blocked by:`）は既存仕様を踏襲。付与/解除ロジックは #56 のまま、cycle escalation のみ追加 | #104 |
@@ -1525,7 +1525,7 @@ env が増えるため、crontab 行長限界を避けるには後述「per-repo
 | **Dependency Auto-Unblock Processor**（`codex-blocked` Issue の依存を cycle 冒頭で再評価し、全依存 resolved なら `codex-blocked` を自動解除） | `DEPENDENCY_AUTO_UNBLOCK_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `on` / `True` / `1` / typo）はすべて OFF | 推奨: `DEPENDENCY_AUTO_UNBLOCK_LIMIT`（既定 `20`。1 cycle で再評価する `codex-blocked` Issue 数上限） | [`codex-blocked` 依存自動解除](#codex-blocked-依存自動解除dependency-auto-unblock-56) | #56 |
 | **Phase 2: Per-task TDD Implementation Loop**（tasks.md の task 1 件ごとに fresh Implementer + fresh Reviewer を起動し、`### Task <id>` learnings を後続 task に前方伝播） | `PER_TASK_LOOP_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて `false` 等価 | 推奨: `PER_TASK_MAX_TASKS`（暴走防止 knob。既定 `0` = 無制限。正の整数で task 件数上限を設定すると上限超過時に `codex-failed` で停止） | [Per-task TDD Implementation Loop (#21)](#per-task-tdd-implementation-loop-21) | #21 |
 | **Context Indexer Metadata**（deterministic `context-map.md` が不足または曖昧な per-task で read-only Indexer を最大 1 回起動し、候補ファイル / tests / docs / anchors を補完） | `CONTEXT_INDEXER_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて OFF | 必須前提: `CONTEXT_MAP_ENABLED=true` と `PER_TASK_LOOP_ENABLED=true`。任意: `CONTEXT_INDEXER_MODEL`（既定 `$DEV_MODEL`）、`CONTEXT_INDEXER_MAX_TURNS`（既定 `10`、Indexer prompt 内の探索上限） | [context-map による探索 read 削減（試験機能 / #34）](#context-map-による探索-read-削減試験機能--34) | #36 |
-| **Phase 3: Debugger Subagent**（Reviewer Round 2 reject 直前 / Developer BLOCKED 宣言時に fresh Debugger を web search 権限付きで起動し、Fix Plan markdown を後続 Developer 再起動 prompt に注入） | `DEBUGGER_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて `false` 等価 | 任意: `DEBUGGER_MODEL`（既定 `gpt-5.5`）、`DEBUGGER_MAX_TURNS`（既定 `40`） | [Debugger Subagent (Phase 3, #22)](#debugger-subagent-phase-3-22) | #22 |
+| **Phase 3: Debugger Subagent**（Reviewer Round 2 reject 直前 / Developer BLOCKED 宣言時に fresh Debugger を web search 権限付きで起動し、Fix Plan markdown を後続 Developer 再起動 prompt に注入） | `DEBUGGER_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて `false` 等価 | 任意: `DEBUGGER_MODEL`（既定 `gpt-5.6-terra`）、`DEBUGGER_MAX_TURNS`（既定 `40`） | [Debugger Subagent (Phase 3, #22)](#debugger-subagent-phase-3-22) | #22 |
 | **Codex Guard Hook**（Codex PreToolUse hook で base branch push / 無条件 force push / hook 自己改変を事前 deny） | `IDD_CODEX_HOOKS_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて OFF。ON かつ preflight 失敗時は watcher が fail-closed 停止 | 任意: `IDD_CODEX_HOOKS_DIR`（既定 `$HOME/.idd-codex/hooks`）、`IDD_CODEX_HOOKS_PROFILE_NAME`（既定 `idd-codex-guard`）、`IDD_CODEX_HOOKS_MIN_VERSION`（既定 `0.0.0`）、`CODEX_HOME`（profile config 配置先） | [Codex Guard Hook (#294)](#codex-guard-hook-294) | #294 |
 | **PR Reviewer Processor**（外部 AI レビューツール `codex` / `antigravity`（バイナリ `agy`）に open PR を自動レビューさせ、結果を PR コメント投稿 + 修正要求の `VERDICT` 検出時に `codex-needs-iteration` 付与で PR Iteration Processor #26 へ接続） | `PR_REVIEWER_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / 空文字 / `True` / `1` / typo）はすべて OFF | **必須**: `PR_REVIEWER_TOOL`（`codex` / `antigravity`。または alias `PR_REVIEWER_CODEX_ENABLED` / `PR_REVIEWER_ANTIGRAVITY_ENABLED` のいずれか一方。両方有効化は排他エラー）。**前提**: 当該ツールが watcher 実行環境に**インストール・認証済み**であること（セットアップ自動化はスコープ外）。推奨: `PR_REVIEWER_MAX_PRS`（既定 `5`）、`PR_REVIEWER_HEAD_PATTERN`（既定 `^codex/`）、`PR_REVIEWER_EXEC_TIMEOUT`（既定 `600`） | [PR Reviewer Processor (#261)](#pr-reviewer-processor-261) | #261 |
 | **Feature Flag Protocol**（未完成機能を flag 裏で main にマージできる規約。Implementer / Reviewer が宣言を読んで挙動切替） | `AGENTS.md` の `## Feature Flag Protocol` 節（**env var ではない**） | 宣言なし = `opt-out` | `AGENTS.md` の宣言節で `**採否**: opt-in` を **lowercase 厳密一致**で記述。`Opt-In` / `opt_in` / `enabled` 等の typo は opt-out として解釈（安全側に倒す） | — | [Feature Flag Protocol (#23 Phase 4)](#feature-flag-protocol-23-phase-4) | #23 |
@@ -2136,7 +2136,7 @@ review を dismissal API で剥がして `codex-ready-for-review` に戻し、�
 |---|---|---|
 | `AUTO_REBASE_MODE` | `off` | Phase D の opt-in 制御。`codex` で有効化、それ以外（未設定 / `off` / `on` / `true` / typo）はすべて `off` に正規化 |
 | `MECHANICAL_PATHS` | （空） | mechanical と看做す path allowlist（カンマ区切り bash glob）。空なら全件 semantic 扱い（保守的判定） |
-| `AUTO_REBASE_MODEL` | `gpt-5.5` | Codex モデル ID。`PR_ITERATION_DEV_MODEL` と独立 |
+| `AUTO_REBASE_MODEL` | `gpt-5.6-terra` | Codex モデル ID。`PR_ITERATION_DEV_MODEL` と独立 |
 | `AUTO_REBASE_MAX_TURNS` | `30` | Codex `--max-turns` 値 |
 | `AUTO_REBASE_MAX_TURNS_SEC` | `600` | Codex rebase 試行の外側 timeout（秒） |
 | `AUTO_REBASE_GIT_TIMEOUT` | `60` | git / gh の個別 timeout（秒）。`MERGE_QUEUE_GIT_TIMEOUT` と同既定 |
@@ -3054,7 +3054,7 @@ watcher が Codex prompt に積むのは以下の 2 種類です。**`@codex` me
 | 変数 | デフォルト | 推奨 | 用途 |
 |---|---|---|---|
 | `PR_ITERATION_ENABLED` | `true`（#112） | 無効化する場合のみ `false` | PR Iteration Processor の有効化 / 無効化（**デフォルト有効**） |
-| `PR_ITERATION_DEV_MODEL` | `gpt-5.5` | 既存の `DEV_MODEL` と同じ運用方針 | iteration 用の Codex モデル ID |
+| `PR_ITERATION_DEV_MODEL` | `gpt-5.6-terra` | 既存の `DEV_MODEL` と同じ運用方針 | iteration 用の Codex モデル ID |
 | `PR_ITERATION_MAX_TURNS` | `60` | 通常レビュー対応で十分。多い場合は対象 PR が大きすぎる兆候 | 1 iteration の Codex 実行 turn 数上限 |
 | `PR_ITERATION_MAX_PRS` | `3` | watcher 実行間隔と PR 平均量に応じて調整 | 1 サイクルで処理する PR 数の上限。超過分は次回に持ち越し |
 | `PR_ITERATION_MAX_ROUNDS` | `3` | 試行回数を抑えて自動エスカレを早めに | 1 PR あたりの累計 iteration 上限。**#122 以降は kind 別 env (`_IMPL` / `_DESIGN`) の fallback** として温存（kind 別が未設定のときのみ参照） |
@@ -4086,7 +4086,7 @@ Stage C exit !=0 → codex-failed
 
 | 変数 | デフォルト | 推奨 | 用途 |
 |---|---|---|---|
-| `REVIEWER_MODEL` | `gpt-5.5` | `DEV_MODEL` と揃える運用が無難 | Reviewer サブエージェント用 Codex モデル ID |
+| `REVIEWER_MODEL` | `gpt-5.6-terra` | `DEV_MODEL` と揃える運用が無難 | Reviewer サブエージェント用 Codex モデル ID |
 | `REVIEWER_MAX_TURNS` | `30` | turn 不足で parse 失敗が出る場合のみ増やす | Reviewer 1 起動あたりの Codex 実行 turn 数上限（NFR 1.1） |
 | `REVIEWER_TIMEOUT_EXTENDED_SEC` | 基準 timeout の 2 倍（既定 `3600`） | 大規模 spec / diff で拡張リトライ後も timeout が続く場合のみ増やす | **#149（idd-claude #442 移植）**: 独立 Reviewer（per-task 経路 / 単発経路）が wall-clock timeout（rc=124）で終了したときの拡張リトライ用 timeout 予算（秒）。同一 round 内で 1 回だけ拡張 timeout で再実行し、なお timeout なら `reviewer-timeout-exhausted`（per-task 経路は `per-task-reviewer-timeout-exhausted`）カテゴリで `codex-failed` 化する（codex crash / parse 失敗の `reviewer-error` と grep で区別可能）。未設定 / 非数値は既定（基準 timeout `CODEX_DEFAULT_TIMEOUT_SEC` の 2 倍）にフォールバック。基準未満の値は基準に引き上げ正規化。基準 timeout 無効（`CODEX_DEFAULT_TIMEOUT_SEC=0`）時は拡張リトライ自体が非適用（従来挙動） |
 
@@ -4107,7 +4107,7 @@ Stage C exit !=0 → codex-failed
 cron 例（モデルや turn 数を override する場合）:
 
 ```bash
-*/2 * * * * REPO=owner/your-repo REPO_DIR=$HOME/work/your-repo REVIEWER_MODEL=gpt-5.5 REVIEWER_MAX_TURNS=30 $HOME/bin/idd-codex-issue-watcher.sh >> $HOME/.idd-codex/issue-watcher/cron.log 2>&1
+*/2 * * * * REPO=owner/your-repo REPO_DIR=$HOME/work/your-repo REVIEWER_MODEL=gpt-5.6-terra REVIEWER_MAX_TURNS=30 $HOME/bin/idd-codex-issue-watcher.sh >> $HOME/.idd-codex/issue-watcher/cron.log 2>&1
 ```
 
 ### Reviewer の出力契約（review-notes.md）
@@ -4143,7 +4143,7 @@ canonical フォーマットを守ってください（多層防御）。詳細�
 ```markdown
 # Review Notes
 
-<!-- idd-codex:review round=N model=gpt-5.5 timestamp=YYYY-MM-DDTHH:MM:SSZ -->
+<!-- idd-codex:review round=N model=gpt-5.6-terra timestamp=YYYY-MM-DDTHH:MM:SSZ -->
 
 ## Reviewed Scope
 - Branch: codex/issue-<N>-impl-<slug>
@@ -4193,7 +4193,7 @@ Reviewer ゲート導入による後方互換性は以下のとおり保証さ�
   consumer repo にも `.codex/agents/reviewer.md` が配置されます。既存ファイルへの破壊的変更は
   ありません
 
-`REVIEWER_MODEL` / `REVIEWER_MAX_TURNS` を環境変数で渡さなくても既定値（`gpt-5.5` /
+`REVIEWER_MODEL` / `REVIEWER_MAX_TURNS` を環境変数で渡さなくても既定値（`gpt-5.6-terra` /
 `30`）で動作するため、既存ユーザは追加設定なしで Reviewer ゲートが有効化されます。
 
 ### ⚠️ merge 後の再配置が必要
@@ -5548,9 +5548,9 @@ doc-only または marker-only 対応に留める場合は、その理由を明�
 記録されます（grep prefix: `per-task:`）:
 
 ```
-[YYYY-MM-DD HH:MM:SS] per-task: task=1.1 implementer start (model=gpt-5.5, max-turns=60)
+[YYYY-MM-DD HH:MM:SS] per-task: task=1.1 implementer start (model=gpt-5.6-terra, max-turns=60)
 [YYYY-MM-DD HH:MM:SS] per-task: task=1.1 implementer end rc=0
-[YYYY-MM-DD HH:MM:SS] per-task: task=1.1 reviewer start round=1 model=gpt-5.5 max-turns=30 range=abc1234..def5678
+[YYYY-MM-DD HH:MM:SS] per-task: task=1.1 reviewer start round=1 model=gpt-5.6-terra max-turns=30 range=abc1234..def5678
 [YYYY-MM-DD HH:MM:SS] per-task: task=1.1 reviewer end round=1 result=approve verified=1.1
 ```
 
@@ -5641,7 +5641,7 @@ cron / launchd の `REPO=... REPO_DIR=...` に `DEBUGGER_ENABLED=true` を 1 つ
 | 変数 | デフォルト | 推奨 | 用途 |
 |---|---|---|---|
 | `DEBUGGER_ENABLED` | `false` | 試運転時のみ `true` | 本機能の opt-in gate。`=true` 厳密一致のみ有効（`True` / `1` / typo 等は `false` 等価 / Req 1.3） |
-| `DEBUGGER_MODEL` | `gpt-5.5` | 通常変更不要 | Debugger CLI に渡すモデル ID（既存 `REVIEWER_MODEL` と同様の override 方式 / Req 7.2） |
+| `DEBUGGER_MODEL` | `gpt-5.6-terra` | 通常変更不要 | Debugger CLI に渡すモデル ID（既存 `REVIEWER_MODEL` と同様の override 方式 / Req 7.2） |
 | `DEBUGGER_MAX_TURNS` | `40` | コスト調整時のみ正の整数 | Debugger CLI の `--max-turns` 値。web search 含む 1 回起動あたりの最大 turn 数（Req 7.3） |
 
 既存 env var（`DEV_MODEL` / `REVIEWER_MODEL` / `DEV_MAX_TURNS` / `REVIEWER_MAX_TURNS` /
@@ -5702,7 +5702,7 @@ per-task Implementer (task=2.1) → per-task Reviewer (round=2) reject
 （grep prefix: `debugger:`）:
 
 ```
-[YYYY-MM-DD HH:MM:SS] [owner/repo] debugger: trigger=round2-reject issue=#22 task=none start (model=gpt-5.5, max-turns=40)
+[YYYY-MM-DD HH:MM:SS] [owner/repo] debugger: trigger=round2-reject issue=#22 task=none start (model=gpt-5.6-terra, max-turns=40)
 [YYYY-MM-DD HH:MM:SS] [owner/repo] debugger: trigger=round2-reject issue=#22 task=none end rc=0
 [YYYY-MM-DD HH:MM:SS] [owner/repo] debugger: trigger=round2-reject issue=#22 task=none debugger-notes.md verified (sections=4)
 [YYYY-MM-DD HH:MM:SS] [owner/repo] debugger: trigger=round2-reject issue=#22 task=none round3 result=approve
@@ -5949,18 +5949,27 @@ cd ~/.idd-codex && git pull && ./install.sh --local
 
 | 役割 | 目的 | 主なツール | 推奨モデル | 起動条件 |
 |---|---|---|---|---|
-| **Product Manager** | Issue → 仕様書化 | Read / Grep / WebSearch / Write | `gpt-5.5` | 毎回 |
-| **Architect** | 仕様書 → 設計書 | Read / Grep / Glob / Write | `gpt-5.5` | Triage で `needs_architect: true` のとき |
-| **Developer** | 仕様書（＋設計書） → 動くコード | Edit / Write / Bash / Grep | `gpt-5.5` | 毎回 |
-| **Reviewer** | Developer 完了後の独立レビュー（AC / test / boundary 3 軸） | Read / Grep / Glob / Bash / Write | `gpt-5.5` | impl / impl-resume 系で毎回（local watcher のみ・#20 Phase 1） |
+| **Product Manager** | Issue → 仕様書化 | Read / Grep / WebSearch / Write | `gpt-5.6-terra` | 毎回 |
+| **Architect** | 仕様書 → 設計書 | Read / Grep / Glob / Write | `gpt-5.6-terra` | Triage で `needs_architect: true` のとき |
+| **Developer** | 仕様書（＋設計書） → 動くコード | Edit / Write / Bash / Grep | `gpt-5.6-terra` | 毎回 |
+| **Reviewer** | Developer 完了後の独立レビュー（AC / test / boundary 3 軸） | Read / Grep / Glob / Bash / Write | `gpt-5.6-terra` | impl / impl-resume 系で毎回（local watcher のみ・#20 Phase 1） |
 | **Project Manager** | ブランチ push / PR 作成 / ラベル管理 | Bash（`gh` CLI） | `gpt-5.6-luna` | 毎回 |
-| **QA**（未適用） | 実装・テストの独立レビュー | Read / Grep / Glob / Bash / Write | `gpt-5.5` | 定義のみ保持・手動起動用（自動ワークフロー未統合） |
+| **QA**（未適用） | 実装・テストの独立レビュー | Read / Grep / Glob / Bash / Write | `gpt-5.6-terra` | 定義のみ保持・手動起動用（自動ワークフロー未統合） |
 
 > **Migration Note (#168, 2026-07-10)**: `TRIAGE_MODEL` の既定値を `gpt-5.4-mini` → `gpt-5.6-luna` へ
 > 変更しました（GPT-5.4 系モデルの 2026-07-23 引退対応）。`TRIAGE_MODEL` を env で明示 override
 > している環境には影響ありません。gpt-5.6 系モデル（`gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna`）
 > の利用には **codex-cli 0.144 以降**が必要です（`codex update` で更新可能）。env var 名・ラベル名・
 > exit code・cron 登録文字列に変更はありません。
+
+> **Migration Note (#172, 2026-07-10)**: 実装系ステージのモデル既定値を `gpt-5.5` →
+> `gpt-5.6-terra` へ移行しました（対象: `DEV_MODEL` / `REVIEWER_MODEL` / `DEBUGGER_MODEL` /
+> `AUTO_REBASE_MODEL` / `PR_ITERATION_DEV_MODEL` / `FAILED_RECOVERY_DEV_MODEL`）。Terra は
+> GPT-5.5 同等性能・約半額の入出力単価とされる 5.6 世代のバランスティアです。各 `*_MODEL` を
+> env で明示 override している環境には影響ありません。`CONTEXT_INDEXER_MODEL` は従来どおり
+> `$DEV_MODEL` 継承（固定値を焼き込まない設計判断を維持）のため、自動的に terra へ追従します。
+> こちらも codex-cli 0.144 以降が必要です。env var 名・ラベル名・exit code・cron 登録文字列に
+> 変更はありません。
 
 ### Architect の自動起動判定
 

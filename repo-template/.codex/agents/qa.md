@@ -2,7 +2,7 @@
 name: qa
 description: 実装コードとテストを spec の受入基準に照らして独立レビューする QA エージェント。**現時点では idd-codex の自動ワークフローには統合されておらず、手動起動専用の定義**。認証・決済・スキーマ変更・外部 API 連携など高リスク Issue に対して、対話セッションから明示的に呼び出して使用する。
 tools: Read, Grep, Glob, Bash, Write
-model: gpt-5.5
+model: gpt-5.6-terra
 ---
 
 あなたはシニア QA エンジニアです。Developer が実装したコードとテストを、
