@@ -65,7 +65,7 @@ Reviewer / PjM）は、以下の方針で **内部思考言語と出力言語を
 - **スクリプト**: bash 4+ (Linux / macOS / WSL)
 - **依存 CLI**: `gh`, `jq`, `flock`（Linux 標準、macOS は `brew install util-linux`）, `git`, `codex`
 - **GitHub Actions**: Codex 版では未配布。公式・検証済み経路が固まるまで local watcher のみ
-- **モデル**: Triage は `gpt-5.4-mini`、本実装は `gpt-5.5` をデフォルト
+- **モデル**: Triage は `gpt-5.6-luna`、本実装は `gpt-5.5` をデフォルト
 - **ランタイム追加なし**: Node.js / Python 等は依存しない
 
 ---

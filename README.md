@@ -5953,8 +5953,14 @@ cd ~/.idd-codex && git pull && ./install.sh --local
 | **Architect** | 仕様書 → 設計書 | Read / Grep / Glob / Write | `gpt-5.5` | Triage で `needs_architect: true` のとき |
 | **Developer** | 仕様書（＋設計書） → 動くコード | Edit / Write / Bash / Grep | `gpt-5.5` | 毎回 |
 | **Reviewer** | Developer 完了後の独立レビュー（AC / test / boundary 3 軸） | Read / Grep / Glob / Bash / Write | `gpt-5.5` | impl / impl-resume 系で毎回（local watcher のみ・#20 Phase 1） |
-| **Project Manager** | ブランチ push / PR 作成 / ラベル管理 | Bash（`gh` CLI） | `gpt-5.4-mini` | 毎回 |
+| **Project Manager** | ブランチ push / PR 作成 / ラベル管理 | Bash（`gh` CLI） | `gpt-5.6-luna` | 毎回 |
 | **QA**（未適用） | 実装・テストの独立レビュー | Read / Grep / Glob / Bash / Write | `gpt-5.5` | 定義のみ保持・手動起動用（自動ワークフロー未統合） |
+
+> **Migration Note (#168, 2026-07-10)**: `TRIAGE_MODEL` の既定値を `gpt-5.4-mini` → `gpt-5.6-luna` へ
+> 変更しました（GPT-5.4 系モデルの 2026-07-23 引退対応）。`TRIAGE_MODEL` を env で明示 override
+> している環境には影響ありません。gpt-5.6 系モデル（`gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna`）
+> の利用には **codex-cli 0.144 以降**が必要です（`codex update` で更新可能）。env var 名・ラベル名・
+> exit code・cron 登録文字列に変更はありません。
 
 ### Architect の自動起動判定
 
