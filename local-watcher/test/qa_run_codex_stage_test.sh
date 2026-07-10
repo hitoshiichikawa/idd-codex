@@ -542,6 +542,37 @@ run_case "StageA usage-limit-time-only-reset → quota wait (Issue #31)" \
 run_case "Reviewer feedman-ios #32 usage-limit-time-only-reset → quota wait (Issue #54)" \
   99 "$usage_feedman32_reset_epoch" "usage-limit-feedman32-time-only-reset.jsonl" 1 "Reviewer-r1-a1"
 
+# Issue #170: codex-cli 0.144 系の文頭大文字 ` Try again at ...`（Enterprise/Edu/unknown plan の
+# retry_suffix）でも reset epoch を抽出できる（[Tt] 両対応）。
+usage_capital_reset_epoch=$(qa_extract_usage_limit_reset_epoch "You've hit your usage limit. Try again at 11:26 AM.")
+if [[ "$usage_capital_reset_epoch" =~ ^[0-9]+$ ]]; then
+  assert_eq "usage-limit capital Try-again parser returns numeric epoch (Issue #170)" "true" "true"
+else
+  assert_eq "usage-limit capital Try-again parser returns numeric epoch (Issue #170)" "true" "false"
+fi
+
+usage_capital_abs_epoch=$(qa_extract_usage_limit_reset_epoch "You've hit your usage limit. Try again at Jul 15th, 2026 1:16 AM.")
+assert_eq "usage-limit capital Try-again absolute date parser (Issue #170)" \
+  "$(date -d 'Jul 15, 2026 1:16 AM' '+%s' 2>/dev/null || date -j -f '%b %e, %Y %I:%M %p' 'Jul 15, 2026 1:16 AM' '+%s')" \
+  "$usage_capital_abs_epoch"
+
+run_case "StageA usage-limit capital Try-again → quota wait (Issue #170)" \
+  99 "$usage_capital_reset_epoch" "usage-limit-capital-try-again.jsonl" 1 "StageA"
+
+# Issue #170: workspace 系新文言（out of credits / spend cap）は usage_limit_fatal として
+# 観測されるが reset hint を持たないため、既存どおり codex_rc 透過（quota wait に入れない）。
+run_case "StageA workspace out-of-credits → passthrough (Issue #170)" \
+  1 "" "usage-limit-workspace-credits.jsonl" 1 "StageA"
+
+run_case "StageA workspace spend-cap → passthrough (Issue #170)" \
+  1 "" "usage-limit-spend-cap.jsonl" 1 "StageA"
+
+# Issue #170: モデル別 limit 変種（usage limit for {limit_name} ... or try again at <abs>）は
+# 従来どおり reset 抽出 → quota wait に分類される。
+usage_limit_name_epoch=$(qa_extract_usage_limit_reset_epoch "You've hit your usage limit for gpt-5.6-sol. Switch to another model now, or try again at Jul 15th, 2026 1:16 AM.")
+run_case "StageA usage-limit limit-name model variant → quota wait (Issue #170)" \
+  99 "$usage_limit_name_epoch" "usage-limit-limit-name-model.jsonl" 1 "StageA"
+
 run_case "Reviewer usage-limit unparsed reset hint → fallback quota wait (Issue #54)" \
   99 "__NUMERIC__" "usage-limit-unparsed-reset-hint.jsonl" 1 "Reviewer-r1-a1"
 

@@ -72,6 +72,11 @@
 #                             `You've hit your usage limit ... try again at ...`
 #                             （Issue #12。reset 時刻の自然言語 parse は
 #                             qa_run_codex_stage 側で行う）
+#                             codex-cli 0.144 系で追加された workspace 系文言
+#                             `Your workspace is out of credits. ...` /
+#                             `You hit your spend cap ...` も本経路で検出する
+#                             （#170。reset hint を持たないため既存どおり
+#                             codex_rc 透過 + warn ログとなる）
 #
 # Reset 時刻フィールド探索順（現行 / 旧スキーマ揺れと synthetic 429 同居を許容）:
 #   1) .rate_limit_info.resetsAt / .resets_at / .reset_at  （現行スキーマ ネスト位置 / Req 1.3）
@@ -119,7 +124,7 @@ qa_detect_rate_limit() {
               ($j.item? // {} | .message? // empty)
             ]
             | map(select(type == "string"))
-            | map(select(test("usage limit|purchase more credits|try again at"; "i")))
+            | map(select(test("usage limit|purchase more credits|try again at|out of credits|spend cap"; "i")))
             | .[-1] // null
           ) as $msg
           | if $msg != null then
@@ -168,6 +173,8 @@ qa_detect_rate_limit() {
 # `try again at 11:26 AM.` の両方を受理する。時刻だけの値が現在時刻以前なら翌日の
 # reset とみなす。抽出不能時は空文字を返す。`try again at` の reset hint があるのに
 # epoch 化できない場合は qa_run_codex_stage 側で保守的 fallback reset を使う。
+# codex-cli 0.144 系は plan によって文頭大文字の ` Try again at ...` を出す
+# （retry_suffix / #170）ため、sed は `[Tt]ry again at` で両方を受理する。
 qa_extract_usage_limit_reset_epoch() {
   local message="${1:-}"
   if [ -z "$message" ]; then
@@ -177,12 +184,12 @@ qa_extract_usage_limit_reset_epoch() {
 
   local raw raw_kind
   raw=$(printf '%s\n' "$message" \
-    | sed -nE 's/.*try again at ([A-Z][a-z]{2,8} [0-9]{1,2}(st|nd|rd|th)?, [0-9]{4} [0-9]{1,2}:[0-9]{2} (AM|PM)).*/\1/p' \
+    | sed -nE 's/.*[Tt]ry again at ([A-Z][a-z]{2,8} [0-9]{1,2}(st|nd|rd|th)?, [0-9]{4} [0-9]{1,2}:[0-9]{2} (AM|PM)).*/\1/p' \
     | tail -1)
   raw_kind="absolute"
   if [ -z "$raw" ]; then
     raw=$(printf '%s\n' "$message" \
-      | sed -nE 's/.*try again at ([0-9]{1,2}:[0-9]{2} (AM|PM)).*/\1/p' \
+      | sed -nE 's/.*[Tt]ry again at ([0-9]{1,2}:[0-9]{2} (AM|PM)).*/\1/p' \
       | tail -1)
     raw_kind="time-only"
   fi
@@ -406,11 +413,13 @@ qa_detect_collab_spawn_failures() {
 # そのため stdout 解析（qa_detect_rate_limit の rate_limit_event 経路）は実 codex では発火せず、
 # rollout 解析が codex における構造化検出の本筋となる（usage_limit_fatal のテキスト検出は別経路で併存）。
 #
-# rate_limits の実スキーマ（codex-cli 0.139.0 実機）:
+# rate_limits の実スキーマ（codex-cli 0.139.0 実機 / 0.144.1 実機で互換確認済み #170）:
 #   {"primary":{"used_percent":N,"window_minutes":300,"resets_at":<epoch>},
 #    "secondary":{"used_percent":N,"window_minutes":10080,"resets_at":<epoch>},
 #    "rate_limit_reached_type":null|<str>, "plan_type":..., "credits":...}
 #   primary=5h ローリング窓 / secondary=weekly 窓。未到達時 reached_type=null。
+#   0.144.1 で `limit_id` / `limit_name` / `individual_limit` が追加されたが、本関数の
+#   jq パスは optional accessor のみ参照するため影響なし（追加フィールドは無視される）。
 #
 # 検出条件: `rate_limit_reached_type != null` もしくは いずれかの window の used_percent>=100。
 # reset epoch: used_percent が高い側（binding window）の resets_at を採用する。

@@ -3826,6 +3826,16 @@ quota 超過時に codex CLI は `rate_limit_event (status=exceeded)` を含む 
 `QUOTA_USAGE_LIMIT_FALLBACK_WAIT_SEC`（既定 18000 秒）後を reset 予定時刻にして
 `codex-needs-quota-wait` へ退避します。
 
+> **Migration Note (#170, 2026-07-10)**: codex-cli 0.144 系（GPT-5.6 対応版）で追加された
+> usage-limit 文言に追従しました。(1) workspace 系新文言
+> `Your workspace is out of credits. ...` / `You hit your spend cap ...` を
+> `usage_limit_fatal` として検出します（reset hint を持たない＝待機しても回復しないため、
+> 既存どおり通常失敗へ透過 + warn ログで quota 起因と観測可能にします）。(2) plan によって
+> 文頭大文字になる ` Try again at ...` 形式（Enterprise / Edu / unknown plan の retry suffix）
+> からも reset 時刻を抽出できるようにしました（従来は 18000 秒 fallback に退避していたケース）。
+> (3) モデル別 limit 変種 `You've hit your usage limit for <model>. ...` は従来regexで検出済みの
+> ため fixture による回帰保護のみ追加。env var・ラベル名・exit code に変更はありません。
+
 > **注**: `QUOTA_AWARE_ENABLED` は #112 以降デフォルト `true`。明示的に opt-out したい
 > 場合は `QUOTA_AWARE_ENABLED=false` を渡すと本機能の全コードパスが skip され、本機能
 > 導入前と完全に互換です（NFR 2.1 / 2.2）。既存 cron / launchd 登録文字列で `=true` を

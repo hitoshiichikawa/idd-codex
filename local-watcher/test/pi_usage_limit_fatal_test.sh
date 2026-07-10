@@ -90,6 +90,25 @@ rc=0
 pi_detect_usage_limit_fatal "$FIXTURE_DIR/normal-error.jsonl" >/dev/null || rc=$?
 assert_eq "通常 fatal error は usage-limit 扱いしない" "1" "$rc"
 
+# Issue #170: codex-cli 0.144 系の workspace 系新文言（out of credits）も検出する
+# （reset なし → epoch 空で有界 retry marker 経路へ）。
+rc=0
+out=$(pi_detect_usage_limit_fatal "$FIXTURE_DIR/usage-limit-workspace-credits.jsonl") || rc=$?
+assert_eq "workspace out-of-credits fatal を検出する (Issue #170)" "0" "$rc"
+assert_eq "workspace out-of-credits の path" "usage_limit_fatal" "$(printf '%s\n' "$out" | awk -F '\t' '{print $1}')"
+assert_eq "workspace out-of-credits の epoch は空" "" "$(printf '%s\n' "$out" | awk -F '\t' '{print $2}')"
+
+# Issue #170: 文頭大文字 ` Try again at <絶対日付>.`（0.144 系 retry_suffix）でも
+# reset epoch を抽出できる（[Tt] 両対応）。
+rc=0
+out=$(pi_detect_usage_limit_fatal "$FIXTURE_DIR/usage-limit-capital-try-again.jsonl") || rc=$?
+assert_eq "capital Try-again fatal を検出する (Issue #170)" "0" "$rc"
+if [[ "$(printf '%s\n' "$out" | awk -F '\t' '{print $2}')" =~ ^[0-9]+$ ]]; then
+  assert_eq "capital Try-again の reset epoch は数値 (Issue #170)" "true" "true"
+else
+  assert_eq "capital Try-again の reset epoch は数値 (Issue #170)" "true" "false"
+fi
+
 echo ""
 echo "--- processing comment duplicate guard cases (Issue #4) ---"
 
