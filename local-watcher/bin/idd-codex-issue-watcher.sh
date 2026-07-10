@@ -925,7 +925,7 @@ LOCK_FILE="${LOCK_FILE:-/tmp/idd-codex-issue-watcher-${REPO_SLUG}.lock}"
 PATH_OVERLAP_VISIBILITY_LOCK_FILE="${PATH_OVERLAP_VISIBILITY_LOCK_FILE:-${LOG_DIR}/flock-skip-visibility.lock}"
 
 # モデル設定
-TRIAGE_MODEL="${TRIAGE_MODEL:-gpt-5.4-mini}"   # Triage は軽量モデルで十分
+TRIAGE_MODEL="${TRIAGE_MODEL:-gpt-5.6-luna}"   # Triage は軽量モデルで十分（gpt-5.4 系は 2026-07-23 引退 / #168）
 DEV_MODEL="${DEV_MODEL:-gpt-5.5}"
 TRIAGE_MAX_TURNS="${TRIAGE_MAX_TURNS:-15}"
 DEV_MAX_TURNS="${DEV_MAX_TURNS:-60}"
