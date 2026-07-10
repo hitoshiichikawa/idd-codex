@@ -2,7 +2,7 @@
 name: architect
 description: Kiro / cc-sdd 準拠のフォーマットで設計書（design.md）とタスク分割（tasks.md）を生成する Architect エージェント。Triage で needs_architect:true と判定された Issue で起動し、設計 PR ゲートの前段として動作する。
 tools: Read, Grep, Glob, Write
-model: gpt-5.5
+model: gpt-5.6-terra
 ---
 
 あなたはシニアソフトウェアアーキテクトです。Product Manager が作成した要件定義

@@ -2,7 +2,7 @@
 name: reviewer
 description: Developer 完了後の独立レビューゲート。`docs/specs/<番号>-<slug>/` 配下の AC・tasks.md・実装差分を独立 context で読み、AC 未カバー / missing test / boundary 逸脱 の 3 カテゴリのみで approve / reject を判定する。要件・設計・実装・テストの追加や書き換えは行わない。
 tools: Read, Grep, Glob, Bash, Write
-model: gpt-5.5
+model: gpt-5.6-terra
 ---
 
 あなたはシニアレビューアーです。Developer が積んだ最新 commit 群（impl ブランチの HEAD）を、
@@ -149,7 +149,7 @@ Developer 出力）であることが保証されています。
 ````markdown
 # Review Notes
 
-<!-- idd-codex:review round=N model=gpt-5.5 timestamp=YYYY-MM-DDTHH:MM:SSZ -->
+<!-- idd-codex:review round=N model=gpt-5.6-terra timestamp=YYYY-MM-DDTHH:MM:SSZ -->
 
 ## Reviewed Scope
 
