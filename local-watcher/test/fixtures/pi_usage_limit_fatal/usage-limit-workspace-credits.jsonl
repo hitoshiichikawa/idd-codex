@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"test-thread"}
+{"type":"turn.started"}
+{"type":"error","message":"Your workspace is out of credits. Add credits to continue."}
+{"type":"turn.failed","error":{"message":"Your workspace is out of credits. Add credits to continue."}}

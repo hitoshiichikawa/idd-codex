@@ -201,6 +201,50 @@ assert_eq "usage-limit-no-reset detector epoch empty (Issue #12 Option B)" \
 out=$(detect_last_line "normal-error.jsonl")
 assert_eq "normal-error is not quota-related (Issue #12 Req 5)" "" "$out"
 
+# Issue #170: codex-cli 0.144 系の workspace 系新文言（out of credits / spend cap）も
+# usage_limit_fatal として検出する（reset hint なし → wrapper 側で codex_rc 透過）。
+out=$(detect_last_line "usage-limit-workspace-credits.jsonl")
+assert_eq "workspace out-of-credits path (Issue #170)" \
+  "usage_limit_fatal" \
+  "$(printf '%s\n' "$out" | awk -F '\t' '{print $1}')"
+message_field="$(printf '%s\n' "$out" | awk -F '\t' '{print $3}')"
+if printf '%s\n' "$message_field" | grep -q "out of credits"; then
+  assert_eq "workspace out-of-credits message retained (Issue #170)" "true" "true"
+else
+  assert_eq "workspace out-of-credits message retained (Issue #170)" "true" "false"
+fi
+
+out=$(detect_last_line "usage-limit-spend-cap.jsonl")
+assert_eq "workspace spend-cap path (Issue #170)" \
+  "usage_limit_fatal" \
+  "$(printf '%s\n' "$out" | awk -F '\t' '{print $1}')"
+
+# Issue #170: 0.144 系のモデル別 limit 変種（usage limit for {limit_name}）も検出する。
+out=$(detect_last_line "usage-limit-limit-name-model.jsonl")
+assert_eq "limit-name model variant path (Issue #170)" \
+  "usage_limit_fatal" \
+  "$(printf '%s\n' "$out" | awk -F '\t' '{print $1}')"
+message_field="$(printf '%s\n' "$out" | awk -F '\t' '{print $3}')"
+if printf '%s\n' "$message_field" | grep -q "or try again at Jul 15th, 2026 1:16 AM"; then
+  assert_eq "limit-name model variant message retained (Issue #170)" "true" "true"
+else
+  assert_eq "limit-name model variant message retained (Issue #170)" "true" "false"
+fi
+
+# Issue #170: Enterprise/Edu/unknown plan の retry_suffix は文頭大文字 ` Try again at ...`。
+# 検出は usage limit 部で従来からマッチするが、message が保持されることを回帰保護する
+# （epoch 抽出の大文字対応は qa_extract_usage_limit_reset_epoch 側のテストで検証）。
+out=$(detect_last_line "usage-limit-capital-try-again.jsonl")
+assert_eq "capital Try-again path (Issue #170)" \
+  "usage_limit_fatal" \
+  "$(printf '%s\n' "$out" | awk -F '\t' '{print $1}')"
+message_field="$(printf '%s\n' "$out" | awk -F '\t' '{print $3}')"
+if printf '%s\n' "$message_field" | grep -q "Try again at 11:26 AM"; then
+  assert_eq "capital Try-again message retained (Issue #170)" "true" "true"
+else
+  assert_eq "capital Try-again message retained (Issue #170)" "true" "false"
+fi
+
 echo ""
 echo "==========================================="
 echo "PASS: $PASS_COUNT, FAIL: $FAIL_COUNT"

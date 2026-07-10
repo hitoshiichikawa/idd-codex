@@ -1200,7 +1200,7 @@ pi_extract_usage_limit_reset_epoch() {
 
   local raw
   raw=$(printf '%s\n' "$message" \
-    | sed -nE 's/.*try again at ([A-Z][a-z]{2} [0-9]{1,2}(st|nd|rd|th)?, [0-9]{4} [0-9]{1,2}:[0-9]{2} (AM|PM)).*/\1/p' \
+    | sed -nE 's/.*[Tt]ry again at ([A-Z][a-z]{2} [0-9]{1,2}(st|nd|rd|th)?, [0-9]{4} [0-9]{1,2}:[0-9]{2} (AM|PM)).*/\1/p' \
     | tail -1)
   if [ -z "$raw" ]; then
     echo ""
@@ -1245,7 +1245,7 @@ pi_detect_usage_limit_fatal() {
         ($j.item? // {} | .message? // empty)
       ][]
     | select(type == "string")
-    | select(test("usage limit|purchase more credits|try again at"; "i"))
+    | select(test("usage limit|purchase more credits|try again at|out of credits|spend cap"; "i"))
   ' "$log_path" 2>/dev/null | tail -1)
 
   if [ -z "$message" ]; then
