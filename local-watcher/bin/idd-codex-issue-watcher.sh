@@ -1022,6 +1022,14 @@ REVIEWER_REASONING_EFFORT="${REVIEWER_REASONING_EFFORT:-high}"
 DEBUGGER_REASONING_EFFORT="${DEBUGGER_REASONING_EFFORT:-high}"
 AUTO_REBASE_REASONING_EFFORT="${AUTO_REBASE_REASONING_EFFORT:-high}"
 PR_ITERATION_REASONING_EFFORT="${PR_ITERATION_REASONING_EFFORT:-high}"
+# ─── reasoning effort の allowlist 検証と `ultra` opt-in ガード (#174) ───
+# 上記 `*_REASONING_EFFORT` は codex 起動直前に effort-guard.sh（eg_normalize_effort）で検証される。
+# allowlist（minimal / low / medium / high / xhigh / max）外の値（typo 等）は当該 stage の組み込み
+# 既定（Triage=medium / それ以外=high）へ正規化し WARN ログを出す。`ultra` はモデル内部で
+# サブエージェントを並列展開しトークン消費が桁違いに増えうるため、`CODEX_ALLOW_ULTRA_EFFORT=true`
+# （lowercase 厳密一致）の opt-in が無い限り同様に既定へ正規化する。現行の有効値はすべて
+# allowlist 内のため、未設定 / 正しい値の環境では導入前と外形等価（後方互換）。
+CODEX_ALLOW_ULTRA_EFFORT="${CODEX_ALLOW_ULTRA_EFFORT:-false}"
 
 # ─── Quota-Aware Watcher 設定 (#66) ───
 # Codex Max の 5 時間ローリング quota を codex CLI の `rate_limit_event` JSON で
@@ -1332,6 +1340,8 @@ codex_exec_prompt() {
   local effort safe_stage last_message_file
 
   effort="$(codex_reasoning_effort_for_stage "$stage_label")"
+  # Issue #174: allowlist 外 / gate 未通過 ultra を当該 stage の既定 effort へ正規化（WARN は stderr）。
+  effort="$(eg_normalize_effort "$stage_label" "$effort")"
   safe_stage="$(printf '%s' "$stage_label" | tr -c 'A-Za-z0-9_.-' '-')"
   mkdir -p "$CODEX_LAST_MESSAGE_DIR"
   last_message_file="$CODEX_LAST_MESSAGE_DIR/${NUMBER:-unknown}-${safe_stage}-$(date +%Y%m%d-%H%M%S).txt"
@@ -1401,7 +1411,7 @@ IDD_MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)/id
 # 3 プロセッサ（quota-aware / merge-queue / auto-rebase）、#181 Part 3 で切り出した
 # 3 プロセッサ（promote-pipeline / pr-iteration / stage-a-verify）を並べ、末尾に
 # #238 の scaffolding-health.sh と #239 の per-run evidence サマリ（run-summary.sh）を置く。
-REQUIRED_MODULES=( "core_utils.sh" "env-loader.sh" "guard-hook.sh" "quota-aware.sh" "merge-queue.sh" "auto-rebase.sh" "auto-merge.sh" "auto-merge-design.sh" "auto-merge-disarm.sh" "failed-recovery.sh" "needs-decisions-auto.sh" "slack-notify.sh" "stale-pickup-reaper.sh" "promote-pipeline.sh" "pr-iteration.sh" "pr-reviewer.sh" "adjudicator.sh" "stage-a-verify.sh" "scaffolding-health.sh" "context-map.sh" "run-summary.sh" )
+REQUIRED_MODULES=( "core_utils.sh" "env-loader.sh" "guard-hook.sh" "quota-aware.sh" "merge-queue.sh" "auto-rebase.sh" "auto-merge.sh" "auto-merge-design.sh" "auto-merge-disarm.sh" "failed-recovery.sh" "needs-decisions-auto.sh" "slack-notify.sh" "stale-pickup-reaper.sh" "promote-pipeline.sh" "pr-iteration.sh" "pr-reviewer.sh" "adjudicator.sh" "stage-a-verify.sh" "scaffolding-health.sh" "context-map.sh" "run-summary.sh" "effort-guard.sh" )
 for _idd_mod in "${REQUIRED_MODULES[@]}"; do
   _idd_mod_path="$IDD_MODULE_DIR/$_idd_mod"
   if [ ! -f "$_idd_mod_path" ]; then

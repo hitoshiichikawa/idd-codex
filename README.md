@@ -1527,6 +1527,7 @@ env が増えるため、crontab 行長限界を避けるには後述「per-repo
 | **Context Indexer Metadata**（deterministic `context-map.md` が不足または曖昧な per-task で read-only Indexer を最大 1 回起動し、候補ファイル / tests / docs / anchors を補完） | `CONTEXT_INDEXER_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて OFF | 必須前提: `CONTEXT_MAP_ENABLED=true` と `PER_TASK_LOOP_ENABLED=true`。任意: `CONTEXT_INDEXER_MODEL`（既定 `$DEV_MODEL`）、`CONTEXT_INDEXER_MAX_TURNS`（既定 `10`、Indexer prompt 内の探索上限） | [context-map による探索 read 削減（試験機能 / #34）](#context-map-による探索-read-削減試験機能--34) | #36 |
 | **Phase 3: Debugger Subagent**（Reviewer Round 2 reject 直前 / Developer BLOCKED 宣言時に fresh Debugger を web search 権限付きで起動し、Fix Plan markdown を後続 Developer 再起動 prompt に注入） | `DEBUGGER_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて `false` 等価 | 任意: `DEBUGGER_MODEL`（既定 `gpt-5.5`）、`DEBUGGER_MAX_TURNS`（既定 `40`） | [Debugger Subagent (Phase 3, #22)](#debugger-subagent-phase-3-22) | #22 |
 | **Codex Guard Hook**（Codex PreToolUse hook で base branch push / 無条件 force push / hook 自己改変を事前 deny） | `IDD_CODEX_HOOKS_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `True` / `1` / typo）はすべて OFF。ON かつ preflight 失敗時は watcher が fail-closed 停止 | 任意: `IDD_CODEX_HOOKS_DIR`（既定 `$HOME/.idd-codex/hooks`）、`IDD_CODEX_HOOKS_PROFILE_NAME`（既定 `idd-codex-guard`）、`IDD_CODEX_HOOKS_MIN_VERSION`（既定 `0.0.0`）、`CODEX_HOME`（profile config 配置先） | [Codex Guard Hook (#294)](#codex-guard-hook-294) | #294 |
+| **reasoning effort `ultra` の許可**（`*_REASONING_EFFORT=ultra` を codex へそのまま渡す opt-in。`ultra` はモデル内部でサブエージェントを並列展開しトークン消費が桁違いに増えうるため既定では遮断され、当該 stage の組み込み既定 effort へ正規化 + WARN ログになる） | `CODEX_ALLOW_ULTRA_EFFORT` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / `TRUE` / `1` / `yes` / typo）はすべて無効（安全側） | — | 下記「Codex CLI 移植固有の harness 設計」節の「reasoning effort の allowlist 検証」 | #174 |
 | **PR Reviewer Processor**（外部 AI レビューツール `codex` / `antigravity`（バイナリ `agy`）に open PR を自動レビューさせ、結果を PR コメント投稿 + 修正要求の `VERDICT` 検出時に `codex-needs-iteration` 付与で PR Iteration Processor #26 へ接続） | `PR_REVIEWER_ENABLED` | `false` | `=true` 厳密一致のみ有効。それ以外（未設定 / 空文字 / `True` / `1` / typo）はすべて OFF | **必須**: `PR_REVIEWER_TOOL`（`codex` / `antigravity`。または alias `PR_REVIEWER_CODEX_ENABLED` / `PR_REVIEWER_ANTIGRAVITY_ENABLED` のいずれか一方。両方有効化は排他エラー）。**前提**: 当該ツールが watcher 実行環境に**インストール・認証済み**であること（セットアップ自動化はスコープ外）。推奨: `PR_REVIEWER_MAX_PRS`（既定 `5`）、`PR_REVIEWER_HEAD_PATTERN`（既定 `^codex/`）、`PR_REVIEWER_EXEC_TIMEOUT`（既定 `600`） | [PR Reviewer Processor (#261)](#pr-reviewer-processor-261) | #261 |
 | **Feature Flag Protocol**（未完成機能を flag 裏で main にマージできる規約。Implementer / Reviewer が宣言を読んで挙動切替） | `AGENTS.md` の `## Feature Flag Protocol` 節（**env var ではない**） | 宣言なし = `opt-out` | `AGENTS.md` の宣言節で `**採否**: opt-in` を **lowercase 厳密一致**で記述。`Opt-In` / `opt_in` / `enabled` 等の typo は opt-out として解釈（安全側に倒す） | — | [Feature Flag Protocol (#23 Phase 4)](#feature-flag-protocol-23-phase-4) | #23 |
 | **Scaffolding Health Gate の停止挙動**（`.codex/agents` `.codex/rules` 足場欠落検出時に agent stage を止めるか否か。検査・WARN・可視シグナルは常時稼働で、**停止のみ**が opt-in） | `SCAFFOLDING_HEALTH_HALT` | `off`（= 可視化のみ・進行継続） | `=on` 厳密一致のときのみ HALT（claim 系ラベル除去で人間判断待ちへ遷移）。それ以外（未設定 / `off` / `true` / `On` / typo）はすべて既定の可視化のみとして解釈（安全側に倒す） | — | [Scaffolding Health Gate / doctor (#238)](#scaffolding-health-gate--doctor-238) | #238 |
@@ -1628,6 +1629,7 @@ IDD_CODEX_HOOKS_ENABLED=true
 | **Reviewer Gate**（Developer 完了後の独立レビュー subagent） | impl / impl-resume / codex-skip-triage 経由 impl の **すべて**で常時起動 | [Reviewer Gate (#20 Phase 1)](#reviewer-gate-20-phase-1) | #20 |
 | **Developer Partial Status Codes**（Developer の `STATUS: partial_blocked` / `partial_overrun` 自己宣言を Stage A 完了直後に検出して Reviewer skip + `codex-needs-decisions` 自動付与） | Developer が `impl-notes.md` 末尾に `STATUS: partial_*` を出力した場合のみ発火（status 行不在 / `complete` は既存挙動と等価） | [Developer Partial Status Codes (#148)](#developer-partial-status-codes-148) | #148 |
 | **Stage C PR Verify Retry**（Stage C 完了報告後に impl PR の実在を retry-with-backoff + List Pulls API fallback で検証。GitHub eventual consistency による false negative を吸収し、PR 不在なら `codex-failed` / `stageC-pr-missing`） | impl 系で Stage C が codex RC=0 を返したとき常時 | [Stage C PR Verify Retry (#108)](#stage-c-pr-verify-retry-108) | #108 #110 |
+| **reasoning effort の allowlist 検証**（`*_REASONING_EFFORT` を codex 起動直前に allowlist `minimal` / `low` / `medium` / `high` / `xhigh` / `max` で検証。typo 等の非許可値と opt-in 無しの `ultra` は当該 stage の組み込み既定（Triage=`medium` / それ以外=`high`）へ正規化し `effort-guard: WARN` を出す。現行の有効値はすべて allowlist 内のため既定挙動は不変） | 全 `codex exec` で常時 | 下記「Codex CLI 移植固有の harness 設計」節の「reasoning effort の allowlist 検証」 | #174 |
 
 問題発生時は `REVIEWER_MAX_TURNS=0` 等での無効化ではなく、原因究明と Issue 起票で対処してください。
 
@@ -1706,6 +1708,43 @@ Codex CLI には Claude の `--max-turns` 相当の turn 上限が無い。各 `
 |---|---|---|
 | `CODEX_DEFAULT_TIMEOUT_SEC` | `1800` | 全 codex exec の既定 wall-clock 上限（秒）。`0` で無効。呼び出し側が明示する `CODEX_EXEC_TIMEOUT_SEC`（auto-rebase 等）が優先される |
 | `REVIEWER_TIMEOUT_EXTENDED_SEC` | 基準 timeout の 2 倍 | **#149**: 独立 Reviewer が timeout（rc=124）した場合のみ、同一 round 内で 1 回だけ適用される拡張 timeout（秒）。詳細は「Reviewer ゲート」節の環境変数表を参照 |
+
+### reasoning effort の allowlist 検証と `ultra` の opt-in ガード（#174）
+
+GPT-5.6 世代（codex-cli 0.144 系）で `model_reasoning_effort` に `max` と `ultra` が追加された。`ultra` は
+モデル内部でサブエージェントを並列展開するため、トークン消費が他の effort と桁違いに跳ねうる。無人 cron
+環境では typo や安易な `ultra` 指定によるコスト暴発を運用者が気づく前に垂れ流すリスクがあるため、watcher は
+各 stage の `*_REASONING_EFFORT` を **codex 起動直前**（`codex_exec_prompt` → `eg_normalize_effort`）で検証する。
+
+- **allowlist**: `minimal` / `low` / `medium` / `high` / `xhigh` / `max`（lowercase 厳密一致）。これらはそのまま
+  codex へ渡る（現行の既定 `medium` / `high` はすべて allowlist 内のため、未設定・正しい値の環境では導入前と
+  外形等価）
+- **allowlist 外**（typo / 大文字 / 空文字）: 当該 stage の **組み込み既定**（Triage=`medium` / それ以外=`high`）へ
+  正規化し、Issue log に `effort-guard: WARN: stage=<label> effort='<値>' は allowlist ... 外のため既定 '<値>' に正規化`
+  を 1 行出す（silent fail にしない）。誤設定された env 値自体へは fallback しない
+- **`ultra`**: `CODEX_ALLOW_ULTRA_EFFORT=true`（lowercase 厳密一致）の opt-in がある場合のみ透過する
+  （透過時もコスト注意の WARN を 1 行出す）。gate 未設定 / typo（`TRUE` / `1` / `yes`）では allowlist 外と同じく
+  既定へ正規化する
+
+| 変数 | 既定 | 用途 |
+|---|---|---|
+| `TRIAGE_REASONING_EFFORT` | `medium` | Triage stage の effort |
+| `DEV_REASONING_EFFORT` | `high` | Stage A / per-task Implementer / Stage C / design 等、Developer 系 stage の effort |
+| `REVIEWER_REASONING_EFFORT` | `high` | 独立 Reviewer / per-task Reviewer の effort |
+| `DEBUGGER_REASONING_EFFORT` | `high` | Debugger stage（および `StageA-prime-blocked`）の effort |
+| `AUTO_REBASE_REASONING_EFFORT` | `high` | Phase D Auto Rebase の effort |
+| `PR_ITERATION_REASONING_EFFORT` | `high` | PR Iteration の effort |
+| `CODEX_ALLOW_ULTRA_EFFORT` | `false` | `=true` 厳密一致で `ultra` を許可する opt-in gate。それ以外はすべて遮断 |
+
+ログの grep 例:
+
+```bash
+# allowlist 外 / gate 未通過 ultra の正規化が起きた stage を一覧
+grep 'effort-guard: WARN' $HOME/.idd-codex/issue-watcher/logs/<owner>-<repo>/issue-*.log
+```
+
+将来拡張（本 Issue のスコープ外）: Debugger の拡張 timeout リトライや failed-recovery で effort を
+`high` → `max` へ自動昇格させるエスカレーションパス。
 
 ### Stage A の PM / Developer 分離（#82 / 既定 ON・挙動変更）
 
@@ -6172,6 +6211,8 @@ cron なら `crontab -e` の先頭で `PATH=...` を明示する。
 
 深夜に Issue が集中すると 5 時間ウィンドウを消費しきる場合がある。
 `TRIAGE_REASONING_EFFORT` / `DEV_REASONING_EFFORT` を下げるか、`TRIAGE_MODEL` / `DEV_MODEL` を軽量モデルへ切り替える。
+`*_REASONING_EFFORT` の値は allowlist（`minimal` / `low` / `medium` / `high` / `xhigh` / `max`）で検証され、
+typo や opt-in 無しの `ultra` は既定へ正規化される（Issue log の `effort-guard: WARN` で確認可。#174）。
 
 ### Codex CLI の認証状態がおかしい
 
