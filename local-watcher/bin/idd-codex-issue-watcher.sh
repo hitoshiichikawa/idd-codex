@@ -739,6 +739,18 @@ DESIGN_REVIEW_RELEASE_HEAD_PATTERN="${DESIGN_REVIEW_RELEASE_HEAD_PATTERN:-^codex
 # Phase A の MERGE_QUEUE_GIT_TIMEOUT を流用してデフォルト 60 秒。
 DRR_GH_TIMEOUT="${DRR_GH_TIMEOUT:-${MERGE_QUEUE_GIT_TIMEOUT:-60}}"
 
+# ─── Design Reconcile 設定 (#180) ───
+# design PR merge 直後の race（古い origin/$BASE_BRANCH を基準に design worker が再起動し、
+# agent が「merge 済み」と判断して新規 PR なしで rc=0 終了 → `codex-claimed` 残留）を是正する。
+# (1) Design Review Release がラベルを外した直後に親プロセスで `git fetch origin $BASE_BRANCH` を
+#     1 回行い、同サイクルの slot が merge 済み spec を検出できるようにする。
+# (2) design rc=0 直後にラベル状態を検証し、awaiting-design-review 未遷移なら merged 設計 PR あり →
+#     claim 系ラベル除去（次 tick impl-resume）/ open あり → awaiting へ補完 / 無し → codex-failed。
+# 不具合修正のため既定 有効。`=false` 厳密一致で無効化（導入前挙動）。
+DESIGN_NOOP_RECONCILE_ENABLED="${DESIGN_NOOP_RECONCILE_ENABLED:-true}"
+# 設計 PR 検出の bounded retry 間隔（秒）。GitHub eventual consistency 吸収用（テストでは 0 を渡す）。
+DNR_PR_LOOKUP_RETRY_SLEEP="${DNR_PR_LOOKUP_RETRY_SLEEP:-5}"
+
 # ─── full-auto kill switch 設定 (#97) ───
 # 完全自動化系 processor の単一 kill switch。`=true` 厳密一致のときのみ ON。
 # それ以外（未設定 / 空 / `false` / `0` / `True` / `TRUE` / `1` / `on` / typo 等）はすべて
@@ -1411,7 +1423,7 @@ IDD_MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)/id
 # 3 プロセッサ（quota-aware / merge-queue / auto-rebase）、#181 Part 3 で切り出した
 # 3 プロセッサ（promote-pipeline / pr-iteration / stage-a-verify）を並べ、末尾に
 # #238 の scaffolding-health.sh と #239 の per-run evidence サマリ（run-summary.sh）を置く。
-REQUIRED_MODULES=( "core_utils.sh" "env-loader.sh" "guard-hook.sh" "quota-aware.sh" "merge-queue.sh" "auto-rebase.sh" "auto-merge.sh" "auto-merge-design.sh" "auto-merge-disarm.sh" "failed-recovery.sh" "needs-decisions-auto.sh" "slack-notify.sh" "stale-pickup-reaper.sh" "promote-pipeline.sh" "pr-iteration.sh" "pr-reviewer.sh" "adjudicator.sh" "stage-a-verify.sh" "scaffolding-health.sh" "context-map.sh" "run-summary.sh" "effort-guard.sh" )
+REQUIRED_MODULES=( "core_utils.sh" "env-loader.sh" "guard-hook.sh" "quota-aware.sh" "merge-queue.sh" "auto-rebase.sh" "auto-merge.sh" "auto-merge-design.sh" "auto-merge-disarm.sh" "failed-recovery.sh" "needs-decisions-auto.sh" "slack-notify.sh" "stale-pickup-reaper.sh" "promote-pipeline.sh" "pr-iteration.sh" "pr-reviewer.sh" "adjudicator.sh" "stage-a-verify.sh" "scaffolding-health.sh" "context-map.sh" "run-summary.sh" "effort-guard.sh" "design-reconcile.sh" )
 for _idd_mod in "${REQUIRED_MODULES[@]}"; do
   _idd_mod_path="$IDD_MODULE_DIR/$_idd_mod"
   if [ ! -f "$_idd_mod_path" ]; then
@@ -1873,6 +1885,9 @@ process_design_review_release() {
     if drr_remove_label_and_comment "$issue_number" "$merged_pr_number"; then
       drr_log "Issue #${issue_number}: merged-design-pr=#${merged_pr_number}, action=label removed + commented"
       removed=$((removed + 1))
+      # Issue #180: 同サイクルで dispatch される slot が merge 済み spec を検出できるよう、
+      # 親プロセスで origin/$BASE_BRANCH を 1 回再 fetch（fail-open）。
+      dnr_refresh_base_ref "$issue_number" "$merged_pr_number" || true
     else
       drr_log "Issue #${issue_number}: merged-design-pr=#${merged_pr_number}, action=fail"
       failed=$((failed + 1))
@@ -11745,6 +11760,8 @@ _slot_run_issue() {
    - **base: \`${BASE_BRANCH}\`** （\`gh pr create --base ${BASE_BRANCH}\` を必ず明示すること。GitHub のデフォルト base に依存しない）
    - Issue ラベル: codex-claimed → codex-awaiting-design-review に付け替え
    - Issue にコメントで設計 PR リンクと案内を投稿
+   - 例外: 設計 PR が既に \`${BASE_BRANCH}\` へ merge 済みで \`${SPEC_DIR_REL}/\` が origin に存在する場合は、
+     新規 PR を作らずラベルも触らずに終了してよい（watcher が merge 済みを検出し、次回 impl-resume に進める / Issue #180）
 
 この設計 PR が merge されるまで、実装フェーズには進みません。人間が merge した後、
 次回のポーリングで Developer が自動起動し、実装 PR が別途作成されます。
@@ -11803,6 +11820,13 @@ EOF
         # design 分岐 rc=0 case にのみ配置し、impl / impl-resume / Stage Checkpoint
         # Resume 経路には差し込まないことで Req 3.1 / 3.2 を構造的に保証する。
         tc_run_post_architect_check || true
+        # Issue #180: design no-op（設計 PR が既に merge 済み等）で codex-claimed が残留しないよう、
+        # ラベル状態を検証して是正する（fail-open。design-no-pr 確定時のみ codex-failed へ遷移し rc=1）。
+        if ! dnr_reconcile_after_design "$NUMBER"; then
+          rm -f "$_qa_reset_file_design"
+          echo "❌ #$NUMBER: $MODE 終了後の整合検証で設計 PR が見つからず codex-failed（design-no-pr / #180）" | tee -a "$LOG"
+          return 1
+        fi
         rm -f "$_qa_reset_file_design"
         return 0
         ;;
