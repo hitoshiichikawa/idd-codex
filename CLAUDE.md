@@ -38,6 +38,9 @@ Claude Code で作業する場合も、まず **[`AGENTS.md`](AGENTS.md) を読�
    - ref を git/gh へ渡すときは `^codex/` allowlist で検証。force push は `--force-with-lease` 限定
    - 破壊的操作を招く変更では guard hook（`local-watcher/hooks/idd-codex-guard.sh`）の deny 規則も更新（#49）
 7. **ドキュメント同期**: 挙動変更は同一 PR で README + AGENTS.md + 該当 rule を更新。
+8. **stage prompt の安定 prefix**: codex へ渡す prompt は「role preamble → 静的指示 → Issue 単位の値 →
+   実行ごとに変わる値（SHA / round / timestamp / notes 本文）」の順に組む。可変値を静的部分より前に
+   置かない（#177。順序は `local-watcher/test/prompt_stable_prefix_test.sh` で固定）。
 
 ## 検証コマンド（変更後に必ず）
 
