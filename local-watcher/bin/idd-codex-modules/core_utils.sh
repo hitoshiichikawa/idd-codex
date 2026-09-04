@@ -233,6 +233,19 @@ eg_error() {
   echo "[$(date '+%F %T')] [$REPO] effort-guard: ERROR: $*" >&2
 }
 
+# Design Reconcile 専用ロガー（Issue #180 / 既存 drr_log 系と同形式）。
+# `[YYYY-MM-DD HH:MM:SS] [$REPO] design-reconcile:` prefix。dnr_warn / dnr_error は `>&2`。
+# 関数本体は idd-codex-modules/design-reconcile.sh に配置。
+dnr_log() {
+  echo "[$(date '+%F %T')] [$REPO] design-reconcile: $*"
+}
+dnr_warn() {
+  echo "[$(date '+%F %T')] [$REPO] design-reconcile: WARN: $*" >&2
+}
+dnr_error() {
+  echo "[$(date '+%F %T')] [$REPO] design-reconcile: ERROR: $*" >&2
+}
+
 # secure tempfile helper（Issue #52 Req 5）
 #
 # prompt / JSON / stderr / quota reset state などを置く一時ファイルを、repo ごとに

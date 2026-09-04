@@ -16,7 +16,8 @@
 #   - sr_fetch_candidates  : 候補列挙（label filter / codex-picked-up + codex-claimed）
 #   - sr_check_marker_age : marker.first_seen_at の経過時間を閾値判定（観点 1）
 #   - sr_check_slot_lock  : slot lock file の保持状態を flock で観測（観点 2）
-#   - sr_check_session    : lock 保持 pid の生存を kill -0 で観測（観点 3）
+#   - sr_lockfile_is_held : 単一 lock file の flock 保持状態を試行観測（#180 / 観点 3 の前段）
+#   - sr_check_session    : lock 保持 pid の生存を kill -0 で観測（観点 3。解放済み lock は非セッション扱い / #180）
 #   - sr_is_active        : 3 観点 AND 結合（全観点 rc=0 のときのみ inactive 確定）
 #   - sr_revert_to_auto_dev      : ラベル除去 + codex-auto-dev 残存確認（同サイクル冪等）
 #   - process_stale_pickup_reaper : watcher 本体からの単一エントリ（fail-continue / 戻り値常に 0）
@@ -295,8 +296,30 @@ sr_check_slot_lock() {
   return 0
 }
 
+# 単一 slot lock file が現在 flock で保持されているかを試行的に観測する（lock を奪わない）。
+#   0=解放済み（`flock -n -x` が即時取得できた）/ 1=保持中 / 2=判定不能（flock 不在）
+sr_lockfile_is_held() {
+  local lockfile="$1"
+  if ! command -v flock >/dev/null 2>&1; then
+    return 2
+  fi
+  if flock -n -x "$lockfile" true 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
 # Lock file 保持 pid の生存確認で「watcher / codex セッション存在」を判定する。
-#   0=no session（lock 不在 / 全 pid 非生存）/ 1=session may be alive（safe-side 含む）
+#   0=no session（lock 不在 / 全 lock 解放済み / 全 pid 非生存）/ 1=session may be alive（safe-side 含む）
+#
+# Issue #180: slot lock file は `$SLOT_LOCK_DIR/<repo-slug>-slot-N.lock` に **永続配置** され、
+# worker 終了後も削除されない。旧実装は「lock file が存在するのに pid を取得できない」を常に
+# safe-side（rc=1）としていたため、解放済み lock でも `sess=1` となり reaper が永久に回収できな
+# かった。本実装は lock file ごとに `flock -n -x` で **実際に保持されているか** を先に観測し、
+#   - 解放済み（取得可）→ その slot にセッションは無い（pid 不在は当然）→ 次の lock file へ
+#   - 保持中 → 実際に誰かが握っているためセッション存続とみなし rc=1（claim を解除しない）
+# とする。flock が使えない環境（判定不能）では旧実装と同じ owner pid のみの判定へ fallback し、
+# pid 取得手段が無い / pid を取れない場合は従来どおり safe-side で rc=1、生存 pid があれば rc=1。
 sr_check_session() {
   local _marker_json="${1:-}"
   : "$_marker_json"
@@ -312,19 +335,36 @@ sr_check_session() {
     return 0
   fi
 
-  # pid 取得手段: Linux fuser → macOS lsof の順。両方不在は safe-side（rc=1）。
+  # pid 取得手段: Linux fuser → macOS lsof の順。両方不在は pid 判定不能（後段で safe-side）。
   local pid_tool=""
   if command -v fuser >/dev/null 2>&1; then
     pid_tool="fuser"
   elif command -v lsof >/dev/null 2>&1; then
     pid_tool="lsof"
-  else
-    return 1
   fi
 
-  local pids pid
+  local pids pid held_rc
   for lockfile in "$SLOT_LOCK_DIR/${REPO_SLUG}-slot-"*.lock; do
     [ -f "$lockfile" ] || continue
+
+    held_rc=0
+    sr_lockfile_is_held "$lockfile" || held_rc=$?
+    case "$held_rc" in
+      0)
+        # Issue #180: lock は解放済み。永続 lock file の存在だけでは session とみなさない。
+        continue
+        ;;
+      1)
+        # lock が実際に保持されている → セッション存続とみなし claim を解除しない（AC 4）。
+        return 1
+        ;;
+    esac
+
+    # rc=2: flock 判定不能（flock 不在）→ 旧実装と同じ owner pid のみの判定へ fallback する。
+    if [ -z "$pid_tool" ]; then
+      # pid 取得手段なし → safe-side で「保持の可能性あり」
+      return 1
+    fi
     pids=""
     case "$pid_tool" in
       fuser) pids=$(fuser "$lockfile" 2>/dev/null || true) ;;
@@ -332,7 +372,7 @@ sr_check_session() {
     esac
 
     if [ -z "$pids" ]; then
-      # lock file が存在するのに pid を取得できない → safe-side で「保持の可能性あり」
+      # 保持中（または判定不能）なのに pid を取得できない → safe-side で「保持の可能性あり」
       return 1
     fi
 

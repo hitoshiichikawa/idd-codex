@@ -1434,6 +1434,7 @@ idd-codex は基本フロー（Triage → 実装 → PR 作成）以外の機能
 | **PR Iteration Processor**（PR レビューコメント駆動の自動反復） | `PR_ITERATION_ENABLED` | `true` | `=false` 厳密一致のみ無効。それ以外（空文字 / `0` / `False` / typo）はすべて有効 | — | [PR Iteration Processor (#26)](#pr-iteration-processor-26) | #26, #112 |
 | **PR Iteration 設計 PR 拡張**（設計 PR にも `codex-needs-iteration` 反復を適用） | `PR_ITERATION_DESIGN_ENABLED` | `true` | `=false` 厳密一致のみ無効。それ以外（空文字 / `0` / `False` / typo）はすべて有効 | — | [設計 PR 拡張 (#35)](#設計-pr-拡張-35) | #35, #112 |
 | **Design Review Release Processor**（設計 PR merge 時の `codex-awaiting-design-review` 自動除去） | `DESIGN_REVIEW_RELEASE_ENABLED` | `true` | `=false` 厳密一致のみ無効。それ以外（空文字 / `0` / `False` / typo）はすべて有効 | — | [Design Review Release Processor (#40)](#design-review-release-processor-40) | #40, #112 |
+| **Design Reconcile**（設計 PR merge 直後の race で design worker が no-op 終了し `codex-claimed` が残留する不具合の是正。(1) Design Review Release がラベルを外した直後に親プロセスで `origin/$BASE_BRANCH` を再 fetch、(2) design rc=0 直後にラベル状態を検証し、merged 設計 PR あり → claim 系ラベル除去（次 tick impl-resume）/ open あり → `codex-awaiting-design-review` 補完 / 無し → `codex-failed`） | `DESIGN_NOOP_RECONCILE_ENABLED` | `true` | `=false` 厳密一致のみ無効。それ以外（空文字 / `0` / `False` / typo）はすべて有効 | 任意: `DNR_PR_LOOKUP_RETRY_SLEEP`（設計 PR 検出の bounded retry 間隔秒、既定 `5`） | [Design Review Release Processor (#40)](#design-review-release-processor-40) の「merge 直後 race と design no-op の整合（#180）」 | #180 |
 | **Quota-Aware Watcher**（Codex Max quota 超過の検知と reset 経過後の自動 resume） | `QUOTA_AWARE_ENABLED` | `true` | `=false` 厳密一致のみ無効。それ以外（空文字 / `0` / `False` / typo）はすべて有効 | — | [Quota-Aware Watcher (#66)](#quota-aware-watcher-66) | #66, #112 |
 | **impl-resume Branch Protection**（既存 origin branch resume + force-push 抑制 + tasks.md 進捗追跡） | `IMPL_RESUME_PRESERVE_COMMITS` | `true` | `=false` 厳密一致のみ無効。それ以外（`Yes` / `1` / 空文字 / typo / 不正値）はすべて有効 | 推奨: `IMPL_RESUME_PROGRESS_TRACKING`（既定 `true`。`=false` で進捗追跡指示の注入のみ抑制。`IMPL_RESUME_PRESERVE_COMMITS=false` 時は値に関わらず注入されない） | [impl-resume Branch Protection (#67)](#impl-resume-branch-protection-67) | #67, #112 |
 | **impl-resume tasks.md 進捗追跡**（Developer がタスク完了ごとに `- [ ]` → `- [x]` を専用 commit） | `IMPL_RESUME_PROGRESS_TRACKING` | `true` | `=false` 厳密一致のみ無効。それ以外（空文字含む）は有効 | 必須前提: `IMPL_RESUME_PRESERVE_COMMITS=true`（既定）。`IMPL_RESUME_PRESERVE_COMMITS=false` の状態では本機能は **常に未注入**（サイレント no-op） | [impl-resume Branch Protection (#67)](#impl-resume-branch-protection-67) | #67 |
@@ -3390,6 +3391,7 @@ merged PR を広めに取得し、watcher 側の jq で `codex/issue-<N>-design-
 | 状況 | アクション |
 |---|---|
 | 候補 Issue で merged 設計 PR を検出（未処理） | `codex-awaiting-design-review` 除去 + ステータスコメント投稿（hidden marker 付き） |
+| （上記に続けて）ラベル除去 + コメント成功後 | 親プロセスで `git fetch origin $BASE_BRANCH` を 1 回実行し、同サイクルで dispatch される slot が merge 済み spec を検出できるようにする（#180。失敗は WARN のみ / fail-open） |
 | 候補 Issue で merged 設計 PR を検出（既処理: hidden marker あり） | skip（ログに `action=skip (already processed)`） |
 | 候補 Issue にリンクされた PR 0 件 / merged 0 件 | kept（ラベルそのまま、ログに `action=kept`） |
 | ラベル除去 API が失敗 | WARN ログ + コメント投稿せず + 次 Issue へ（次サイクルで再試行） |
@@ -3400,6 +3402,44 @@ merged PR を広めに取得し、watcher 側の jq で `codex/issue-<N>-design-
 `design-review-release: Issue #N: merged-design-pr=#P, action=...`、終了時に
 `design-review-release: サマリ: removed=N, kept=N, skip=N, fail=N, overflow=N` が
 watcher ログに出力されます（`grep 'design-review-release:' $HOME/.idd-codex/issue-watcher/logs/...`）。
+
+
+### merge 直後 race と design no-op の整合（#180）
+
+consumer repo（`BASE_BRANCH=develop` / launchd 120 秒間隔）で、設計 PR の merge 直後に watcher tick が
+走ると次の連鎖で **自動開発が無期限停止** する事故が観測された（feedman-ios #117 / PR #118）:
+
+1. サイクル冒頭の `git fetch origin --prune` が merge commit をまだ含まず、slot worktree が古い
+   `origin/develop` へ reset される（spec 未検出）
+2. Triage → `needs_architect: true` で **design モードが再起動**される
+3. design agent は実行中に最新 origin を fetch し「設計は merge 済み」と判断して **新規 PR を作らず正常終了**
+   （rc=0）。design ルートは `codex-claimed → codex-awaiting-design-review` の付け替えを PjM（agent 側）に
+   委ねているため、no-op 終了では **`codex-claimed` が残留**する
+4. dispatcher は `codex-claimed` を「処理中」とみなして当該 Issue を候補から永久除外し、Stale Pickup Reaper も
+   永続配置される slot lock file を `sess=1`（セッションあり）と誤判定して回収しない
+
+#180 では以下の 3 点で是正する（`DESIGN_NOOP_RECONCILE_ENABLED`、既定 `true`。`=false` 厳密一致で (a)(b) を無効化）:
+
+| 介入点 | 挙動 |
+|---|---|
+| (a) Design Review Release 直後 | merged 設計 PR を検出しラベルを外した直後、**親プロセス（dispatch 前）** で `git fetch origin $BASE_BRANCH` を 1 回実行し、同サイクルの slot が merge 済み spec を見られるようにする（race の一次緩和）。Issue #167 の per-slot fetch 競合は「複数 slot の同時 fetch」が原因で、fork 前の単一プロセスからの 1 ref fetch は競合しない。失敗は `design-reconcile: WARN` のみ（fail-open） |
+| (b) design モード rc=0 直後 | ラベル状態を検証し、`codex-awaiting-design-review` へ遷移済みなら no-op。未遷移で claim 系ラベルが残っていれば、**merged 設計 PR あり** → `codex-claimed` / `codex-picked-up` を除去しコメント（次 tick で impl-resume）/ **open 設計 PR あり** → `codex-awaiting-design-review` を補完付与 / **どちらも無し**（bounded retry 後） → `design-no-pr` として `codex-failed`（人間判断）。API 失敗はすべて fail-open（WARN のみ） |
+| (c) Stale Pickup Reaper の `sr_check_session` | slot lock file は `$SLOT_LOCK_DIR/<repo-slug>-slot-N.lock` に永続配置されるため「lock file が存在するのに PID が取れない」は常態。旧実装はこれを safe-side（セッションあり）として回収不能だった。**`flock -n -x` で実際に保持されているかを先に観測**し、解放済み lock は非セッション扱い、保持中は従来どおりセッションあり（claim 解除しない）とする。flock 不在環境では旧実装と同じ PID のみの判定へ fallback。Linux（`fuser`）/ macOS（`lsof`）両経路の回帰テスト: `local-watcher/test/stale_pickup_reaper_session_test.sh` |
+
+design prompt の STEPS にも「設計 PR が既に merge 済みで spec が origin に存在する場合は新規 PR を作らず終了してよい
+（watcher が検出して impl-resume に進める）」を明文化し、agent 側の no-op を明示的な契約にしている（Issue #180 の
+Option A: 結果契約の明示 + Option B: wrapper 側の再検証、の両方を採用。判定の正本は wrapper 側の GitHub 状態再検証）。
+
+ログの grep 例:
+
+```bash
+# (a) 再 fetch / (b) 補正 / (c) 回収の各イベント
+grep -E 'design-reconcile:|stale-pickup-reaper:.*inactive' $HOME/.idd-codex/issue-watcher/cron.log
+```
+
+Issue コメントの hidden marker は `<!-- idd-codex:design-reconcile issue=<N> kind=merged|open pr=<P> -->`。
+既存のラベル名 / env var 名 / exit code / cron 登録文字列は不変（不具合修正のため既定有効。導入前挙動へ戻す
+場合のみ `DESIGN_NOOP_RECONCILE_ENABLED=false`。reaper 側 (c) は Stale Pickup Reaper が有効な環境で常に適用）。
 
 ### 環境変数
 
