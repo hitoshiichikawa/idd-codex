@@ -144,6 +144,7 @@ assert_contains "insufficient log includes model" "$insufficient_err" "model=gpt
 assert_contains "insufficient log includes current version" "$insufficient_err" "current=0.143.9"
 assert_contains "insufficient log includes required version" "$insufficient_err" "required=0.144.0"
 assert_contains "insufficient log includes update guidance" "$insufficient_err" "codex update"
+assert_eq "insufficient preflight only calls codex --version" "--version" "$(cat "$MP_TEST_CALL_LOG")"
 
 reset_env
 capture="$TMP_DIR/unknown"
