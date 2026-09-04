@@ -1,6 +1,6 @@
 # Implementation Plan
 
-- [ ] 1. 共有 semver / version 抽出 helper を `core_utils.sh` に移し guard hook を接続する
+- [x] 1. 共有 semver / version 抽出 helper を `core_utils.sh` に移し guard hook を接続する
   - `local-watcher/bin/idd-codex-modules/core_utils.sh` に `idd_extract_semver` と `idd_compare_semver` を追加する。
   - `guard-hook.sh` の `guard_compare_semver` を shared helper 呼び出しへ置換または互換 wrapper 化する。
   - suffix / missing patch / invalid input / greater-equal-lesser の shell-level regression を追加する。
