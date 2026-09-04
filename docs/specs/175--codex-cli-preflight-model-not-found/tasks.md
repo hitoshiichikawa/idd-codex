@@ -8,7 +8,7 @@
   - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 6.5_
   - _Boundary: Core Version Utilities, Guard Hook Adapter, Model Preflight Regression Tests_
 
-- [ ] 2. `model-preflight.sh` module の version map と preflight gate を実装する
+- [x] 2. `model-preflight.sh` module の version map と preflight gate を実装する
   - `local-watcher/bin/idd-codex-modules/model-preflight.sh` を新規追加し、`mp_` prefix の log / map parse / required version lookup / preflight 関数を定義する。
   - 既定 map に `gpt-5.6-*:0.144.0` を入れ、`MODEL_PREFLIGHT_MIN_VERSIONS` override と malformed entry WARN を実装する。
   - `MODEL_PREFLIGHT_ENABLED=false` の完全一致のみ無効化し、未知 model は pass-through する。
