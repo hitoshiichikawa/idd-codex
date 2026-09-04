@@ -215,7 +215,7 @@ esac
 # NFR 3.2 保守的判定）。
 MECHANICAL_PATHS="${MECHANICAL_PATHS:-}"
 # Codex モデル ID。`PR_ITERATION_DEV_MODEL` と独立に上書き可能。
-AUTO_REBASE_MODEL="${AUTO_REBASE_MODEL:-gpt-5.5}"
+AUTO_REBASE_MODEL="${AUTO_REBASE_MODEL:-gpt-5.6-terra}"
 # Codex `--max-turns` 値。
 AUTO_REBASE_MAX_TURNS="${AUTO_REBASE_MAX_TURNS:-30}"
 # Codex rebase 試行の外側 timeout（秒）。NFR 5.1。
@@ -337,7 +337,7 @@ FAILED_RECOVERY_MAX_PRS="${FAILED_RECOVERY_MAX_PRS:-3}"
 # 各 gh / git 操作の個別タイムアウト（秒）。
 FAILED_RECOVERY_GIT_TIMEOUT="${FAILED_RECOVERY_GIT_TIMEOUT:-60}"
 # 復旧 codex 実行に使うモデル ID（既存 DEV_MODEL とは独立に上書き可能）。
-FAILED_RECOVERY_DEV_MODEL="${FAILED_RECOVERY_DEV_MODEL:-${DEV_MODEL:-gpt-5.5}}"
+FAILED_RECOVERY_DEV_MODEL="${FAILED_RECOVERY_DEV_MODEL:-${DEV_MODEL:-gpt-5.6-terra}}"
 # 通算 attempt budget / no-progress baseline を work-unit 単位で永続化する state dir。
 FAILED_RECOVERY_STATE_DIR="${FAILED_RECOVERY_STATE_DIR:-$HOME/.idd-codex/failed-recovery/$REPO_SLUG}"
 # #137: codex が起動直後 rc≠0 で即死する「即時失敗」の継続時間閾値（秒）。
@@ -436,7 +436,7 @@ esac
 # PR_ITERATION_ENABLED=false を渡す。
 PR_ITERATION_ENABLED="${PR_ITERATION_ENABLED:-true}"
 # Iteration 専用モデル ID（既存 DEV_MODEL とは独立して上書き可能）。
-PR_ITERATION_DEV_MODEL="${PR_ITERATION_DEV_MODEL:-gpt-5.5}"
+PR_ITERATION_DEV_MODEL="${PR_ITERATION_DEV_MODEL:-gpt-5.6-terra}"
 # 1 iteration あたりの Codex 実行 turn 数上限（NFR 1.1）。
 PR_ITERATION_MAX_TURNS="${PR_ITERATION_MAX_TURNS:-60}"
 # 1 サイクルで処理する PR 数の上限（残りは次回サイクルに持ち越し、AC 1.6 / NFR 1.2）。
@@ -926,7 +926,7 @@ PATH_OVERLAP_VISIBILITY_LOCK_FILE="${PATH_OVERLAP_VISIBILITY_LOCK_FILE:-${LOG_DI
 
 # モデル設定
 TRIAGE_MODEL="${TRIAGE_MODEL:-gpt-5.6-luna}"   # Triage は軽量モデルで十分（gpt-5.4 系は 2026-07-23 引退 / #168）
-DEV_MODEL="${DEV_MODEL:-gpt-5.5}"
+DEV_MODEL="${DEV_MODEL:-gpt-5.6-terra}"
 TRIAGE_MAX_TURNS="${TRIAGE_MAX_TURNS:-15}"
 DEV_MAX_TURNS="${DEV_MAX_TURNS:-60}"
 # Indexer は Developer と同じモデル運用方針を既定にし、明示 override を許可する。
@@ -936,7 +936,7 @@ CONTEXT_INDEXER_MAX_TURNS="${CONTEXT_INDEXER_MAX_TURNS:-10}"
 # ─── Reviewer subagent 設定 (#20 Phase 1) ───
 # impl 系モード（impl / impl-resume）の Developer 完了後に独立 context で起動する
 # Reviewer サブエージェント用の env。既存の TRIAGE_* / DEV_* と独立に扱う。
-REVIEWER_MODEL="${REVIEWER_MODEL:-gpt-5.5}"
+REVIEWER_MODEL="${REVIEWER_MODEL:-gpt-5.6-terra}"
 REVIEWER_MAX_TURNS="${REVIEWER_MAX_TURNS:-30}"
 # Issue #149（idd-claude #442 移植 / 「拡張 turn リトライ」→「拡張 timeout リトライ」に読み替え）:
 # Codex CLI には `--max-turns` が無く *_MAX_TURNS は事実上無効なため、独立 Reviewer の予算切れは
@@ -959,10 +959,10 @@ REVIEWER_TIMEOUT_EXTENDED_SEC="${REVIEWER_TIMEOUT_EXTENDED_SEC:-}"
 # 詳細は docs/specs/22-phase-3-debugger-subagent-codex-blocked-2-reje/design.md を参照。
 #
 # - DEBUGGER_ENABLED:    本機能の opt-in gate。`=true` 厳密一致のみ有効（既定 `false`）。
-# - DEBUGGER_MODEL:      Debugger CLI に渡すモデル ID（既定 `gpt-5.5`）。
+# - DEBUGGER_MODEL:      Debugger CLI に渡すモデル ID（既定 `gpt-5.6-terra`）。
 # - DEBUGGER_MAX_TURNS:  Debugger CLI の `--max-turns` 値（既定 `40`、web search 含む）。
 DEBUGGER_ENABLED="${DEBUGGER_ENABLED:-false}"
-DEBUGGER_MODEL="${DEBUGGER_MODEL:-gpt-5.5}"
+DEBUGGER_MODEL="${DEBUGGER_MODEL:-gpt-5.6-terra}"
 DEBUGGER_MAX_TURNS="${DEBUGGER_MAX_TURNS:-40}"
 # Debugger stage で codex の live web search（native `web_search` tool）を有効化する (#17)。
 # Debugger の存在意義は外部ライブラリ ABI 等の root-cause を web search で究明することだが、
