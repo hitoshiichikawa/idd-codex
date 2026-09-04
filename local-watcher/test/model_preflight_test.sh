@@ -160,6 +160,21 @@ assert_eq "known model unparsable codex version returns rc 78" "78" "$(cat "$cap
 assert_contains "unparsable log includes extraction reason" "$(cat "$capture.stderr")" "version-unparseable"
 
 reset_env
+export STUB_CODEX_MODE="fail"
+capture="$TMP_DIR/version-command-failed"
+run_preflight_capture "stage-a" "gpt-5.6-luna" "$capture"
+assert_eq "known model codex version command failure returns rc 78" "78" "$(cat "$capture.rc")"
+assert_contains "command failure log includes reason" "$(cat "$capture.stderr")" "codex-version-command-failed"
+
+reset_env
+export CODEX_BIN="$TMP_DIR/missing-codex"
+capture="$TMP_DIR/codex-command-not-found"
+run_preflight_capture "stage-a" "gpt-5.6-luna" "$capture"
+assert_eq "known model missing codex command returns rc 78" "78" "$(cat "$capture.rc")"
+assert_contains "command-not-found log includes reason" "$(cat "$capture.stderr")" "codex-command-not-found"
+export CODEX_BIN="$TMP_DIR/codex-bin"
+
+reset_env
 export MODEL_PREFLIGHT_ENABLED="false"
 export STUB_CODEX_MODE="fail"
 capture="$TMP_DIR/disabled"
