@@ -1043,6 +1043,16 @@ PR_ITERATION_REASONING_EFFORT="${PR_ITERATION_REASONING_EFFORT:-high}"
 # allowlist 内のため、未設定 / 正しい値の環境では導入前と外形等価（後方互換）。
 CODEX_ALLOW_ULTRA_EFFORT="${CODEX_ALLOW_ULTRA_EFFORT:-false}"
 
+# ─── Cost Estimate 設定 (#176) ───
+# quota-aware の per-stage token サマリ（`stage tokens ...`）に、モデル ID → 単価表から算出した
+# 推定 USD を `model=<id> cost_usd=<usd>` として併記し、run-summary 行末尾に `cost-usd=<合算>` /
+# `cost-unknown-stages=<n>` を追加する。純粋なログ拡張で挙動影響ゼロのため既定 有効。
+# `=false` 厳密一致で無効化（両ログ行は導入前と byte 一致）。単価表に無いモデルは `cost_usd=unknown`。
+# 単価表 override: `COST_ESTIMATE_PRICE_TABLE="model=input:cached:output,..."`（per 1M tokens, USD）。
+# 既定表と出典日付は idd-codex-modules/cost-estimate.sh の冒頭コメント参照。
+COST_ESTIMATE_ENABLED="${COST_ESTIMATE_ENABLED:-true}"
+COST_ESTIMATE_PRICE_TABLE="${COST_ESTIMATE_PRICE_TABLE:-}"
+
 # ─── Quota-Aware Watcher 設定 (#66) ───
 # Codex Max の 5 時間ローリング quota を codex CLI の `rate_limit_event` JSON で
 # 検知し、quota 起因の停止と他失敗を `codex-needs-quota-wait` ラベルで分離する。
@@ -1423,7 +1433,7 @@ IDD_MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)/id
 # 3 プロセッサ（quota-aware / merge-queue / auto-rebase）、#181 Part 3 で切り出した
 # 3 プロセッサ（promote-pipeline / pr-iteration / stage-a-verify）を並べ、末尾に
 # #238 の scaffolding-health.sh と #239 の per-run evidence サマリ（run-summary.sh）を置く。
-REQUIRED_MODULES=( "core_utils.sh" "env-loader.sh" "guard-hook.sh" "quota-aware.sh" "merge-queue.sh" "auto-rebase.sh" "auto-merge.sh" "auto-merge-design.sh" "auto-merge-disarm.sh" "failed-recovery.sh" "needs-decisions-auto.sh" "slack-notify.sh" "stale-pickup-reaper.sh" "promote-pipeline.sh" "pr-iteration.sh" "pr-reviewer.sh" "adjudicator.sh" "stage-a-verify.sh" "scaffolding-health.sh" "context-map.sh" "run-summary.sh" "effort-guard.sh" "design-reconcile.sh" )
+REQUIRED_MODULES=( "core_utils.sh" "env-loader.sh" "guard-hook.sh" "quota-aware.sh" "merge-queue.sh" "auto-rebase.sh" "auto-merge.sh" "auto-merge-design.sh" "auto-merge-disarm.sh" "failed-recovery.sh" "needs-decisions-auto.sh" "slack-notify.sh" "stale-pickup-reaper.sh" "promote-pipeline.sh" "pr-iteration.sh" "pr-reviewer.sh" "adjudicator.sh" "stage-a-verify.sh" "scaffolding-health.sh" "context-map.sh" "run-summary.sh" "effort-guard.sh" "design-reconcile.sh" "cost-estimate.sh" )
 for _idd_mod in "${REQUIRED_MODULES[@]}"; do
   _idd_mod_path="$IDD_MODULE_DIR/$_idd_mod"
   if [ ! -f "$_idd_mod_path" ]; then

@@ -10,7 +10,8 @@
 #   通常 pickup ループに戻す。
 #   - qa_detect_rate_limit  : stream-json を fold して quota 枯渇イベントを検出
 #   - qa_detect_rate_limit_rollout : session rollout の rate_limits から quota reached を検出（#79 / codex 本筋）
-#   - qa_log_token_usage    : turn.completed.usage を集計して per-stage token サマリをログ（#83 観測性）
+#   - qa_log_token_usage    : turn.completed.usage を集計して per-stage token サマリをログ（#83 観測性。
+#                             #176: cost-estimate.sh ロード時は model / cost_usd を同一行末尾に併記）
 #   - qa_detect_collab_spawn_failures : collab subagent spawn failure を検出
 #   - qa_run_codex_stage   : Stage 実行 wrapper（tee + 検出 + exit 99 sentinel）
 #   - qa_persist_reset_time : reset 時刻の永続化（Issue 番号 keyed JSON）
@@ -471,6 +472,9 @@ qa_detect_rate_limit_rollout() {
 qa_log_token_usage() {
   local stage_label="$1"
   local stream_file="$2"
+  # Issue #176: 第 3 引数はモデル ID（任意）。cost-estimate.sh が読み込まれていれば
+  # 推定 USD を `model=... cost_usd=...` として同一行末尾に併記する（未指定 / 未知は unknown）。
+  local model="${3:-}"
   [ -n "${stream_file:-}" ] && [ -f "$stream_file" ] || return 0
   command -v jq >/dev/null 2>&1 || return 0
 
@@ -492,7 +496,18 @@ qa_log_token_usage() {
             printf "input=%d cached_input=%d output=%d reasoning=%d total=%d turns=%d", i, c, o, r, i + o, n
         }')
 
-  [ -n "$summary" ] && qa_log "stage tokens label=$stage_label $summary"
+  [ -n "$summary" ] || return 0
+
+  # Issue #176: 推定コストの併記（cost-estimate.sh 未ロード時は従来の行そのまま / 後方互換）。
+  local cost_suffix=""
+  if declare -F ce_stage_cost_suffix >/dev/null 2>&1; then
+    local _in=0 _cached=0 _out=0
+    if [[ "$summary" =~ input=([0-9]+)\ cached_input=([0-9]+)\ output=([0-9]+) ]]; then
+      _in="${BASH_REMATCH[1]}"; _cached="${BASH_REMATCH[2]}"; _out="${BASH_REMATCH[3]}"
+    fi
+    cost_suffix="$(ce_stage_cost_suffix "$model" "$_in" "$_cached" "$_out")"
+  fi
+  qa_log "stage tokens label=$stage_label ${summary}${cost_suffix}"
   return 0
 }
 
@@ -534,6 +549,12 @@ qa_run_codex_stage() {
   local codex_rc=0 attempt=1 max_attempts=2 retry_after_collab="false"
   local stream_file="${reset_file}.stream"
   : > "$stream_file"
+  # Issue #176: wrapped command（codex_exec_prompt <label> <model> <prompt> / 素の codex -m <model>）から
+  # モデル ID を抽出し、token サマリの推定コスト算出に渡す（抽出不能なら空 → cost_usd=unknown）。
+  local _qa_model=""
+  if declare -F ce_model_from_args >/dev/null 2>&1; then
+    _qa_model="$(ce_model_from_args "$@")"
+  fi
 
   while [ "$attempt" -le "$max_attempts" ]; do
     : > "$detect_file"
@@ -580,7 +601,7 @@ qa_run_codex_stage() {
   fi
 
   # per-stage token テレメトリ（#83 観測性）。codex の turn.completed.usage を集計してログする。
-  qa_log_token_usage "$stage_label" "$stream_file"
+  qa_log_token_usage "$stage_label" "$stream_file" "$_qa_model"
 
   # 検出 TSV を解釈する。
   # 優先順位:

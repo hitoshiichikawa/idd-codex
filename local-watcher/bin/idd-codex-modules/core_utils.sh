@@ -246,6 +246,19 @@ dnr_error() {
   echo "[$(date '+%F %T')] [$REPO] design-reconcile: ERROR: $*" >&2
 }
 
+# Cost Estimate 専用ロガー（Issue #176 / 既存 qa_log 系と同形式）。
+# `[YYYY-MM-DD HH:MM:SS] [$REPO] cost-estimate:` prefix。ce_warn / ce_error は `>&2`。
+# 関数本体は idd-codex-modules/cost-estimate.sh に配置。
+ce_log() {
+  echo "[$(date '+%F %T')] [$REPO] cost-estimate: $*"
+}
+ce_warn() {
+  echo "[$(date '+%F %T')] [$REPO] cost-estimate: WARN: $*" >&2
+}
+ce_error() {
+  echo "[$(date '+%F %T')] [$REPO] cost-estimate: ERROR: $*" >&2
+}
+
 # secure tempfile helper（Issue #52 Req 5）
 #
 # prompt / JSON / stderr / quota reset state などを置く一時ファイルを、repo ごとに

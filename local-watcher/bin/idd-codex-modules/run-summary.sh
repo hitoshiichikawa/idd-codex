@@ -73,6 +73,10 @@ rs_init() {
   RUN_SUMMARY_DEGRADED_EVENTS=''  # degraded-events= 内部蓄積（空=none として emit）
   RUN_SUMMARY_WARNINGS=''         # warnings= 内部蓄積（空=none として emit）
   RUN_SUMMARY_RESULT='unknown'    # result= 既定（最終遷移未確定）
+  # Issue #176: 推定コスト合算（cost-estimate.sh ロード時のみ。未ロードなら何もしない）
+  if declare -F ce_reset_run_totals >/dev/null 2>&1; then
+    ce_reset_run_totals
+  fi
   return 0
 }
 
@@ -323,7 +327,13 @@ rs_emit() {
   warnings="${RUN_SUMMARY_WARNINGS:-}"
   [ -z "$warnings" ] && warnings='none'
   result="${RUN_SUMMARY_RESULT:-unknown}"
+  # Issue #176: 推定コスト合算を末尾に追加（cost-estimate.sh 未ロード / COST_ESTIMATE_ENABLED=false なら
+  # 空文字 → 既存フォーマット完全不変）。fail-open。
+  local cost_suffix=""
+  if declare -F ce_run_summary_suffix >/dev/null 2>&1; then
+    cost_suffix="$(ce_run_summary_suffix 2>/dev/null || true)"
+  fi
 
-  echo "[${ts}] [${repo}] run-summary: issue=${issue} mode=${mode} stages=${stages} reviewer=${reviewer} stage-a-verify=${sav} scaffolding=${scaffolding} errors=${errors} degraded-events=${degraded_events} warnings=${warnings} result=${result}" || true
+  echo "[${ts}] [${repo}] run-summary: issue=${issue} mode=${mode} stages=${stages} reviewer=${reviewer} stage-a-verify=${sav} scaffolding=${scaffolding} errors=${errors} degraded-events=${degraded_events} warnings=${warnings} result=${result}${cost_suffix}" || true
   return 0
 }
