@@ -62,49 +62,7 @@ guard_resolve_config_file() {
 }
 
 guard_compare_semver() {
-  local a="$1"
-  local b="$2"
-  local IFS='.'
-  # shellcheck disable=SC2206
-  local -a aa=($a)
-  # shellcheck disable=SC2206
-  local -a bb=($b)
-  IFS=' '
-
-  _guard_seg() {
-    local s="${1:-0}"
-    local out=""
-    local i=0
-    while [ "$i" -lt "${#s}" ]; do
-      local c="${s:$i:1}"
-      case "$c" in
-        [0-9]) out+="$c" ;;
-        *) break ;;
-      esac
-      i=$((i + 1))
-    done
-    [ -z "$out" ] && out=0
-    printf '%s' "$out"
-  }
-
-  local a_major a_minor a_patch b_major b_minor b_patch
-  a_major="$(_guard_seg "${aa[0]:-0}")"
-  a_minor="$(_guard_seg "${aa[1]:-0}")"
-  a_patch="$(_guard_seg "${aa[2]:-0}")"
-  b_major="$(_guard_seg "${bb[0]:-0}")"
-  b_minor="$(_guard_seg "${bb[1]:-0}")"
-  b_patch="$(_guard_seg "${bb[2]:-0}")"
-
-  case "$a_major$a_minor$a_patch$b_major$b_minor$b_patch" in
-    *[!0-9]*) return 2 ;;
-  esac
-
-  if [ "$a_major" -gt "$b_major" ]; then return 0; fi
-  if [ "$a_major" -lt "$b_major" ]; then return 1; fi
-  if [ "$a_minor" -gt "$b_minor" ]; then return 0; fi
-  if [ "$a_minor" -lt "$b_minor" ]; then return 1; fi
-  if [ "$a_patch" -ge "$b_patch" ]; then return 0; fi
-  return 1
+  idd_compare_semver "$1" "$2"
 }
 
 guard_export_env() {
@@ -130,7 +88,7 @@ guard_preflight() {
 
   local raw_version detected
   raw_version="$("$CODEX_BIN" --version 2>/dev/null || true)"
-  detected="$(printf '%s' "$raw_version" | awk '{ for (i=1; i<=NF; i++) if ($i ~ /^[0-9]+\.[0-9]+/) { print $i; exit } }')"
+  detected="$(idd_extract_semver "$raw_version" || true)"
   if [ -z "$detected" ]; then
     guard_error "codex --version の出力から version を抽出できませんでした（raw='$raw_version'）"
     guard_error "Codex CLI が正常か確認し、IDD_CODEX_HOOKS_MIN_VERSION の前提を見直してください"

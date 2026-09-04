@@ -259,6 +259,106 @@ ce_error() {
   echo "[$(date '+%F %T')] [$REPO] cost-estimate: ERROR: $*" >&2
 }
 
+# version 文字列から最初の MAJOR.MINOR[.PATCH] を抽出して MAJOR.MINOR.PATCH に正規化する。
+# prerelease / build metadata など patch 以降の非数値 suffix は切り捨て、patch 欠落は 0 と扱う。
+# Args:
+#   $1 = raw version text（例: "codex-cli 0.144.0-beta.1"）
+# Stdout:
+#   X.Y.Z
+# Returns:
+#   0 = extracted / 1 = not found
+idd_extract_semver() {
+  local raw="${1:-}"
+  local extracted
+  extracted="$(printf '%s\n' "$raw" | awk '
+    {
+      for (i = 1; i <= NF; i++) {
+        if (match($i, /[0-9]+\.[0-9]+(\.[0-9]+)?/)) {
+          v = substr($i, RSTART, RLENGTH)
+          n = split(v, parts, ".")
+          if (n == 2) {
+            print parts[1] "." parts[2] ".0"
+          } else {
+            print parts[1] "." parts[2] "." parts[3]
+          }
+          exit
+        }
+      }
+    }
+  ')"
+  if [ -z "$extracted" ]; then
+    return 1
+  fi
+  printf '%s' "$extracted"
+  return 0
+}
+
+_idd_semver_segment_prefix() {
+  local segment="${1:-}"
+  local out=""
+  local i=0
+  while [ "$i" -lt "${#segment}" ]; do
+    local c="${segment:$i:1}"
+    case "$c" in
+      [0-9]) out+="$c" ;;
+      *) break ;;
+    esac
+    i=$((i + 1))
+  done
+  if [ -z "$out" ]; then
+    return 1
+  fi
+  printf '%s' "$out"
+}
+
+_idd_semver_normalize_for_compare() {
+  local version="${1:-}"
+  local IFS='.'
+  # shellcheck disable=SC2206
+  local -a parts=($version)
+  IFS=' '
+  if [ -z "${parts[0]:-}" ] || [ -z "${parts[1]:-}" ]; then
+    return 1
+  fi
+
+  local major minor patch
+  major="$(_idd_semver_segment_prefix "${parts[0]}")" || return 1
+  minor="$(_idd_semver_segment_prefix "${parts[1]}")" || return 1
+  if [ -n "${parts[2]:-}" ]; then
+    patch="$(_idd_semver_segment_prefix "${parts[2]}")" || return 1
+  else
+    patch="0"
+  fi
+
+  printf '%s %s %s' "$major" "$minor" "$patch"
+}
+
+# semver を actual >= required の関係で比較する。
+# prerelease / build metadata などの非数値 suffix は major / minor / patch の数値 prefix のみを使う。
+# Args:
+#   $1 = actual version
+#   $2 = required minimum version
+# Returns:
+#   0 = actual >= required / 1 = actual < required / 2 = comparison invalid
+idd_compare_semver() {
+  local actual="${1:-}"
+  local required="${2:-}"
+  local actual_norm required_norm
+  actual_norm="$(_idd_semver_normalize_for_compare "$actual")" || return 2
+  required_norm="$(_idd_semver_normalize_for_compare "$required")" || return 2
+
+  local a_major a_minor a_patch r_major r_minor r_patch
+  read -r a_major a_minor a_patch <<<"$actual_norm"
+  read -r r_major r_minor r_patch <<<"$required_norm"
+
+  if [ "$a_major" -gt "$r_major" ]; then return 0; fi
+  if [ "$a_major" -lt "$r_major" ]; then return 1; fi
+  if [ "$a_minor" -gt "$r_minor" ]; then return 0; fi
+  if [ "$a_minor" -lt "$r_minor" ]; then return 1; fi
+  if [ "$a_patch" -ge "$r_patch" ]; then return 0; fi
+  return 1
+}
+
 # secure tempfile helper（Issue #52 Req 5）
 #
 # prompt / JSON / stderr / quota reset state などを置く一時ファイルを、repo ごとに

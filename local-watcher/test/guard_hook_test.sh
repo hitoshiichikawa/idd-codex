@@ -9,9 +9,19 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOK_SH="$SCRIPT_DIR/../hooks/idd-codex-guard.sh"
+CORE_UTILS_SH="$SCRIPT_DIR/../bin/idd-codex-modules/core_utils.sh"
+GUARD_MODULE_SH="$SCRIPT_DIR/../bin/idd-codex-modules/guard-hook.sh"
 
 if [ ! -x "$HOOK_SH" ]; then
   echo "ERROR: cannot execute hook script at $HOOK_SH" >&2
+  exit 2
+fi
+if [ ! -f "$CORE_UTILS_SH" ]; then
+  echo "ERROR: cannot find core_utils.sh at $CORE_UTILS_SH" >&2
+  exit 2
+fi
+if [ ! -f "$GUARD_MODULE_SH" ]; then
+  echo "ERROR: cannot find guard-hook.sh at $GUARD_MODULE_SH" >&2
   exit 2
 fi
 if ! command -v jq >/dev/null 2>&1; then
@@ -29,6 +39,11 @@ mkdir -p "$IDD_CODEX_HOOKS_DIR" "$(dirname "$IDD_CODEX_HOOKS_CONFIG_FILE")"
 
 PASS_COUNT=0
 FAIL_COUNT=0
+
+# shellcheck source=../bin/idd-codex-modules/core_utils.sh
+. "$CORE_UTILS_SH"
+# shellcheck source=../bin/idd-codex-modules/guard-hook.sh
+. "$GUARD_MODULE_SH"
 
 json_bash() {
   jq -n --arg cmd "$1" '{tool_name:"Bash", tool_input:{command:$cmd}}'
@@ -69,6 +84,40 @@ assert_decision() {
     echo "  expected: $expected"
     echo "  actual  : $actual"
     echo "  output  : $out"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  fi
+}
+
+assert_stdout() {
+  local label="$1"
+  local expected="$2"
+  shift 2
+  local out
+  out="$("$@")"
+  if [ "$out" = "$expected" ]; then
+    echo "PASS: $label"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    echo "FAIL: $label"
+    echo "  expected: $expected"
+    echo "  actual  : $out"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  fi
+}
+
+assert_rc() {
+  local label="$1"
+  local expected="$2"
+  shift 2
+  local actual=0
+  "$@" >/dev/null 2>&1 || actual=$?
+  if [ "$actual" = "$expected" ]; then
+    echo "PASS: $label (rc=$actual)"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    echo "FAIL: $label"
+    echo "  expected rc: $expected"
+    echo "  actual rc  : $actual"
     FAIL_COUNT=$((FAIL_COUNT + 1))
   fi
 }
@@ -120,6 +169,41 @@ assert_decision "allow legit push after no-op prefix" "allow" "$(json_bash "true
 assert_decision "allow bash -c with test command" "allow" "$(json_bash 'bash -c "npm test && npm run build"')"
 assert_decision "allow rm in repo (non-protected)" "allow" "$(json_bash "rm -rf node_modules")"
 assert_decision "allow read of protected path" "allow" "$(json_bash "cat $IDD_CODEX_HOOKS_DIR/idd-codex-guard.sh")"
+
+# Issue #175 Task 1: shared semver helper regression.
+assert_stdout "extract semver from codex --version output" "0.144.1" idd_extract_semver "codex-cli 0.144.1"
+assert_rc "extract semver rejects missing version" "1" idd_extract_semver "codex-cli dev"
+assert_rc "semver equal passes" "0" idd_compare_semver "0.144.0" "0.144.0"
+assert_rc "semver greater passes" "0" idd_compare_semver "0.145.0" "0.144.9"
+assert_rc "semver lesser fails" "1" idd_compare_semver "0.143.9" "0.144.0"
+assert_rc "semver missing patch defaults to zero" "0" idd_compare_semver "0.144" "0.144.0"
+assert_rc "semver suffix uses numeric prefix" "0" idd_compare_semver "0.144.0-beta.1" "0.144.0"
+assert_rc "semver invalid actual is comparison error" "2" idd_compare_semver "dev" "0.144.0"
+assert_rc "guard semver wrapper delegates shared helper" "0" guard_compare_semver "0.144.0-nightly" "0.144.0"
+
+STUB_CODEX="$TMP_DIR/codex-bin"
+cat >"$STUB_CODEX" <<'STUB'
+#!/usr/bin/env bash
+printf 'codex-cli %s\n' "${STUB_CODEX_VERSION:-0.144.0}"
+STUB
+chmod +x "$STUB_CODEX"
+cat >"$IDD_CODEX_HOOKS_DIR/idd-codex-guard.sh" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+printf '{"hookSpecificOutput":{"permissionDecision":"allow"}}\n'
+STUB
+chmod +x "$IDD_CODEX_HOOKS_DIR/idd-codex-guard.sh"
+printf 'command = "%s/idd-codex-guard.sh"\n' "$IDD_CODEX_HOOKS_DIR" >"$IDD_CODEX_HOOKS_CONFIG_FILE"
+
+export REPO="owner/repo"
+export CODEX_BIN="$STUB_CODEX"
+export IDD_CODEX_HOOKS_ENABLED="true"
+export IDD_CODEX_HOOKS_MIN_VERSION="0.144.0"
+export IDD_CODEX_HOOKS_CONFIG_DIR="$TMP_DIR/codex"
+export STUB_CODEX_VERSION="0.143.9"
+assert_rc "guard preflight rejects older codex version" "11" guard_preflight
+export STUB_CODEX_VERSION="0.144.0-beta.1"
+assert_rc "guard preflight accepts equal version with suffix" "0" guard_preflight
 
 echo ""
 echo "==========================================="
