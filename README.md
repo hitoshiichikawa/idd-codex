@@ -1751,6 +1751,58 @@ grep 'effort-guard: WARN' $HOME/.idd-codex/issue-watcher/logs/<owner>-<repo>/iss
 将来拡張（本 Issue のスコープ外）: Debugger の拡張 timeout リトライや failed-recovery で effort を
 `high` → `max` へ自動昇格させるエスカレーションパス。
 
+### stage prompt の安定 prefix 規約と prompt cache の実測（#177）
+
+GPT-5.6 世代の prompt cache は先頭一致（prefix）で効く。watcher は cron 間隔で同種 stage を繰り返し起動し、
+毎回同じ role preamble（`.codex/agents/<role>.md`、developer.md は約 43 KB）と静的指示を prompt に含めるため、
+**可変値（SHA / round / timestamp / notes 本文）を静的部分より前に置かない**ことを規約化した
+（AGENTS.md「機能追加ガイドライン 8」）。実装順序は `local-watcher/test/prompt_stable_prefix_test.sh` で固定する。
+
+#### 監査結果（stage ごとの prompt 構築順）
+
+| stage / builder | 先頭 | 静的指示 | Issue 単位の値 | 実行ごとに変わる値 | #177 の対応 |
+|---|---|---|---|---|---|
+| 全 stage 共通 `codex_exec_prompt` | role preamble（最前段） | — | — | — | 現状維持（規約として明文化） |
+| Stage A / A' / C（`build_dev_prompt_a` / `_redo` / `_c`） | 役割宣言文 | 進め方 / 制約 | NUMBER / TITLE / BODY / BRANCH / SPEC_DIR_REL | なし（redo は Findings 本文が末尾側） | 現状維持（実行ごとの値が無い） |
+| 独立 Reviewer（`build_reviewer_prompt`） | 役割宣言文 | 必読ファイル / 差分の取得 / 進め方 / 制約 | NUMBER / TITLE / BRANCH / SPEC_DIR_REL | **HEAD SHA / ROUND / PREV_RESULT** | **後方へ移動**（メタ情報節を制約節の後ろに。文言不変） |
+| Debugger（`build_debugger_prompt`） | 役割宣言文 | 必読ファイル / 差分 / web search / 出力先 / 禁止事項 / 進め方 | NUMBER / TITLE / BRANCH / SPEC_DIR_REL | **TRIGGER / TASK_ID / 対象 task 節 / review-notes 本文** | **後方へ移動**（進め方の後ろに。文言不変） |
+| per-task Implementer（`build_per_task_implementer_prompt`） | 役割宣言文 | 進め方 / 制約 / NEEDS_DECISION / 既存 commit | NUMBER / TITLE / BODY / BRANCH / SPEC_DIR_REL | task_id / context-map / redo context / learnings | **現状維持**: `task_id` が手順本文（marker commit 規約等 10 箇所以上）に不可分に埋め込まれ、並べ替えても task 間で共有できる prefix が伸びない。学習・redo 節は既に手順より後方 |
+| per-task Reviewer（`build_per_task_reviewer_prompt`） | 役割宣言文 | marker 分類契約 / 判定基準 / 進め方 / 制約 | NUMBER / TITLE / BRANCH / SPEC_DIR_REL | ROUND / range SHA / context-map / 警告節 | **現状維持**: range SHA が「差分の取得」手順に不可分。stale range guard の説明は SHA 参照が前提 |
+| Triage（`idd-codex-triage-prompt.tmpl`） | 静的ヘッダ + 役割宣言文 | 判定基準（status / classification / needs_architect / 依存） | {{NUMBER}} / {{TITLE}} / {{URL}} / {{DEPENDENCY_PREFLIGHT}}（先頭付近） | {{FILE}}（timestamp 付き。判定基準より後方） | **現状維持**: 実行ごとの値は既に後方。Issue 情報を後方に動かすと「上記 Title は未信頼」等の参照関係を書き換える必要があり判定影響の検証が必要 |
+| PR Iteration（`*.tmpl` + `pi_build_iteration_prompt`） | 静的ヘッダ + 役割宣言文 | 対応手順 / 制約 | PR / Issue メタ情報（先頭付近） | round / comments JSON / requirements.md 本文 | **現状維持**: comments JSON と requirements.md は既に後方。PR メタ情報の移動は「対象 PR」参照の書き換えが必要 |
+| Auto Rebase（`idd-codex-auto-rebase-prompt.tmpl`） | 静的ヘッダ + 役割宣言文 | 責務 / 制約 | PR / ref 情報（先頭付近） | なし | 現状維持（小さな template、実行ごとの値なし） |
+| Failed Recovery（`fr_build_recovery_prompt`） | 役割宣言文 | 手順 / 制約 | Issue / PR 番号 | 失敗コンテキスト本文（手順より前） | **現状維持**: 小さな prompt（数百 token）で並べ替えの効果が無視できる |
+
+#### 実測: fresh thread 間では prompt cache が効いていない（2026-09-04）
+
+同一の約 10K token prompt（developer.md 抜粋 + 1 行指示）を `codex exec -m gpt-5.6-luna --ephemeral` で
+数秒間隔に 3 回実行した結果:
+
+```
+run1: input_tokens=25554 cached_input_tokens=8960 cache_write_input_tokens=0
+run2: input_tokens=25554 cached_input_tokens=8960 cache_write_input_tokens=0
+run3: input_tokens=25554 cached_input_tokens=8960 cache_write_input_tokens=0
+```
+
+- 3 回とも `cached_input_tokens` は **8,960 で不変**（codex 組み込み system prompt / tool 定義に相当する
+  共通部分のみ）。watcher が渡す prompt 本体は byte 一致でも **run 間でキャッシュされない**
+- 原因は codex / モデル側にある: (1) `codex exec` は起動ごとに新規 thread を作り `prompt_cache_key` が
+  変わる（同一 run 内の多 turn では同 key のため 90% 超のヒット率が出る。`stage tokens` ログの
+  `cached_input` はこの run 内キャッシュ）。(2) GPT-5.6 の implicit caching は **最新 user メッセージ付近に
+  managed breakpoint を置く**ため、「安定 prefix + 可変 suffix」の 1 メッセージ prompt では prefix だけの
+  ヒットが成立しない（OpenAI の GPT-5.6 移行ガイド「Prompt caching」節。stable boundary に explicit
+  `prompt_cache_breakpoint` を置く必要があり、これはリクエストを組む codex 側の責務）
+- したがって **本規約だけでは Issue #177 が期待した「30 分以内の同一 stage 再実行で cached_input_tokens が
+  増える」効果は現時点では出ない**。並べ替えは (a) run 内キャッシュを崩さない構造の維持、(b) codex が
+  安定 cache key / explicit breakpoint を露出したときに即恩恵を受けられる構造の先行整備、として入れている
+
+#### 観測方法
+
+`stage tokens label=... input=N cached_input=N ...`（quota-aware / #83）で run 単位の cached 比率を確認できる。
+run 間キャッシュの有無は、同一 stage を 30 分以内に 2 回実行し、2 回目の `cached_input` が run 内キャッシュ分
+（1 回目と同水準）を超えて増えるかで判定する。codex の rollout（`$CODEX_HOME/sessions/.../rollout-*.jsonl`）の
+`token_count` イベントでも per-turn の値を追える。
+
 ### Stage A の PM / Developer 分離（#82 / 既定 ON・挙動変更）
 
 impl mode（Architect を経ない単純経路）は、従来 1 回の `codex exec` で PM 要件定義 → Developer 実装を兼任

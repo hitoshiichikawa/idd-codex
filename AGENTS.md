@@ -267,6 +267,31 @@ skill や `gh` を **手動で**実行する（watcher の自動処理として�
 - 挙動を変えたら **同一 PR で** README の該当節 + AGENTS.md + 該当 rule を更新する（二重管理規約）。
 - 新規 env var は README「オプション機能一覧」表に追記する。
 
+### 8. stage prompt の安定 prefix 規約（prompt cache 最適化 / #177）
+
+codex へ渡す各 stage prompt は、**先頭から「変わらない順」** に組み立てる。prompt cache は
+先頭一致（prefix）で効くため、可変値が前に混入した位置で以降のキャッシュ再利用が途切れる。
+
+- **順序**: (1) role preamble（`codex_build_role_preamble` / 全 stage 共通の最前段。`codex_exec_prompt` が
+  自動で先頭に付ける） → (2) stage 固有の静的指示（見出し・手順・制約・出力契約） → (3) Issue 単位で
+  一定の値（`NUMBER` / `TITLE` / `BODY` / `BRANCH` / `SPEC_DIR_REL` / `BASE_BRANCH`） → (4) 実行ごとに
+  変わる値（HEAD SHA / round / prev_result / task ID・diff range / learnings / review-notes・debugger-notes
+  本文 / context-map / timestamp 付きファイルパス）。
+- **禁止**: timestamp / SHA / round カウンタ / 乱数 / 生成 JSON など実行ごとに変わる値を、静的指示や
+  role preamble より **前** に置かない。新しい変数を template / builder に追加するときは、既存の
+  静的節の **後ろ** に足す（先頭のヘッダコメント `# ===` ブロックや冒頭の役割宣言文を崩さない）。
+- **挙動等価が最優先**: 並べ替えで判定・成果物契約（JSON スキーマ / `RESULT:` 行 / 必須セクション）に
+  影響しうる箇所は現状維持でよい。その場合は理由をコード or README に記録する
+  （例: per-task Implementer は `task_id` が手順本文に不可分に埋め込まれるため現状維持）。
+- **回帰テスト**: 並べ替えは `local-watcher/test/prompt_stable_prefix_test.sh` の順序 assertion で固定する。
+  prompt 構造を変える PR は同テストを更新する。
+- **限界の認識**: `codex exec` は起動ごとに新規 thread（= 新規 `prompt_cache_key`）で、GPT-5.6 の implicit
+  caching は最新 user メッセージ付近に managed breakpoint を置くため、**本規約だけでは fresh thread 間の
+  cache hit は発生しない**（2026-09-04 実測: 同一 prompt を連続 3 回 `codex exec` しても `cached_input_tokens`
+  は codex 組み込み system 部分のみで不変）。本規約は同一 run 内の多 turn キャッシュを崩さないこと、および
+  codex 側が安定 cache key / explicit breakpoint を露出したときに即恩恵を受けられる構造を保つことが目的。
+  詳細は README「stage prompt の安定 prefix 規約と prompt cache の実測（#177）」節。
+
 ### 既知の技術債（増やさない／徐々に解消する）
 
 - `idd-codex-issue-watcher.sh` は 8500 行超の monolith で、triage / dispatch / slot / stage 制御が

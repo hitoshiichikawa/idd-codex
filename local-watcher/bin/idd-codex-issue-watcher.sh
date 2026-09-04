@@ -1370,6 +1370,9 @@ codex_exec_prompt() {
 
   # Codex には subagent 自動ロードが無いため、本 stage の役割定義（.codex/agents/<role>.md）を
   # prompt 先頭に注入する。空（注入なし / Triage 等）なら素の prompt をそのまま使う。
+  # Issue #177（安定 prefix 規約）: role preamble は全 stage prompt の **最前段** に置く。各 builder は
+  # 「静的指示 → Issue 単位で一定の値（NUMBER / BRANCH / SPEC_DIR_REL）→ 実行ごとに変わる値
+  # （HEAD SHA / round / task 範囲 / learnings / notes 本文）」の順で組み立てる（AGENTS.md 機能追加ガイドライン 8）。
   local role_preamble
   role_preamble="$(codex_build_role_preamble "$stage_label")"
   if [ -n "$role_preamble" ]; then
@@ -6297,17 +6300,6 @@ fresh な Codex CLI セッションで起動されました。
 
 $(build_issue_context_block false true)
 
-## 作業ブランチ / spec ディレクトリ
-- BRANCH       : ${BRANCH}
-- BASE_BRANCH  : ${BASE_BRANCH}
-- SPEC_DIR_REL : ${SPEC_DIR_REL}
-- TRIGGER      : ${trigger}
-- TASK_ID      : ${task_id:-(none / Issue 単位)}
-
-${task_block}
-
-${review_notes_block}
-
 ## 必読ファイル
 
 debugger サブエージェントを起動し、以下を **必ず** Read してください:
@@ -6390,6 +6382,17 @@ fi )
 6. 具体的な修正手順を Developer が機械的に実施できる粒度で書く
 7. 検証方法（テストコマンド / 期待挙動）を明示
 8. \`debugger-notes.md\` を上記フォーマットで Write（追記モード）して終了
+
+## 作業ブランチ / spec ディレクトリ（本起動の実行時値）
+- BRANCH       : ${BRANCH}
+- BASE_BRANCH  : ${BASE_BRANCH}
+- SPEC_DIR_REL : ${SPEC_DIR_REL}
+- TRIGGER      : ${trigger}
+- TASK_ID      : ${task_id:-(none / Issue 単位)}
+
+${task_block}
+
+${review_notes_block}
 EOF
 }
 
@@ -6844,14 +6847,6 @@ Developer の実装が一段落したため、reviewer サブエージェント�
 
 $(build_issue_context_block false true)
 
-## 作業ブランチ / spec ディレクトリ
-- BRANCH       : ${BRANCH}
-- HEAD commit  : ${head_sha}
-- BASE_BRANCH  : ${BASE_BRANCH}
-- SPEC_DIR_REL : ${SPEC_DIR_REL}
-- ROUND        : ${round}
-- PREV_RESULT  : ${prev_result}
-
 ## 必読ファイル
 
 reviewer サブエージェントは着手前に以下を必ず Read してください:
@@ -6893,6 +6888,14 @@ reviewer サブエージェントを起動し、以下を判定して \`${SPEC_D
 - \`git add\` / \`git commit\` / \`git push\` / \`gh\` を実行しないこと（review-notes.md は次の
   Developer または PjM が commit します）
 - スタイル / 命名 / lint / フォーマットの観点での reject はしないこと
+
+## 作業ブランチ / spec ディレクトリ（本 round の実行時値）
+- BRANCH       : ${BRANCH}
+- HEAD commit  : ${head_sha}
+- BASE_BRANCH  : ${BASE_BRANCH}
+- SPEC_DIR_REL : ${SPEC_DIR_REL}
+- ROUND        : ${round}
+- PREV_RESULT  : ${prev_result}
 EOF
 }
 
