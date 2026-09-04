@@ -758,7 +758,8 @@ grep -E 'run-summary:.*(reviewer=degraded|scaffolding=missing|errors=yes|degrade
 grep 'degraded-events=.*collab_spawn_failed' $HOME/.idd-codex/issue-watcher/cron.log
 ```
 
-key=value の出現順は固定（`issue mode stages reviewer stage-a-verify scaffolding errors degraded-events warnings result`）で、
+key=value の出現順は固定（`issue mode stages reviewer stage-a-verify scaffolding errors degraded-events warnings result`。
+`COST_ESTIMATE_ENABLED`（既定 `true`）の環境では末尾に `cost-usd cost-unknown-stages` が続く / #176）で、
 value は空白を含まない ASCII 識別子です。`stages` はカンマ区切りの実行順集合で、`A'`（Stage A
 やり直し）は `Ap`、`B'`（round 2）は `Bp` と表記して区切り衝突を避けます。各 key が取りうる
 value の語彙は以下のとおりです:
@@ -775,6 +776,8 @@ value の語彙は以下のとおりです:
 | `degraded-events` | `none` / `collab_spawn_failed(stage=<stage>,role=<role>,reason=no_thread_with_id,fallback=<yes\|retry\|failed>,degraded=yes,repeated=<yes\|no>)`（複数時は `;` 区切り） | structured degraded event。collab subagent spawn failure では stage / agent role / failure reason / fallback / degraded 判定を保持 |
 | `warnings` | `none` / `collab_spawn_repeated`（複数時は `,` 区切り） | 同一 run 内で繰り返された degraded warning |
 | `result` | `codex-ready-for-review` / `codex-needs-iteration` / `codex-failed` / `hold` / `unknown` | 最終遷移 |
+| `cost-usd` | `<小数 4 桁>` / `unknown`（単価表に無いモデルのみ） / `none`（token 集計 stage なし） | サイクル内で単価解決できた stage の推定 USD 合算（#176。`COST_ESTIMATE_ENABLED=false` では key 自体が出ない） |
+| `cost-unknown-stages` | `<整数>` | 単価表に無いモデル / モデル判定不能で `cost_usd=unknown` になった stage 数（#176） |
 
 `collab_spawn_failed` は Codex CLI / collab router 側で `collab spawn failed: no thread with id`
 が出たことを示します。`fallback=yes` は Codex CLI 側の継続経路により stage の exit code が 0
@@ -1442,6 +1445,7 @@ idd-codex は基本フロー（Triage → 実装 → PR 作成）以外の機能
 | **Stage A Verify Gate**（tasks.md 末尾 verify タスク（build/test/lint）の独立再実行で自己申告ガード） | `STAGE_A_VERIFY_ENABLED` | `true` | `=false` 厳密一致のみ無効。それ以外（空文字 / `0` / `False` / typo）はすべて有効 | 推奨: `STAGE_A_VERIFY_TIMEOUT`（既定 `600` 秒）、`STAGE_A_VERIFY_KILL_AFTER`（既定 `10` 秒 / timeout 到達後 SIGTERM → SIGKILL までの猶予。setsid + pgid 全体 SIGKILL で孤児 grandchild を回収し flock 占有デッドロックを防ぐ / 通常変更不要 / idd-claude #377/F5 移植）、`STAGE_A_VERIFY_COMMAND`（構造化ブロック不在時に参照する operator 固定 escape hatch / 未対応言語向け）、`STAGE_A_VERIFY_SANDBOX_PROFILE`（tasks.md 由来 verify 用 Codex permission profile / 既定 `:workspace`）、`STAGE_A_VERIFY_EXECUTION_BOUNDARY`（既定 `codex-sandbox`。iOS Simulator / Xcode 等で必要な場合のみ `host` を明示して verify 実行境界を調整）、`STAGE_A_VERIFY_STATE_DIR`（round counter 永続化先 / 既定 `$HOME/.idd-codex/issue-watcher/state/<repo_slug>` / 通常変更不要 / #246） | [Stage A Verify Gate (#125)](#stage-a-verify-gate-125) | #125, #246, #51, #377, #130, #134, #143 |
 | **Tasks Count Gate**（Architect 完了直後の tasks.md 件数を harness で再評価し、8〜10 件で警告コメント / ≥11 件で `codex-needs-decisions` + Developer 自動起動抑止） | `TC_ENABLED` | `true` | `=false` 厳密一致のみ無効。それ以外（空文字 / `0` / `False` / typo）はすべて有効 | 推奨: `TC_WARN_LOWER`（既定 `8`）、`TC_WARN_UPPER`（既定 `10`）、`TC_ESCALATE_LOWER`（既定 `11`）。非整数は warning ログ + 既定値にフォールバック | [Tasks Count Gate (#147)](#tasks-count-gate-147) | #147 |
 | **Per-Run Evidence Summary**（1 サイクルの stage/gate 実行実態を `run-summary:` 1 行で機械可読出力。前述「複数リポ運用時の cron.log grep 例」節参照） | `RUN_SUMMARY_ENABLED` | `true` | lowercase の `false` / `0` / `no` / `off` のいずれかで無効。それ以外（空文字 / `False` / `OFF` / typo）はすべて有効（#112 系 8 種の「`=false` 厳密一致のみ無効」とは正規化規則が異なる点に注意） | — | Issue #239（専用詳細セクションなし。grep 例・enum 表は本節の上記参照） | #239 |
+| **Cost Estimate**（quota-aware の per-stage token サマリ `stage tokens ...` に、モデル ID → ティア別単価表（per 1M tokens）から算出した推定 USD を `model=<id> cost_usd=<usd>` として併記し、`run-summary:` 行末尾に `cost-usd=<サイクル合算>` / `cost-unknown-stages=<n>` を追加。単価表に無いモデルは `cost_usd=unknown` と明示。純粋なログ拡張で外部呼び出し・挙動影響なし） | `COST_ESTIMATE_ENABLED` | `true` | `=false` 厳密一致のみ無効（両ログ行は導入前と byte 一致）。それ以外（空文字 / `0` / `False` / typo）はすべて有効 | 任意: `COST_ESTIMATE_PRICE_TABLE="model=input:cached:output,..."`（USD per 1M tokens。既定表の override / 追加） | 下記「Codex CLI 移植固有の harness 設計」節の「quota 検出 / token telemetry」 | #176 |
 | **役割定義の prompt 注入**（Codex には Claude の subagent 機構が無いため `.codex/agents/<role>.md` を各 stage の prompt へ注入する。Developer 出力品質のキーストーン） | `CODEX_INJECT_ROLE_DEFS` | `true` | `=false` で注入なし（移植直後の挙動に戻す） | — | 下記「Codex CLI 移植固有の harness 設計」節 | #74 |
 | **Stage A の PM / Developer 分離**（impl mode で PM 要件定義と Developer 実装を別 `codex exec` に分離し context bleed を防ぐ。**impl 1 件あたり codex exec が +1 回**） | `STAGE_A_PM_SPLIT_ENABLED` | `true` | `=false` で従来の単一 exec（PM+Developer 同居）に戻る | — | 下記「Codex CLI 移植固有の harness 設計」節 | #82 |
 | **Debugger の live web search**（Debugger stage のみ `codex --search`（native `web_search` tool）を有効化） | `CODEX_DEBUGGER_WEB_SEARCH` | `true` | `=false` で検索なし | — | 下記「Codex CLI 移植固有の harness 設計」節 | #78 |
@@ -1797,6 +1801,31 @@ per-task Implementer が「対象 task の実装に必要な人間の製品 / �
 - **token telemetry**: 各 stage の `turn.completed.usage`（`input_tokens` / `output_tokens` /
   `reasoning_output_tokens` / `cached_input_tokens`）を集計し、`stage tokens label=... input=N output=N total=N`
   を `qa_log` にログ出力する（コスト可視化 / behavior 影響なし）。
+- **推定コスト（#176）**: 上記 `stage tokens` 行の末尾に、モデル ID → ティア別単価表から算出した推定 USD を
+  `model=<id> cost_usd=<usd>` として併記する（`COST_ESTIMATE_ENABLED`、既定 `true`）。計算式は
+  `(input - cached_input) × 単価(input) + cached_input × 単価(cached) + output × 単価(output)`（per 1M tokens。
+  `output_tokens` は reasoning を含む総量のため二重計上しない）。既定単価は GPT-5.6 世代の公表値
+  （2026-07-10 時点 / Issue #176。cached input は約 90% 引き）:
+
+  | モデル ID | input | cached input | output |
+  |---|---|---|---|
+  | `gpt-5.6-sol` | $5.00 | $0.50 | $30.00 |
+  | `gpt-5.6-terra` | $2.50 | $0.25 | $15.00 |
+  | `gpt-5.6-luna` | $1.00 | $0.10 | $6.00 |
+
+  価格改定や他モデル（`gpt-5.5` 等）の追加は env で override する:
+  `COST_ESTIMATE_PRICE_TABLE="gpt-5.5=1.25:0.125:10,gpt-5.6-terra=2.5:0.25:15"`（`model=input:cached:output`、
+  USD per 1M tokens、カンマ区切り。同一 model は override が優先）。不正な entry は `cost-estimate: WARN` で skip
+  する。解決は完全一致 → 最長 prefix 一致（`gpt-5.6-terra-<date>` 等の派生 ID を吸収）。**対応表に無いモデルは
+  `cost_usd=unknown`** と明示し、token 集計は従来どおり出力する（silent fail にしない）。`run-summary:` 行には
+  サイクル合算 `cost-usd=<sum|unknown|none>` と `cost-unknown-stages=<n>` を末尾に追加する（後述）。
+
+  ```bash
+  # stage 別の推定コストを一覧（モデルルーティング triage=luna / 実装=terra の効果測定）
+  grep -h 'stage tokens' $HOME/.idd-codex/issue-watcher/logs/<owner>-<repo>/issue-*.log | grep -o 'label=[^ ]* .*cost_usd=[^ ]*'
+  # サイクル合算
+  grep -o 'run-summary:.*cost-usd=[^ ]* cost-unknown-stages=[0-9]*' $HOME/.idd-codex/issue-watcher/cron.log
+  ```
 
 ---
 
@@ -3948,6 +3977,8 @@ quota 超過時に codex CLI は `rate_limit_event (status=exceeded)` を含む 
 | `QUOTA_AWARE_ENABLED` | `true`（#112） | Quota-Aware Watcher の有効化 / 無効化（**デフォルト有効**）。`=false` を明示すると完全 skip し本機能導入前と等価に動作 |
 | `QUOTA_RESUME_GRACE_SEC` | `60` | reset 予定時刻 + 本秒数を経過するまで `codex-needs-quota-wait` を除去しない grace 期間（同 cron tick 内の付与/除去往復を構造的に抑止 / NFR 3.3） |
 | `QUOTA_USAGE_LIMIT_FALLBACK_WAIT_SEC` | `18000` | usage-limit fatal に `try again at ...` の reset hint があるが epoch 化できない場合の保守的 fallback 待機秒数。reset hint が無い場合は従来どおり通常失敗へ透過 |
+| `COST_ESTIMATE_ENABLED` | `true`（#176） | `stage tokens` 行への `model= cost_usd=` 併記と `run-summary:` 末尾の `cost-usd=` / `cost-unknown-stages=` を有効化。`=false` 厳密一致で無効（両行は導入前と byte 一致） |
+| `COST_ESTIMATE_PRICE_TABLE` | （空 = 既定表） | `model=input:cached:output,...`（USD per 1M tokens）で単価表を override / 追加。不正 entry は WARN + skip。詳細は「Codex CLI 移植固有の harness 設計」節の「quota 検出 / token telemetry」 |
 
 cron 例（明示 opt-out したい場合）:
 
