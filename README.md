@@ -1443,6 +1443,7 @@ idd-codex は基本フロー（Triage → 実装 → PR 作成）以外の機能
 | **impl-resume tasks.md 進捗追跡**（Developer がタスク完了ごとに `- [ ]` → `- [x]` を専用 commit） | `IMPL_RESUME_PROGRESS_TRACKING` | `true` | `=false` 厳密一致のみ無効。それ以外（空文字含む）は有効 | 必須前提: `IMPL_RESUME_PRESERVE_COMMITS=true`（既定）。`IMPL_RESUME_PRESERVE_COMMITS=false` の状態では本機能は **常に未注入**（サイレント no-op） | [impl-resume Branch Protection (#67)](#impl-resume-branch-protection-67) | #67 |
 | **Stage Checkpoint Resume**（impl 系 Stage 単位の checkpoint で Reviewer / PjM 失敗時の Developer 再実行回避。#212 Stage C 直前冪等ガード / #219 Stage A 越境観測・spec 成果物完全性保証を相乗りで内包） | `STAGE_CHECKPOINT_ENABLED` | `true` | `=false` 厳密一致のみ無効。それ以外（空文字 / `0` / `False` / typo）はすべて有効 | — | [Stage Checkpoint (#68)](#stage-checkpoint-68) | #68, #112, #212, #219 |
 | **Stage A Verify Gate**（tasks.md 末尾 verify タスク（build/test/lint）の独立再実行で自己申告ガード） | `STAGE_A_VERIFY_ENABLED` | `true` | `=false` 厳密一致のみ無効。それ以外（空文字 / `0` / `False` / typo）はすべて有効 | 推奨: `STAGE_A_VERIFY_TIMEOUT`（既定 `600` 秒）、`STAGE_A_VERIFY_KILL_AFTER`（既定 `10` 秒 / timeout 到達後 SIGTERM → SIGKILL までの猶予。setsid + pgid 全体 SIGKILL で孤児 grandchild を回収し flock 占有デッドロックを防ぐ / 通常変更不要 / idd-claude #377/F5 移植）、`STAGE_A_VERIFY_COMMAND`（構造化ブロック不在時に参照する operator 固定 escape hatch / 未対応言語向け）、`STAGE_A_VERIFY_SANDBOX_PROFILE`（tasks.md 由来 verify 用 Codex permission profile / 既定 `:workspace`）、`STAGE_A_VERIFY_EXECUTION_BOUNDARY`（既定 `codex-sandbox`。iOS Simulator / Xcode 等で必要な場合のみ `host` を明示して verify 実行境界を調整）、`STAGE_A_VERIFY_STATE_DIR`（round counter 永続化先 / 既定 `$HOME/.idd-codex/issue-watcher/state/<repo_slug>` / 通常変更不要 / #246） | [Stage A Verify Gate (#125)](#stage-a-verify-gate-125) | #125, #246, #51, #377, #130, #134, #143 |
+| **Model Preflight / model-not-found 分類**（Codex CLI 起動前にモデル別最低 CLI version を検査し、`model not found` / `unsupported model` 系の実行後失敗を設定エラー候補としてログ・コメントに露出。quota wait が成立する場合は既存 quota 経路を優先し、未知 model は前方互換のため preflight で拒否しない） | `MODEL_PREFLIGHT_ENABLED` | `true` | `=false` 厳密一致のみ無効。それ以外（未設定 / 空文字 / `0` / `False` / typo）はすべて有効 | 推奨: `MODEL_PREFLIGHT_MIN_VERSIONS`（既定 `gpt-5.6-*:0.144.0`。comma 区切り `pattern:version` で既定 map を置換） | [Model Preflight / model-not-found 分類 (#175)](#model-preflight--model-not-found-分類-175) | #175 |
 | **Tasks Count Gate**（Architect 完了直後の tasks.md 件数を harness で再評価し、8〜10 件で警告コメント / ≥11 件で `codex-needs-decisions` + Developer 自動起動抑止） | `TC_ENABLED` | `true` | `=false` 厳密一致のみ無効。それ以外（空文字 / `0` / `False` / typo）はすべて有効 | 推奨: `TC_WARN_LOWER`（既定 `8`）、`TC_WARN_UPPER`（既定 `10`）、`TC_ESCALATE_LOWER`（既定 `11`）。非整数は warning ログ + 既定値にフォールバック | [Tasks Count Gate (#147)](#tasks-count-gate-147) | #147 |
 | **Per-Run Evidence Summary**（1 サイクルの stage/gate 実行実態を `run-summary:` 1 行で機械可読出力。前述「複数リポ運用時の cron.log grep 例」節参照） | `RUN_SUMMARY_ENABLED` | `true` | lowercase の `false` / `0` / `no` / `off` のいずれかで無効。それ以外（空文字 / `False` / `OFF` / typo）はすべて有効（#112 系 8 種の「`=false` 厳密一致のみ無効」とは正規化規則が異なる点に注意） | — | Issue #239（専用詳細セクションなし。grep 例・enum 表は本節の上記参照） | #239 |
 | **Cost Estimate**（quota-aware の per-stage token サマリ `stage tokens ...` に、モデル ID → ティア別単価表（per 1M tokens）から算出した推定 USD を `model=<id> cost_usd=<usd>` として併記し、`run-summary:` 行末尾に `cost-usd=<サイクル合算>` / `cost-unknown-stages=<n>` を追加。単価表に無いモデルは `cost_usd=unknown` と明示。純粋なログ拡張で外部呼び出し・挙動影響なし） | `COST_ESTIMATE_ENABLED` | `true` | `=false` 厳密一致のみ無効（両ログ行は導入前と byte 一致）。それ以外（空文字 / `0` / `False` / typo）はすべて有効 | 任意: `COST_ESTIMATE_PRICE_TABLE="model=input:cached:output,..."`（USD per 1M tokens。既定表の override / 追加） | 下記「Codex CLI 移植固有の harness 設計」節の「quota 検出 / token telemetry」 | #176 |
@@ -4190,6 +4191,65 @@ cd ~/.idd-codex && git pull && ./install.sh --local
 #112 以降は env 追記なしで本機能はデフォルト有効です。明示的に opt-out したい場合のみ
 `QUOTA_AWARE_ENABLED=false` を cron / launchd に追記してください。
 
+## Model Preflight / model-not-found 分類 (#175)
+
+`MODEL_PREFLIGHT_ENABLED` は既定 `true` です。watcher は Codex CLI 起動前に指定 model ID と
+Codex CLI version の対応を確認し、既知 model の最低 version を満たさない場合は codex stage を
+起動せず fail-fast します。fail-fast 時のログには `model-preflight:` prefix で stage、model、
+現在 version、要求 version、`codex update` の案内が出ます。
+
+既定の対応表は `gpt-5.6-*` に Codex CLI `0.144.0` 以上を要求します。未知 model は前方互換のため
+preflight では拒否せず、通常の codex 実行経路へ進めます。model ID typo、retired model、account
+availability などで Codex CLI が `model not found` / `unsupported model` / `unknown model` /
+`not available for your account` 系の出力を返した場合は、実行後 classifier が「モデル設定エラーの
+可能性」として operator-visible log と Issue / PR / failed-recovery コメントに補足します。
+
+quota wait は既存どおり優先されます。Codex Max quota 超過として分類できる出力では
+`codex-needs-quota-wait` 経路を維持し、model-not-found 分類へは落としません。model 設定エラーは
+新しい label を追加せず、既存の `codex-failed` / PR error comment / failed-recovery terminal reason
+に診断情報を足すだけです。failed-recovery では `model-config-error` として扱い、attempt budget と
+no-progress baseline を消費しない決定論的失敗として停止します。
+
+### 環境変数
+
+| 変数 | 既定 | 用途 |
+|---|---|---|
+| `MODEL_PREFLIGHT_ENABLED` | `true` | `=false` 厳密一致のみ無効化。それ以外（未設定 / 空文字 / `0` / `False` / typo）は有効 |
+| `MODEL_PREFLIGHT_MIN_VERSIONS` | `gpt-5.6-*:0.144.0` | モデル別最低 Codex CLI version map。設定時は既定 map を置換する。形式は comma 区切りの `pattern:version` |
+
+`MODEL_PREFLIGHT_MIN_VERSIONS` の `pattern` は shell glob として評価されます。malformed entry は
+`model-preflight: WARN:` を出して skip し、valid entry は引き続き使います。例:
+
+```bash
+MODEL_PREFLIGHT_MIN_VERSIONS='gpt-5.6-*:0.144.0,gpt-5.7-*:0.150.0'
+```
+
+一時的に preflight だけを無効化したい場合:
+
+```cron
+*/2 * * * * REPO=owner/your-repo REPO_DIR=$HOME/work/your-repo \
+  MODEL_PREFLIGHT_ENABLED=false \
+  $HOME/bin/idd-codex-issue-watcher.sh >> $HOME/.idd-codex/issue-watcher/cron.log 2>&1
+```
+
+通常は無効化せず、`codex update` で CLI を更新するか、`TRIAGE_MODEL` / `DEV_MODEL` /
+`REVIEWER_MODEL` / `DEBUGGER_MODEL` / `PR_ITERATION_DEV_MODEL` /
+`FAILED_RECOVERY_DEV_MODEL` の指定 model ID を見直してください。
+
+### 復旧手順
+
+ログまたは escalation comment に `モデル設定エラーの可能性` が出た場合は、まず watcher 実行ユーザーで
+以下を確認します。
+
+```bash
+codex --version
+codex update
+```
+
+Codex CLI が十分新しいのに同じ分類が出る場合は、該当 stage の model env var に typo や retired model
+がないか、`MODEL_PREFLIGHT_MIN_VERSIONS` の override が古くないかを確認してください。公開コメントには
+raw stderr 全文を貼らず、sanitized reason と diagnostic artifact path / correlation token だけを載せます。
+
 ---
 
 ## Reviewer Gate (#20 Phase 1)
@@ -6345,6 +6405,17 @@ cron なら `crontab -e` の先頭で `PATH=...` を明示する。
 `TRIAGE_REASONING_EFFORT` / `DEV_REASONING_EFFORT` を下げるか、`TRIAGE_MODEL` / `DEV_MODEL` を軽量モデルへ切り替える。
 `*_REASONING_EFFORT` の値は allowlist（`minimal` / `low` / `medium` / `high` / `xhigh` / `max`）で検証され、
 typo や opt-in 無しの `ultra` は既定へ正規化される（Issue log の `effort-guard: WARN` で確認可。#174）。
+
+### `モデル設定エラーの可能性` が出た
+
+`model-preflight:` の `fail-fast` ログは、指定 model が watcher 実行環境の Codex CLI では
+利用できない可能性を示します。`codex --version` で現在 version を確認し、要求 version より古い場合は
+`codex update` を実行してください。
+
+Codex CLI が十分新しい場合は、`TRIAGE_MODEL` / `DEV_MODEL` / `REVIEWER_MODEL` /
+`DEBUGGER_MODEL` / `PR_ITERATION_DEV_MODEL` / `FAILED_RECOVERY_DEV_MODEL` に typo や retired model が
+ないか確認します。`MODEL_PREFLIGHT_MIN_VERSIONS` を override している環境では、対応表が古くないかも
+確認してください。quota 超過が検出されている場合は、従来どおり `codex-needs-quota-wait` が優先されます。
 
 ### Codex CLI の認証状態がおかしい
 
