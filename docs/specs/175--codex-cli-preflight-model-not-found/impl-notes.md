@@ -38,7 +38,7 @@
 | 1.1 | `model-preflight.sh` / `mp_preflight_model` | task 3 の `codex_exec_prompt` 接続前の module API | `model_preflight_test.sh`: `known model insufficient version returns rc 78`, `insufficient preflight only calls codex --version` | `bash local-watcher/test/model_preflight_test.sh`: PASS | 本 task では fail-fast gate の戻り値と stage command 未起動相当を module 境界で検証。production 接続は task 3 |
 | 1.2 | `model-preflight.sh` / `mp_log_fail_fast` | operator-visible stderr log | `model_preflight_test.sh`: insufficient log includes model / current / required / update guidance | `bash local-watcher/test/model_preflight_test.sh`: PASS | `codex update` は案内のみで実行しない |
 | 1.4 | `model-preflight.sh` / `mp_required_version_for_model`, `mp_preflight_model` | module API pass-through | `model_preflight_test.sh`: `unknown model passes preflight`, `unknown model does not call codex --version` | `bash local-watcher/test/model_preflight_test.sh`: PASS | 未知 model は前方互換のため拒否しない |
-| 1.5 | `model-preflight.sh` / `mp_extract_codex_version`, `mp_preflight_model` | module API fail-fast | `model_preflight_test.sh`: `known model unparsable codex version returns rc 78`, `unparsable log includes extraction reason` | `bash local-watcher/test/model_preflight_test.sh`: PASS | command failure / not found も同じ rc=78 経路で fail-fast する実装 |
+| 1.5 | `model-preflight.sh` / `mp_extract_codex_version`, `mp_preflight_model` | module API fail-fast | `model_preflight_test.sh`: `known model unparsable codex version returns rc 78`, `known model codex version command failure returns rc 78`, `known model missing codex command returns rc 78`, 各 reason log assertion | `bash local-watcher/test/model_preflight_test.sh`: PASS (24 assertions), `shellcheck --severity=warning ...`: PASS | version 抽出不能 / command failure / command not found を同じ rc=78 fail-fast 経路として検証 |
 | 3.1 | `model-preflight.sh` / `mp_default_min_versions` | module map lookup | `model_preflight_test.sh`: `default map requires gpt-5.6 at 0.144.0` | `bash local-watcher/test/model_preflight_test.sh`: PASS | 既定対応表を module 内に保持 |
 | 3.2 | `model-preflight.sh` / `mp_min_versions_spec` | `MODEL_PREFLIGHT_MIN_VERSIONS` env override | `model_preflight_test.sh`: `override map replaces default map`, `override map matches configured model` | `bash local-watcher/test/model_preflight_test.sh`: PASS | override 指定時は既定 map を使わない |
 | 3.3 | `model-preflight.sh` / `mp_entry_required_version_for_model`, `mp_warn_malformed_entry` | override parser WARN log | `model_preflight_test.sh`: malformed override WARN / skipped entry assertions | `bash local-watcher/test/model_preflight_test.sh`: PASS | malformed entry は silent fail せず WARN して skip |
@@ -49,15 +49,17 @@
 | 6.1 | `model-preflight.sh` / `mp_preflight_model` | module API fail-fast | `model_preflight_test.sh`: `insufficient preflight only calls codex --version` | `bash local-watcher/test/model_preflight_test.sh`: PASS | 本体の実 codex command 抑止は task 3 の接続テストで補完予定 |
 | 6.2 | `model-preflight.sh` / `mp_preflight_model` | module API pass-through | `model_preflight_test.sh`: unknown model pass-through assertions | `bash local-watcher/test/model_preflight_test.sh`: PASS | unknown model で `CODEX_BIN --version` を呼ばない |
 | 6.4 | `model-preflight.sh` / override parser | override parser WARN log | `model_preflight_test.sh`: malformed override WARN / skip assertions | `bash local-watcher/test/model_preflight_test.sh`: PASS | valid entry と malformed entry が混在しても valid entry は有効 |
-| 6.5 | changed shell scripts and new test | shell-level verification | `shellcheck --severity=warning local-watcher/bin/idd-codex-modules/model-preflight.sh local-watcher/test/model_preflight_test.sh` | PASS | task 2 で変更した shell script に限定して実行 |
+| 6.5 | changed shell scripts and new test | shell-level verification | `shellcheck --severity=warning local-watcher/bin/idd-codex-modules/model-preflight.sh local-watcher/test/model_preflight_test.sh` | PASS | task 2 retry で `bash local-watcher/test/model_preflight_test.sh` も PASS (24 assertions) |
 | NFR 2.1 | `model-preflight.sh` / `mp_log`, `mp_warn`, `mp_error` | operator-visible log prefix | `model_preflight_test.sh`: WARN / fail-fast log assertions | `bash local-watcher/test/model_preflight_test.sh`: PASS | stable prefix `model-preflight:` を使用 |
 
 #### Finding Closure Matrix
 
-| Finding | Target | Category | 対応 | テスト | status |
-|---|---|---|---|---|---|
-| なし | Task 2 | - | 前回 `review-notes.md` は approve / Findings なし、`debugger-notes.md` は存在しない | `bash local-watcher/test/model_preflight_test.sh`; `bash local-watcher/test/guard_hook_test.sh`; `shellcheck --severity=warning local-watcher/bin/idd-codex-modules/model-preflight.sh local-watcher/test/model_preflight_test.sh` | closed |
+| Target requirement | Category | Required Action | Fix commit | Test/assertion | Verification result | Notes / no-change reason |
+|--------------------|----------|-----------------|------------|----------------|---------------------|--------------------------|
+| 1.5 | missing test | known model かつ preflight enabled の状態で `codex --version` command failure または command-not-found を rc=78 / operator-visible reason として検証する regression を追加する | `3178429 test(watcher): model preflight command failureを検証する` | `model_preflight_test.sh`: `known model codex version command failure returns rc 78`, `command failure log includes reason`, `known model missing codex command returns rc 78`, `command-not-found log includes reason` | `bash local-watcher/test/model_preflight_test.sh`: PASS (24 assertions); `shellcheck --severity=warning local-watcher/bin/idd-codex-modules/model-preflight.sh local-watcher/test/model_preflight_test.sh`: PASS | Reviewer round 1 の missing test を追加 regression で close |
 
 ## 確認事項
 
 - `tasks.md` の task 1 は `_Requirements:_` に 4.3（model preflight が共有 semver helper を使うこと）を含むが、`model-preflight.sh` の作成と接続は task 2/3 に明示されている。本 task では共有 helper の提供と guard hook 接続までを実装し、model preflight 側の利用は後続 task に残した。
+
+STATUS: complete
