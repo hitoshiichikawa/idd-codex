@@ -39,6 +39,7 @@ CORE_UTILS_SH="$SCRIPT_DIR/../bin/idd-codex-modules/core_utils.sh"
 # modules/quota-aware.sh へ分離された。関数抽出の探索元に quota-aware.sh も含める。
 QUOTA_AWARE_SH="$SCRIPT_DIR/../bin/idd-codex-modules/quota-aware.sh"
 RUN_SUMMARY_SH="$SCRIPT_DIR/../bin/idd-codex-modules/run-summary.sh"
+MODEL_PREFLIGHT_SH="$SCRIPT_DIR/../bin/idd-codex-modules/model-preflight.sh"
 FIXTURE_DIR="$SCRIPT_DIR/fixtures/qa_detect_rate_limit"
 
 if [ ! -f "$WATCHER_SH" ]; then
@@ -55,6 +56,10 @@ if [ ! -f "$QUOTA_AWARE_SH" ]; then
 fi
 if [ ! -f "$RUN_SUMMARY_SH" ]; then
   echo "ERROR: cannot find run-summary.sh at $RUN_SUMMARY_SH" >&2
+  exit 2
+fi
+if [ ! -f "$MODEL_PREFLIGHT_SH" ]; then
+  echo "ERROR: cannot find model-preflight.sh at $MODEL_PREFLIGHT_SH" >&2
   exit 2
 fi
 
@@ -123,8 +128,10 @@ eval "$(extract_function "$WATCHER_SH" "rs_sanitize_token")"
 eval "$(extract_function "$WATCHER_SH" "rs_record_degraded_event")"
 # shellcheck disable=SC1090
 eval "$(extract_function "$WATCHER_SH" "rs_emit")"
+# shellcheck source=../bin/idd-codex-modules/model-preflight.sh
+. "$MODEL_PREFLIGHT_SH"
 
-for fn in qa_log qa_warn qa_error qa_detect_rate_limit qa_extract_usage_limit_reset_epoch qa_usage_limit_has_reset_hint qa_usage_limit_fallback_reset_epoch qa_sanitize_summary_token qa_infer_collab_agent_role qa_collab_mark_seen qa_collab_set_repeated_flag qa_detect_collab_spawn_failures qa_run_codex_stage qa_format_iso8601 qa_persist_reset_time qa_build_escalation_comment qa_handle_quota_exceeded codex_log_detect_529 rs_init rs_sanitize_token rs_record_degraded_event rs_emit; do
+for fn in qa_log qa_warn qa_error qa_detect_rate_limit qa_extract_usage_limit_reset_epoch qa_usage_limit_has_reset_hint qa_usage_limit_fallback_reset_epoch qa_sanitize_summary_token qa_infer_collab_agent_role qa_collab_mark_seen qa_collab_set_repeated_flag qa_detect_collab_spawn_failures qa_run_codex_stage qa_format_iso8601 qa_persist_reset_time qa_build_escalation_comment qa_handle_quota_exceeded codex_log_detect_529 rs_init rs_sanitize_token rs_record_degraded_event rs_emit mp_detect_model_error mp_classify_stage_model_error mp_build_last_config_error_summary; do
   if ! declare -F "$fn" >/dev/null; then
     echo "ERROR: $fn not loaded" >&2
     exit 2
@@ -212,6 +219,15 @@ fake_codex() {
   local fx_path="$1"
   local rc="${2:-0}"
   cat "$fx_path"
+  return "$rc"
+}
+
+codex_exec_prompt() {
+  local _stage_label="$1"
+  local _model="$2"
+  local fx="$3"
+  local rc="${4:-0}"
+  cat "$FIXTURE_DIR/$fx"
   return "$rc"
 }
 
@@ -317,6 +333,57 @@ run_quota_wait_label_case() {
   assert_not_contains "$label does not add failed label" "$gh_calls" "--add-label $LABEL_FAILED"
   assert_eq "$label mark_issue_failed not called" "" "$mark_failed"
   assert_eq "$label reset persisted" "$usage_reset_epoch" "$persisted_epoch"
+}
+
+run_model_config_error_case() {
+  local label="$1"
+  local fx="$2"
+  local fake_rc="$3"
+  local expected_reason="$4"
+  local reset_file
+  reset_file=$(mktemp -p "$TMPDIR_TEST" "reset.XXXXXX")
+  : > "$LOG"
+  mp_clear_last_config_error
+
+  local rc=0
+  qa_run_codex_stage "StageA" "$reset_file" -- \
+    codex_exec_prompt "StageA" "gpt-5.4-old" "$fx" "$fake_rc" >> "$LOG" 2>&1 || rc=$?
+
+  local actual_reset log_body summary
+  actual_reset=$(cat "$reset_file" 2>/dev/null || true)
+  log_body=$(cat "$LOG" 2>/dev/null || true)
+  summary="$(mp_build_last_config_error_summary)"
+  rm -f "$reset_file" "${reset_file}.detect" "${reset_file}.stream"
+
+  assert_eq "$label rc is transparent" "$fake_rc" "$rc"
+  assert_eq "$label reset_file remains empty" "" "$actual_reset"
+  assert_contains "$label log records model config error" "$log_body" "model-config-error"
+  assert_contains "$label log includes reason" "$log_body" "$expected_reason"
+  assert_contains "$label summary says setting error possibility" "$summary" "モデル設定エラーの可能性"
+  assert_contains "$label summary includes model" "$summary" "gpt-5.4-old"
+}
+
+run_model_config_error_quota_priority_case() {
+  local reset_file
+  reset_file=$(mktemp -p "$TMPDIR_TEST" "reset.XXXXXX")
+  : > "$LOG"
+  mp_clear_last_config_error
+
+  local rc=0
+  qa_run_codex_stage "StageA" "$reset_file" -- \
+    codex_exec_prompt "StageA" "gpt-5.4-old" "quota-and-model-error.jsonl" 1 >> "$LOG" 2>&1 || rc=$?
+
+  local actual_reset log_body summary
+  actual_reset=$(cat "$reset_file" 2>/dev/null || true)
+  log_body=$(cat "$LOG" 2>/dev/null || true)
+  summary="$(mp_build_last_config_error_summary)"
+  rm -f "$reset_file" "${reset_file}.detect" "${reset_file}.stream"
+
+  assert_eq "quota priority with model text rc" "99" "$rc"
+  assert_eq "quota priority with model text reset" "1778821200" "$actual_reset"
+  assert_contains "quota priority logs quota detection" "$log_body" "stage detected exceeded"
+  assert_not_contains "quota priority does not log model config error" "$log_body" "model-config-error"
+  assert_eq "quota priority leaves no model config summary" "" "$summary"
 }
 
 run_collab_success_case() {
@@ -608,6 +675,16 @@ run_case "usage-limit-no-reset → codex rc透過 (Issue #12 Option B)" \
 
 run_case "normal-error with codex rc=1 remains normal failure (Issue #12 Req 5)" \
   1 "" "normal-error.jsonl" 1 "StageA"
+
+run_model_config_error_case \
+  "StageA model-not-found classification (Issue #175 Req 2.1, 2.3, 6.3)" \
+  "model-not-found.jsonl" 7 "model-not-found"
+
+run_model_config_error_case \
+  "StageA unsupported-model classification (Issue #175 Req 2.2, 2.3, 6.3)" \
+  "unsupported-model.jsonl" 8 "unsupported-model"
+
+run_model_config_error_quota_priority_case
 
 run_collab_success_case
 run_collab_repeated_case

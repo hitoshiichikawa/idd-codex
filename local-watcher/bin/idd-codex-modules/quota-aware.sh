@@ -531,6 +531,11 @@ qa_run_codex_stage() {
   if [ "${1:-}" = "--" ]; then
     shift
   fi
+  local model_id=""
+  if [ "${1:-}" = "codex_exec_prompt" ]; then
+    model_id="${3:-}"
+  fi
+  mp_clear_last_config_error
 
   # opt-out: 既存挙動の素通し実行。tee も解析も走らない（Req 1.1, NFR 2.1）。
   if [ "$QUOTA_AWARE_ENABLED" != "true" ]; then
@@ -621,6 +626,7 @@ qa_run_codex_stage() {
       _epoch=$(printf '%s' "$_epoch" | tr -d '[:space:]')
       printf '%s\n' "$_epoch" > "$reset_file"
       qa_log "stage detected exceeded label=$stage_label path=${_path} reset_epoch=$_epoch"
+      mp_clear_last_config_error
       rm -f "$detect_file" "$stream_file"
       return 99
     fi
@@ -647,6 +653,7 @@ qa_run_codex_stage() {
       if [[ "$_usage_epoch" =~ ^[0-9]+$ ]]; then
         printf '%s\n' "$_usage_epoch" > "$reset_file"
         qa_log "stage detected exceeded label=$stage_label path=usage_limit_fatal reset_epoch=$_usage_epoch"
+        mp_clear_last_config_error
         rm -f "$detect_file" "$stream_file"
         return 99
       fi
@@ -669,8 +676,25 @@ qa_run_codex_stage() {
   if [[ "${_rollout_epoch:-}" =~ ^[0-9]+$ ]]; then
     printf '%s\n' "$_rollout_epoch" > "$reset_file"
     qa_log "stage detected exceeded label=$stage_label path=rate_limits_rollout reset_epoch=$_rollout_epoch"
+    mp_clear_last_config_error
     rm -f "$detect_file" "$stream_file"
     return 99
+  fi
+
+  if [ "$codex_rc" -eq "${MP_MODEL_CONFIG_ERROR_RC:-78}" ]; then
+    mp_record_config_error "preflight" "$stage_label" "${model_id:-unknown}" "model-preflight-failed" "${LOG:-$stream_file}"
+    mp_error "model-config-error stage=$(mp_sanitize_token "$stage_label") model=$(mp_sanitize_token "${model_id:-unknown}") reason=model-preflight-failed artifact=${LOG:-$stream_file}"
+  elif [ "$codex_rc" -ne 0 ] && [ -n "$model_id" ]; then
+    local _mp_classify_rc=0
+    mp_classify_stage_model_error "$stage_label" "$model_id" "$stream_file" || _mp_classify_rc=$?
+    if [ "$_mp_classify_rc" -eq 0 ]; then
+      # shellcheck disable=SC2034  # mark_issue_failed が model-preflight module の global state として参照する
+      MP_LAST_CONFIG_ERROR_ARTIFACT="${LOG:-$stream_file}"
+    else
+      mp_clear_last_config_error
+    fi
+  else
+    mp_clear_last_config_error
   fi
 
   rm -f "$detect_file" "$stream_file"

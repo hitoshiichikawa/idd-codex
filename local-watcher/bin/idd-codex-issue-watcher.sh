@@ -1361,6 +1361,12 @@ codex_exec_prompt() {
   local prompt="$3"
   local effort safe_stage last_message_file
 
+  local _mp_preflight_rc=0
+  mp_preflight_model "$stage_label" "$model" || _mp_preflight_rc=$?
+  if [ "$_mp_preflight_rc" -ne 0 ]; then
+    return "$_mp_preflight_rc"
+  fi
+
   effort="$(codex_reasoning_effort_for_stage "$stage_label")"
   # Issue #174: allowlist 外 / gate 未通過 ultra を当該 stage の既定 effort へ正規化（WARN は stderr）。
   effort="$(eg_normalize_effort "$stage_label" "$effort")"
@@ -1436,7 +1442,7 @@ IDD_MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)/id
 # 3 プロセッサ（quota-aware / merge-queue / auto-rebase）、#181 Part 3 で切り出した
 # 3 プロセッサ（promote-pipeline / pr-iteration / stage-a-verify）を並べ、末尾に
 # #238 の scaffolding-health.sh と #239 の per-run evidence サマリ（run-summary.sh）を置く。
-REQUIRED_MODULES=( "core_utils.sh" "env-loader.sh" "guard-hook.sh" "quota-aware.sh" "merge-queue.sh" "auto-rebase.sh" "auto-merge.sh" "auto-merge-design.sh" "auto-merge-disarm.sh" "failed-recovery.sh" "needs-decisions-auto.sh" "slack-notify.sh" "stale-pickup-reaper.sh" "promote-pipeline.sh" "pr-iteration.sh" "pr-reviewer.sh" "adjudicator.sh" "stage-a-verify.sh" "scaffolding-health.sh" "context-map.sh" "run-summary.sh" "effort-guard.sh" "design-reconcile.sh" "cost-estimate.sh" )
+REQUIRED_MODULES=( "core_utils.sh" "env-loader.sh" "guard-hook.sh" "model-preflight.sh" "quota-aware.sh" "merge-queue.sh" "auto-rebase.sh" "auto-merge.sh" "auto-merge-design.sh" "auto-merge-disarm.sh" "failed-recovery.sh" "needs-decisions-auto.sh" "slack-notify.sh" "stale-pickup-reaper.sh" "promote-pipeline.sh" "pr-iteration.sh" "pr-reviewer.sh" "adjudicator.sh" "stage-a-verify.sh" "scaffolding-health.sh" "context-map.sh" "run-summary.sh" "effort-guard.sh" "design-reconcile.sh" "cost-estimate.sh" )
 for _idd_mod in "${REQUIRED_MODULES[@]}"; do
   _idd_mod_path="$IDD_MODULE_DIR/$_idd_mod"
   if [ ! -f "$_idd_mod_path" ]; then
@@ -7876,6 +7882,13 @@ ${_pt_terminal_diagnostic}"
 ${extra_body}"
   fi
 
+  local _model_config_body=""
+  _model_config_body="$(mp_build_last_config_error_summary || true)"
+  if [ -n "$_model_config_body" ]; then
+    body="${body}
+${_model_config_body}"
+  fi
+
   # Issue #259: 現在の実行ログから Codex API 一時混雑エラー (529 Overloaded) の痕跡を
   # 検出した場合、失敗通知コメント本文に警告ブロックを差し込む。検知ロジックが失敗・
   # 例外を起こしても既存の `codex-failed` ラベル付与・失敗コメント投稿の責務を妨げない
@@ -9409,6 +9422,12 @@ _slot_mark_failed() {
     body="${body}
 
 ${extra}"
+  fi
+  local _model_config_body=""
+  _model_config_body="$(mp_build_last_config_error_summary || true)"
+  if [ -n "$_model_config_body" ]; then
+    body="${body}
+${_model_config_body}"
   fi
   if [ -n "${LOG:-}" ]; then
     body="${body}

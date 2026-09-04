@@ -120,7 +120,7 @@ fr_load_state() {
 #   戻り値: 0 = 永続化成功 / 1 = 失敗（WARN 済み・呼び出し側は継続）
 #   history[] は直近 8 件に truncate する。
 #   #137: last_status は "in-progress" | "succeeded" | "quota-wait" | "max-attempts" |
-#         "no-progress" | "immediate-failure-streak" を取りうる。$7 を省略した既存呼出側は
+#         "no-progress" | "immediate-failure-streak" | "model-config-error" を取りうる。$7 を省略した既存呼出側は
 #         prev_state の immediate_failure_streak を継承する（欠落時 0）。
 # ─────────────────────────────────────────────────────────────────────────────
 fr_save_state() {
@@ -231,7 +231,7 @@ fr_classify_immediate_failure() {
 #   判定する純粋関数（#140）。
 #   入力: $1=state_json（`{}` または schema 準拠 JSON。空可）
 #   出力: stdout に terminal 理由（"max-attempts" / "no-progress" /
-#         "immediate-failure-streak"）。未終端なら空文字。
+#         "immediate-failure-streak" / "model-config-error"）。未終端なら空文字。
 #   戻り値: 0 = 終端済み / 1 = 未終端（state 不在 / 破損 / それ以外の status → fail-open）
 #   state 不在・破損は呼出元 fr_load_state が `{}` に正規化するため、本関数は status を
 #   読めなければ未終端（rc 1）として扱い、cross-cycle べき等ガードを fail-open にする。
@@ -246,7 +246,7 @@ fr_is_terminated() {
     return 1
   fi
   case "$status" in
-    max-attempts|no-progress|immediate-failure-streak)
+    max-attempts|no-progress|immediate-failure-streak|model-config-error)
       printf '%s' "$status"
       return 0
       ;;
@@ -611,7 +611,7 @@ EOF
 #   codex 実行は qa_run_codex_stage 経由のため quota reached が rc=99 で伝播する。
 # ─────────────────────────────────────────────────────────────────────────────
 fr_invoke_codex() {
-  local stage_label="$1" prompt="$2" reset_file="$3" head_ref="${4:-}"
+  local stage_label="$1" prompt="$2" reset_file="$3" head_ref="${4:-}" model_artifact_file="${5:-}"
   : > "$reset_file"
   local rc=0
   (
@@ -629,9 +629,18 @@ fr_invoke_codex() {
       fi
     fi
     local crc=0
-    qa_run_codex_stage "$stage_label" "$reset_file" -- \
-      codex_exec_prompt "$stage_label" "$FAILED_RECOVERY_DEV_MODEL" "$prompt" \
-      >> "$LOG" 2>&1 || crc=$?
+    if [ -n "$model_artifact_file" ]; then
+      set +e
+      qa_run_codex_stage "$stage_label" "$reset_file" -- \
+        codex_exec_prompt "$stage_label" "$FAILED_RECOVERY_DEV_MODEL" "$prompt" \
+        2>&1 | tee -a "$model_artifact_file" >> "$LOG"
+      crc="${PIPESTATUS[0]:-0}"
+      set -e
+    else
+      qa_run_codex_stage "$stage_label" "$reset_file" -- \
+        codex_exec_prompt "$stage_label" "$FAILED_RECOVERY_DEV_MODEL" "$prompt" \
+        >> "$LOG" 2>&1 || crc=$?
+    fi
     exit "$crc"
   ) || rc=$?
   return "$rc"
@@ -789,7 +798,7 @@ fr_run_recovery_attempt() {
   fr_post_attempt_comment "$kind" "$number" \
     "$(printf 'Failed Recovery Processor (#101): 復旧 attempt %s/%s を開始します。失敗ログを解析し修正を試みます。' "$new_total" "$FAILED_RECOVERY_MAX_ATTEMPTS")" || true
 
-  local prompt stage_label reset_file
+  local prompt stage_label reset_file model_artifact_file
   stage_label="FailedRecovery-${kind}-${number}"
   prompt="$(fr_build_recovery_prompt "$kind" "$number" "$context" "$head_ref")"
   reset_file="$(idd_secure_mktemp "fr-reset-${kind}-${number}" 2>/dev/null || true)"
@@ -797,12 +806,13 @@ fr_run_recovery_attempt() {
     fr_warn "${kind}=#${number}: reset 一時ファイル作成に失敗（attempt 中止）"
     return 1
   fi
+  model_artifact_file="$(idd_secure_mktemp "fr-model-${kind}-${number}" 2>/dev/null || true)"
 
   # #137: 即時失敗判定用にセッション継続時間を計測する（epoch 秒 / date 失敗時は 0 扱い）。
   local invoke_start_epoch invoke_end_epoch elapsed_seconds
   invoke_start_epoch=$(date +%s 2>/dev/null || echo 0)
   local codex_rc=0
-  fr_invoke_codex "$stage_label" "$prompt" "$reset_file" "$head_ref" || codex_rc=$?
+  fr_invoke_codex "$stage_label" "$prompt" "$reset_file" "$head_ref" "$model_artifact_file" || codex_rc=$?
   invoke_end_epoch=$(date +%s 2>/dev/null || echo "$invoke_start_epoch")
   elapsed_seconds=$((invoke_end_epoch - invoke_start_epoch))
   if [ "$elapsed_seconds" -lt 0 ]; then
@@ -811,7 +821,7 @@ fr_run_recovery_attempt() {
 
   case "$codex_rc" in
     0)
-      rm -f "$reset_file"
+      rm -f "$reset_file" "$model_artifact_file"
       fr_finalize_success "$kind" "$number" "$new_total" "$signature" "$head_sha"
       return 0
       ;;
@@ -819,11 +829,28 @@ fr_run_recovery_attempt() {
       # quota: budget を消費せず待機（prev_total / 直前 baseline に巻き戻す）。
       fr_handle_quota "$kind" "$number" "$stage_label" "$reset_file" "$prev_total" "$prev_sig" "$prev_head"
       local q_rc=$?
-      rm -f "$reset_file"
+      rm -f "$reset_file" "$model_artifact_file"
       return "$q_rc"
       ;;
     *)
       rm -f "$reset_file"
+      local _fr_model_rc=0
+      if declare -F mp_classify_codex_failure >/dev/null; then
+        mp_classify_codex_failure "$stage_label" "$FAILED_RECOVERY_DEV_MODEL" "$codex_rc" "$model_artifact_file" || _fr_model_rc=$?
+      else
+        _fr_model_rc=1
+      fi
+      if [ "$_fr_model_rc" -eq 0 ]; then
+        local _fr_model_summary
+        _fr_model_summary="$(mp_build_last_config_error_summary)"
+        fr_save_state "$kind" "$number" "$prev_total" "model-config-error" "$prev_sig" "$prev_head" "0" || true
+        fr_post_attempt_comment "$kind" "$number" \
+          "$(printf 'Failed Recovery Processor (#101): Codex CLI の model 設定エラーの可能性を検出したため、復旧 attempt budget は消費しません（通算 %s 回のまま）。`codex-failed` は据え置き、Codex CLI version / model ID / `MODEL_PREFLIGHT_MIN_VERSIONS` を確認してください。\n%s' "$prev_total" "$_fr_model_summary")" || true
+        fr_log "${kind}=#${number} model-config-error rc=${codex_rc} budget-preserved total=${prev_total}"
+        rm -f "$model_artifact_file"
+        return 1
+      fi
+      rm -f "$model_artifact_file"
       # #137: 即時失敗判定。rc≠0（quota 以外）かつ elapsed < 閾値なら「codex が実質作業前に
       # 即死した」とみなし、attempt budget を消費せず state を巻き戻す（quota 経路と同型:
       # total / no-progress baseline を据え置き）。immediate_failure_streak のみ加算する。

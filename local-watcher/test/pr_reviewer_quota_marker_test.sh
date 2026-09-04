@@ -11,6 +11,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CORE_UTILS_SH="$SCRIPT_DIR/../bin/idd-codex-modules/core_utils.sh"
 QUOTA_AWARE_SH="$SCRIPT_DIR/../bin/idd-codex-modules/quota-aware.sh"
+MODEL_PREFLIGHT_SH="$SCRIPT_DIR/../bin/idd-codex-modules/model-preflight.sh"
 PR_REVIEWER_SH="$SCRIPT_DIR/../bin/idd-codex-modules/pr-reviewer.sh"
 PR_ITERATION_SH="$SCRIPT_DIR/../bin/idd-codex-modules/pr-iteration.sh"
 FIXTURE_DIR="$SCRIPT_DIR/fixtures/pr_reviewer_usage_limit"
@@ -21,6 +22,10 @@ if [ ! -f "$CORE_UTILS_SH" ]; then
 fi
 if [ ! -f "$QUOTA_AWARE_SH" ]; then
   echo "ERROR: cannot find quota-aware.sh at $QUOTA_AWARE_SH" >&2
+  exit 2
+fi
+if [ ! -f "$MODEL_PREFLIGHT_SH" ]; then
+  echo "ERROR: cannot find model-preflight.sh at $MODEL_PREFLIGHT_SH" >&2
   exit 2
 fi
 if [ ! -f "$PR_REVIEWER_SH" ]; then
@@ -66,6 +71,8 @@ eval "$(extract_function "$QUOTA_AWARE_SH" "qa_detect_rate_limit")"
 eval "$(extract_function "$QUOTA_AWARE_SH" "qa_extract_usage_limit_reset_epoch")"
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$QUOTA_AWARE_SH" "qa_persist_reset_time")"
+# shellcheck source=../bin/idd-codex-modules/model-preflight.sh
+. "$MODEL_PREFLIGHT_SH"
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$PR_REVIEWER_SH" "pr_reviewer_quota_marker_reset")"
 # shellcheck disable=SC1090,SC2086
@@ -79,6 +86,10 @@ eval "$(extract_function "$PR_REVIEWER_SH" "pr_validate_placeholder_value")"
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$PR_REVIEWER_SH" "pr_substitute_placeholders")"
 # shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$PR_REVIEWER_SH" "pr_build_marker")"
+# shellcheck disable=SC1090,SC2086
+eval "$(extract_function "$PR_REVIEWER_SH" "pr_post_error_comment")"
+# shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$PR_REVIEWER_SH" "pr_detect_usage_limit_reset_epoch")"
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$PR_REVIEWER_SH" "pr_handle_quota_wait")"
@@ -89,9 +100,10 @@ eval "$(extract_function "$PR_ITERATION_SH" "pi_pr_has_pr_reviewer_quota_marker"
 
 for fn in idd_secure_mktemp qa_format_iso8601 pr_log pr_warn pr_error qa_detect_rate_limit \
   qa_extract_usage_limit_reset_epoch qa_persist_reset_time \
+  mp_detect_model_error mp_build_last_config_error_summary \
   pr_reviewer_quota_marker_reset pr_default_prompt pr_build_prompt_file \
   pr_placeholder_reject_reason pr_validate_placeholder_value \
-  pr_substitute_placeholders pr_detect_usage_limit_reset_epoch \
+  pr_substitute_placeholders pr_build_marker pr_post_error_comment pr_detect_usage_limit_reset_epoch \
   pr_handle_quota_wait pr_run_review_for_pr pi_pr_has_pr_reviewer_quota_marker; do
   if ! declare -F "$fn" >/dev/null; then
     echo "ERROR: $fn not loaded" >&2
@@ -179,6 +191,7 @@ export LABEL_NEEDS_QUOTA_WAIT="codex-needs-quota-wait"
 export PR_REVIEWER_GIT_TIMEOUT=5
 export PR_REVIEWER_EXEC_TIMEOUT=5
 export PR_REVIEWER_CODEX_CMD='codex --prompt {PROMPT_FILE}'
+export REVIEWER_MODEL="gpt-5.4-old"
 export PR_ITERATION_GIT_TIMEOUT=5
 export LOG_DIR="$tmp_dir/logs"
 export QUOTA_RESET_STATE_FILE="$tmp_dir/quota-reset-times.json"
@@ -210,6 +223,10 @@ pr_already_processed() {
   return 1
 }
 
+pr_record_exec_fail() {
+  return 0
+}
+
 pr_execute_review_command() {
   local _head_ref="$1"
   local _resolved_cmd="$2"
@@ -219,8 +236,16 @@ pr_execute_review_command() {
   local result_file="$6"
 
   : > "$out_file"
-  cat "$FIXTURE_DIR/usage-limit-with-reset-stderr.jsonl" > "$err_file"
-  printf 'ran:1:clean\n' > "$result_file"
+  case "${PR_REVIEWER_QUOTA_TEST_MODE:-quota}" in
+    model-error)
+      printf 'Error: unsupported model gpt-5.4-old\n' > "$err_file"
+      printf 'ran:42:clean\n' > "$result_file"
+      ;;
+    *)
+      cat "$FIXTURE_DIR/usage-limit-with-reset-stderr.jsonl" > "$err_file"
+      printf 'ran:1:clean\n' > "$result_file"
+      ;;
+  esac
   return 0
 }
 
@@ -251,6 +276,38 @@ assert_eq "quota wait コメント marker を投稿する" \
 assert_eq "exec-failed コメントを投稿しない" \
   "false" \
   "$(jq -r 'any(.[]; (.body // "") | contains("exec-failed"))' "$comments_file")"
+
+echo ""
+echo "--- pr_run_review_for_pr model config error case ---"
+
+export PR_REVIEWER_QUOTA_TEST_MODE="model-error"
+printf '[]\n' > "$comments_file"
+: > "$labels_file"
+rm -f "$QUOTA_RESET_STATE_FILE"
+mp_clear_last_config_error
+
+rc=0
+pr_run_review_for_pr "$pr_json" "codex" >/dev/null 2>&1 || rc=$?
+assert_eq "model error の PR Reviewer は exec-error rc=3" "3" "$rc"
+model_comment_body="$(jq -r '.[0].body // ""' "$comments_file")"
+assert_eq "model error は quota wait label を付与しない" \
+  "false" \
+  "$(grep -qx 'codex-needs-quota-wait' "$labels_file" && echo true || echo false)"
+assert_eq "model error comment includes setting-error wording" \
+  "true" \
+  "$(printf '%s' "$model_comment_body" | grep -Fq 'モデル設定エラーの可能性' && echo true || echo false)"
+assert_eq "model error comment includes sanitized reason" \
+  "true" \
+  "$(printf '%s' "$model_comment_body" | grep -Fq 'unsupported-model' && echo true || echo false)"
+assert_eq "model error comment includes reviewer model" \
+  "true" \
+  "$(printf '%s' "$model_comment_body" | grep -Fq 'gpt-5.4-old' && echo true || echo false)"
+assert_eq "model error public comment uses correlation token" \
+  "true" \
+  "$(printf '%s' "$model_comment_body" | grep -Fq 'correlation:' && printf '%s' "$model_comment_body" | grep -Fq 'diagnostic' && echo true || echo false)"
+assert_eq "model error public comment omits raw stderr line" \
+  "false" \
+  "$(printf '%s' "$model_comment_body" | grep -Fq 'Error: unsupported model' && echo true || echo false)"
 
 echo ""
 echo "==========================================="

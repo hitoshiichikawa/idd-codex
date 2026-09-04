@@ -1,0 +1,2 @@
+{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":"2026-05-15T05:00:00Z"}}
+{"type":"error","message":"model not found: gpt-5.4-old"}

@@ -1646,20 +1646,41 @@ pr_run_review_for_pr() {
     local quota_reset_epoch
     quota_reset_epoch=$(pr_detect_usage_limit_reset_epoch "$out_file" "$err_file")
     if [[ "$quota_reset_epoch" =~ ^[0-9]+$ ]]; then
+      if declare -F mp_clear_last_config_error >/dev/null; then
+        mp_clear_last_config_error
+      fi
       pr_handle_quota_wait "$pr_number" "$sha" "$tool" "$quota_reset_epoch" || true
       return 2
     fi
 
-    local diagnostic_file correlation_token detail
+    local diagnostic_file correlation_token detail model_summary=""
     diagnostic_file=$(pr_write_exec_failure_diagnostic "$pr_number" "$sha" "$tool" "$exec_rc" "$out_file" "$err_file")
     correlation_token="unavailable"
     if [ -n "$diagnostic_file" ]; then
       correlation_token="$(basename "$diagnostic_file")"
     fi
     pr_error "PR #${pr_number}: レビュー実行コマンドが非ゼロ終了 (exit=${exec_rc}, tool=${tool}, correlation=${correlation_token})"
+    if [ "$tool" = "codex" ] && declare -F mp_detect_model_error >/dev/null; then
+      local reviewer_model="${PR_REVIEWER_MODEL:-${REVIEWER_MODEL:-unknown}}"
+      local _mp_detected="" _mp_rc=0 _mp_reason _mp_excerpt _mp_artifact
+      _mp_detected="$(mp_detect_model_error "$reviewer_model" "$out_file" "$err_file")" || _mp_rc=$?
+      if [ "$_mp_rc" -eq 0 ]; then
+        IFS=$'\t' read -r _mp_reason _mp_excerpt _mp_artifact <<<"$_mp_detected"
+        mp_record_config_error "post-run" "PR-reviewer-${tool}" "$reviewer_model" "$_mp_reason" "$correlation_token"
+        mp_error "model-config-error stage=PR-reviewer-${tool} model=$(mp_sanitize_token "$reviewer_model") reason=$(mp_sanitize_token "$_mp_reason") artifact=${_mp_artifact} correlation=${correlation_token} excerpt=$(mp_sanitize_excerpt "$_mp_excerpt")"
+        model_summary="$(mp_build_last_config_error_summary)"
+      else
+        mp_clear_last_config_error
+      fi
+    elif declare -F mp_clear_last_config_error >/dev/null; then
+      mp_clear_last_config_error
+    fi
     # shellcheck disable=SC2016  # 単一引用符内のバッククォートは markdown inline code のリテラル
     detail=$(printf 'レビュー実行コマンドが非ゼロ終了しました。詳細は watcher のローカルログまたは診断 artifact を確認してください。\n\n- PR: #%s\n- sha: `%s`\n- tool: `%s`\n- exit: `%s`\n- correlation: `%s`' \
       "$pr_number" "$sha" "$tool" "$exec_rc" "$correlation_token")
+    if [ -n "$model_summary" ]; then
+      detail="${detail}${model_summary}"
+    fi
     pr_post_error_comment "$pr_number" "$sha" "exec-failed" "$detail" "$tool"
     pr_record_exec_fail "$pr_number" "$sha" >/dev/null  # #403: non-quota exec 失敗を streak に計上
     return 3
