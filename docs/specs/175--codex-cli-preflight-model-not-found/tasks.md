@@ -26,7 +26,7 @@
   - _Boundary: Watcher Bootstrap, Model Preflight Gate, Model Error Classifier, Quota Boundary Adapter, Model Config Error Escalation, Model Preflight Regression Tests_
   - _Depends: 2_
 
-- [ ] 4. PR iteration / PR reviewer / failed-recovery の設定エラー観測を接続する
+- [x] 4. PR iteration / PR reviewer / failed-recovery の設定エラー観測を接続する
   - PR iteration の codex 非 0 exit 後、usage-limit / 529 と競合しない位置で log artifact を `mp_detect_model_error` に渡し、escalation comment に「設定エラーの可能性」を含める。
   - PR reviewer の non-quota exec failure で stdout / stderr artifact を classifier に渡し、public comment は sanitized reason と correlation token に限定する。
   - failed-recovery の codex attempt が rc=78 または model error 分類済みの場合、attempt budget を消費しない `model-config-error` reason として state / comment に残す。
