@@ -52,6 +52,7 @@ reset_env() {
   export STUB_CODEX_MODE="ok"
   export STUB_CODEX_VERSION="0.144.0"
   : >"$MP_TEST_CALL_LOG"
+  mp_clear_last_config_error
 }
 
 assert_eq() {
@@ -186,6 +187,45 @@ reset_env
 export STUB_CODEX_VERSION="0.144.0-beta.1"
 assert_rc "known model equal version with suffix passes" "0" \
   mp_preflight_model "stage-a" "gpt-5.6-terra"
+
+reset_env
+plain_model_error="$TMP_DIR/model-not-found.log"
+printf '%s\n' "Error: model not found: gpt-5.4-old" > "$plain_model_error"
+detect_out="$(mp_detect_model_error "gpt-5.4-old" "$plain_model_error")"
+assert_contains "classifier detects model not found reason" "$detect_out" "model-not-found"
+assert_contains "classifier output includes artifact path" "$detect_out" "$plain_model_error"
+
+reset_env
+stream_model_error="$TMP_DIR/unsupported-model.jsonl"
+printf '%s\n' '{"type":"error","message":"Unsupported model: gpt-5.6-slo"}' > "$stream_model_error"
+detect_out="$(mp_detect_model_error "gpt-5.6-slo" "$stream_model_error")"
+assert_contains "classifier detects unsupported model from stream-json line" "$detect_out" "unsupported-model"
+
+reset_env
+account_model_error="$TMP_DIR/model-account.log"
+printf '%s\n' "The selected model is not available for your account." > "$account_model_error"
+detect_out="$(mp_detect_model_error "gpt-5.6-luna" "$account_model_error")"
+assert_contains "classifier detects account availability model error" "$detect_out" "model-not-available-for-account"
+
+reset_env
+normal_error="$TMP_DIR/normal-error.log"
+printf '%s\n' "regular tool failure" > "$normal_error"
+rc=0
+mp_detect_model_error "gpt-5.5" "$normal_error" >/dev/null 2>&1 || rc=$?
+assert_eq "classifier does not classify normal errors" "1" "$rc"
+
+reset_env
+missing_artifact="$TMP_DIR/missing-artifact.log"
+rc=0
+mp_detect_model_error "gpt-5.5" "$missing_artifact" >/dev/null 2>&1 || rc=$?
+assert_eq "classifier reports unreadable artifacts separately" "2" "$rc"
+
+reset_env
+mp_record_config_error "post-run" "StageA" "gpt-5.4-old" "model-not-found" "$plain_model_error"
+summary="$(mp_build_last_config_error_summary)"
+assert_contains "config summary states setting error possibility" "$summary" "モデル設定エラーの可能性"
+assert_contains "config summary includes failing model" "$summary" "gpt-5.4-old"
+assert_contains "config summary includes recovery guidance" "$summary" "codex update"
 
 echo ""
 echo "==========================================="
