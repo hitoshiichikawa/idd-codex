@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034
 #
 # 用途: failed-recovery.sh の gate / 通算budget永続化 / no-progress ガード / quota 待機
 #       （budget 不消費）/ 確実な終端通知 / dispatcher 統合を stub で検証する。Issue #101 / D-19。
@@ -13,8 +14,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODULE_SH="$SCRIPT_DIR/../bin/idd-codex-modules/failed-recovery.sh"
+MODEL_PREFLIGHT_SH="$SCRIPT_DIR/../bin/idd-codex-modules/model-preflight.sh"
 WATCHER_SH="$SCRIPT_DIR/../bin/idd-codex-issue-watcher.sh"
-for f in "$MODULE_SH" "$WATCHER_SH"; do
+for f in "$MODULE_SH" "$MODEL_PREFLIGHT_SH" "$WATCHER_SH"; do
   [ -f "$f" ] || { echo "ERROR: not found: $f" >&2; exit 2; }
 done
 
@@ -40,10 +42,12 @@ for fn in "${REAL_FNS[@]}"; do
   # shellcheck disable=SC1090,SC2086
   eval "$(extract_function "$MODULE_SH" "$fn")"
 done
+# shellcheck source=../bin/idd-codex-modules/model-preflight.sh
+. "$MODEL_PREFLIGHT_SH"
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$WATCHER_SH" "full_auto_enabled")"
 
-for fn in "${REAL_FNS[@]}" full_auto_enabled; do
+for fn in "${REAL_FNS[@]}" mp_classify_codex_failure mp_build_last_config_error_summary full_auto_enabled; do
   declare -F "$fn" >/dev/null || { echo "ERROR: $fn not loaded" >&2; exit 2; }
 done
 
@@ -65,7 +69,7 @@ FR_COMMENT_MARKER="idd-codex:failed-recovery"
 
 # ─── trace 変数（stub 呼び出しの記録）───
 GH_CALL_LOG=""; STATE_DIR=""
-INVOKE_CODEX_RC=0; INVOKE_CODEX_EPOCH=""; INVOKE_CODEX_COUNT=0
+INVOKE_CODEX_RC=0; INVOKE_CODEX_EPOCH=""; INVOKE_CODEX_COUNT=0; INVOKE_CODEX_MODEL_ERROR=false
 QUOTA_EXCEEDED_COUNT=0; PERSIST_RESET_COUNT=0; SET_RESULT_LOG=""; COMMENT_LOG=""
 COLLECT_CONTEXT=""; DISPATCH_LOG=""
 GH_ISSUE_LIST_RESPONSE="[]"; GH_PR_LIST_RESPONSE="[]"; GH_PR_VIEW_RESPONSE="{}"
@@ -92,13 +96,17 @@ rs_set_result() { printf '%s\n' "$1" >>"$SET_RESULT_LOG"; return 0; }
 fr_invoke_codex() {
   INVOKE_CODEX_COUNT=$((INVOKE_CODEX_COUNT + 1))
   local reset_file="$3"
+  local model_artifact_file="${5:-}"
   : > "$reset_file"
   [ -n "$INVOKE_CODEX_EPOCH" ] && printf '%s\n' "$INVOKE_CODEX_EPOCH" > "$reset_file"
+  if [ "$INVOKE_CODEX_MODEL_ERROR" = "true" ] && [ -n "$model_artifact_file" ]; then
+    printf 'fatal: model not found: %s\n' "$FAILED_RECOVERY_DEV_MODEL" > "$model_artifact_file"
+  fi
   return "$INVOKE_CODEX_RC"
 }
 fr_collect_issue_context() { printf '%s' "$COLLECT_CONTEXT"; }
 fr_collect_pr_ci_context() { printf '%s' "$COLLECT_CONTEXT"; }
-fr_post_attempt_comment() { printf '%s|%s|%s\n' "$1" "$2" "${3:0:40}" >>"$COMMENT_LOG"; return 0; }
+fr_post_attempt_comment() { printf '%s|%s|%s\n' "$1" "$2" "$3" >>"$COMMENT_LOG"; return 0; }
 qa_handle_quota_exceeded() { QUOTA_EXCEEDED_COUNT=$((QUOTA_EXCEEDED_COUNT + 1)); return 0; }
 qa_persist_reset_time() { PERSIST_RESET_COUNT=$((PERSIST_RESET_COUNT + 1)); return 0; }
 # #105: fr_terminate_* が呼ぶ Slack 介入通知（本テストでは no-op stub）。
@@ -108,6 +116,7 @@ reset_state() {
   GH_CALL_LOG="$(mktemp)"; SET_RESULT_LOG="$(mktemp)"; COMMENT_LOG="$(mktemp)"
   STATE_DIR="$(mktemp -d)"; FAILED_RECOVERY_STATE_DIR="$STATE_DIR"
   INVOKE_CODEX_RC=0; INVOKE_CODEX_EPOCH=""; INVOKE_CODEX_COUNT=0
+  INVOKE_CODEX_MODEL_ERROR=false
   QUOTA_EXCEEDED_COUNT=0; PERSIST_RESET_COUNT=0
   GH_ISSUE_LIST_RESPONSE="[]"; GH_PR_LIST_RESPONSE="[]"; GH_PR_VIEW_RESPONSE="{}"
 }
@@ -222,7 +231,29 @@ assert_eq "quota → last_status=quota-wait" "quota-wait" "$(state_field issue 1
 assert_eq "quota → baseline signature 据え置き(prevsig)" "prevsig" "$(state_field issue 14 '.last_failure_signature')"
 assert_eq "quota(issue) → qa_handle_quota_exceeded 1 回" "1" "$QUOTA_EXCEEDED_COUNT"
 
-echo ""; echo "--- 12. fr_run_recovery_attempt: PR quota → qa_handle 経由せず persist+comment ---"
+echo ""; echo "--- 12. fr_run_recovery_attempt: model config error → budget 不消費 ---"
+reset_state; COLLECT_CONTEXT="model config mismatch"; INVOKE_CODEX_RC=78
+fr_save_state issue 15 2 "failed" "prevsig" ""
+run_attempt issue 15 ""
+assert_eq "model preflight rc → rc 1 (codex-failed 据え置き)" "1" "$ATTEMPT_RC"
+assert_eq "model preflight rc → budget 不消費 (total=2 に巻き戻し)" "2" "$(state_field issue 15 '.total_attempts')"
+assert_eq "model preflight rc → last_status=model-config-error" "model-config-error" "$(state_field issue 15 '.last_status')"
+assert_eq "model preflight rc → terminal として扱う" "0" "$(rc_of fr_is_terminated "$(fr_load_state issue 15)")"
+assert_eq "model preflight rc → 設定エラー comment" \
+  "true" \
+  "$(grep -Fq 'モデル設定エラーの可能性' "$COMMENT_LOG" && echo true || echo false)"
+
+reset_state; COLLECT_CONTEXT="retired model"; INVOKE_CODEX_RC=1; INVOKE_CODEX_MODEL_ERROR=true
+fr_save_state issue 16 3 "failed" "prevsig2" ""
+run_attempt issue 16 ""
+assert_eq "model-not-found artifact → rc 1" "1" "$ATTEMPT_RC"
+assert_eq "model-not-found artifact → budget 不消費 (total=3 に巻き戻し)" "3" "$(state_field issue 16 '.total_attempts')"
+assert_eq "model-not-found artifact → last_status=model-config-error" "model-config-error" "$(state_field issue 16 '.last_status')"
+assert_eq "model-not-found artifact → comment has reason" \
+  "true" \
+  "$(grep -Fq 'model-not-found' "$COMMENT_LOG" && echo true || echo false)"
+
+echo ""; echo "--- 13. fr_run_recovery_attempt: PR quota → qa_handle 経由せず persist+comment ---"
 reset_state; COLLECT_CONTEXT="ci red"; INVOKE_CODEX_RC=99; INVOKE_CODEX_EPOCH="2000000000"
 PRJSON='{"number":42,"headRefName":"codex/issue-42-impl-x","headRefOid":"sha42"}'
 run_attempt pr 42 "$PRJSON"
@@ -230,7 +261,7 @@ assert_eq "PR quota → rc 99" "99" "$ATTEMPT_RC"
 assert_eq "PR quota → qa_handle_quota_exceeded 呼ばない" "0" "$QUOTA_EXCEEDED_COUNT"
 assert_eq "PR quota → qa_persist_reset_time 1 回" "1" "$PERSIST_RESET_COUNT"
 
-echo ""; echo "--- 13. 終端通知（max-attempts / no-progress）---"
+echo ""; echo "--- 14. 終端通知（max-attempts / no-progress）---"
 reset_state
 fr_terminate_max_attempts issue 20 4
 assert_eq "max-attempts → rs_set_result(codex-failed) 1 回" "1" "$(grep -c 'codex-failed' "$SET_RESULT_LOG" || true)"
@@ -241,7 +272,7 @@ fr_terminate_no_progress pr 21 2 "deadbeefcafe"
 assert_eq "no-progress → rs_set_result(codex-failed) 1 回" "1" "$(grep -c 'codex-failed' "$SET_RESULT_LOG" || true)"
 assert_eq "no-progress → コメント 1 件" "1" "$(grep -c '^pr|21|' "$COMMENT_LOG" || true)"
 
-echo ""; echo "--- 14. _fr_dispatch_candidate（rc ルーティング）---"
+echo ""; echo "--- 15. _fr_dispatch_candidate（rc ルーティング）---"
 reset_state
 # rc 2 → max-attempts 終端
 fr_run_recovery_attempt() { return 2; }
@@ -263,7 +294,7 @@ assert_eq "rc99(quota) → 非終端・rs_set_result なし" "0" "$(grep -c 'cod
 # shellcheck disable=SC1090,SC2086
 eval "$(extract_function "$MODULE_SH" "fr_run_recovery_attempt")"
 
-echo ""; echo "--- 15. process_failed_recovery（二重 opt-in gate）---"
+echo ""; echo "--- 16. process_failed_recovery（二重 opt-in gate）---"
 # fetch / dispatch を stub 化して gate 挙動と enumerate を検証。
 # eval 上書きで（literal 定義を作らず）、上の section が呼ぶ eval 抽出版の前方参照
 # 誤検知（SC2218）を避ける。

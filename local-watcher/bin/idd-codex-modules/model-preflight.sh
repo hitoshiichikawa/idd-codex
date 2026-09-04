@@ -359,6 +359,28 @@ mp_classify_stage_model_error() {
   return 0
 }
 
+mp_classify_codex_failure() {
+  local stage_label="$1"
+  local model_id="$2"
+  local codex_rc="$3"
+  shift 3
+
+  if [ "$codex_rc" -eq "${MP_MODEL_CONFIG_ERROR_RC:-78}" ]; then
+    local artifact="${1:-}"
+    mp_record_config_error "preflight" "$stage_label" "${model_id:-unknown}" "model-preflight-failed" "$artifact"
+    mp_error "model-config-error stage=$(mp_sanitize_token "$stage_label") model=$(mp_sanitize_token "${model_id:-unknown}") reason=model-preflight-failed artifact=${artifact}"
+    return 0
+  fi
+
+  if [ "$codex_rc" -ne 0 ] && [ -n "$model_id" ]; then
+    mp_classify_stage_model_error "$stage_label" "$model_id" "$@"
+    return $?
+  fi
+
+  mp_clear_last_config_error
+  return 1
+}
+
 mp_build_config_error_summary() {
   local kind="$1"
   local stage_label="$2"

@@ -91,6 +91,37 @@
 |--------------------|----------|-----------------|------------|----------------|---------------------|--------------------------|
 | なし | Task 3 | - | `e2670bb feat(watcher): model preflightをcodex起動経路へ接続する` | `model_preflight_test.sh`; `model_preflight_exec_prompt_test.sh`; `qa_run_codex_stage_test.sh`; `module_loader_missing_test.sh`; related guard / PR / failed-recovery regressions | all PASS | 既存 `review-notes.md` は task 2 round 2 approve で、本 task に対する reject Finding は存在しない |
 
+### Task 4
+- 採用方針: `mp_classify_codex_failure` を共通 helper として追加し、PR iteration / PR reviewer / failed-recovery の non-quota failure 経路から既存 model error summary を再利用する構成にした。
+- 重要な判断: PR iteration は usage-limit fatal と 529 detected を優先して model config comment を skip し、通常の non-zero / rc=78 のみ設定エラー候補として PR comment に残す。
+- 重要な判断: PR reviewer は stdout / stderr を classifier に渡すが、public comment には raw output ではなく diagnostic correlation token と sanitized reason だけを載せる。
+- 重要な判断: failed-recovery は rc=78 または attempt artifact の model-not-found 分類時に `last_status=model-config-error` として terminal 扱いし、attempt budget / no-progress baseline を前回値へ巻き戻す。
+- 残存課題: README 更新と最終 regression verification の文書化は task 5 の範囲。
+
+#### AC Coverage Matrix
+
+| Requirement / AC | Implementation path | Production entrypoint / owning flow | Test / assertion | Verification result | Notes |
+|------------------|---------------------|-------------------------------------|------------------|---------------------|-------|
+| 1.3 | `model-preflight.sh` / `mp_classify_codex_failure`; `pr-iteration.sh` / `pi_maybe_handle_model_config_error`; `pr-reviewer.sh` / `pr_run_review_for_pr`; `failed-recovery.sh` / `fr_run_recovery_attempt` | PR iteration failure comment / PR reviewer exec-failed comment / failed-recovery attempt comment | `pi_usage_limit_fatal_test.sh`: model / preflight rc comment assertions; `pr_reviewer_quota_marker_test.sh`: setting-error comment assertions; `failed_recovery_test.sh`: setting-error comment assertions | stage-a-verify block: PASS | 標準 Issue failure comment は task 3 で接続済み。本 task は PR / failed-recovery 固有経路を補完 |
+| 2.1 | `mp_classify_codex_failure`, `mp_detect_model_error` call sites | PR iteration log artifact, PR reviewer stdout/stderr artifact, failed-recovery attempt artifact | `failed_recovery_test.sh`: model-not-found artifact; existing `model_preflight_test.sh`: classifier model-not-found | stage-a-verify block: PASS | PR iteration / reviewer は 2.2 の unsupported-model fixture で同じ classifier path を検証 |
+| 2.2 | `pi_maybe_handle_model_config_error`; `pr_run_review_for_pr` model summary branch | PR iteration non-zero Codex log, PR reviewer exec-failed stdout/stderr | `pi_usage_limit_fatal_test.sh`: unsupported-model PR iteration comment; `pr_reviewer_quota_marker_test.sh`: unsupported-model reviewer comment | stage-a-verify block: PASS | Case-insensitive classifier 本体は task 3 の `model_preflight_test.sh` で固定済み |
+| 2.3 | `mp_error` logs from PR iteration / PR reviewer / failed-recovery adapters | operator-visible module logs for non-quota failures | `pi_usage_limit_fatal_test.sh`, `pr_reviewer_quota_marker_test.sh`, `failed_recovery_test.sh` plus `shellcheck --severity=warning ...` | stage-a-verify block: PASS | logs include stable `model-preflight:` prefix and stage / model / reason / artifact or correlation |
+| 2.4 | `mp_build_last_config_error_summary` appended by PR iteration / PR reviewer / failed-recovery | PR / recovery escalation comments | `pi_usage_limit_fatal_test.sh`: comment contains `モデル設定エラーの可能性`; `pr_reviewer_quota_marker_test.sh`: sanitized reason/model/correlation; `failed_recovery_test.sh`: comment contains reason | stage-a-verify block: PASS | raw stderr line is not included in PR reviewer public comment |
+| 2.5 | PR iteration usage-limit/529 skip; PR reviewer quota branch; failed-recovery quota branch | quota wait owning flows before model classification | `pi_usage_limit_fatal_test.sh`: usage-limit and 529 skip model comment; `pr_reviewer_quota_marker_test.sh`: quota wait label/comment and no exec-failed; `failed_recovery_test.sh`: quota budget preserved | stage-a-verify block: PASS | quota rc=99 and existing quota wait labels remain higher priority |
+| 5.3 | changed adapters preserve existing labels / rc meanings | existing PR iteration, PR reviewer, failed-recovery processors | related tests above; `qa_run_codex_stage_test.sh` existing quota rc assertions | stage-a-verify block: PASS | new `model-config-error` is failed-recovery state reason only; no label/env/default model change |
+| 5.4 | changed bash modules only | local watcher runtime | `shellcheck --severity=warning ...` | PASS | no new runtime dependency or external service call |
+| 6.3 | PR iteration / reviewer / failed-recovery model error regressions | owning shell-level flows | `pi_usage_limit_fatal_test.sh`, `pr_reviewer_quota_marker_test.sh`, `failed_recovery_test.sh` | PASS | complements task 3 standard stage classifier regression |
+| NFR 1.1 | labels unchanged; comments/states only | PR iteration / reviewer / failed-recovery labels | `pr_reviewer_quota_marker_test.sh`: no quota label for model error; existing tests confirm existing label paths | stage-a-verify block: PASS | no new label introduced |
+| NFR 1.2 | quota wait priority before model classification | PR iteration usage-limit, PR reviewer quota, failed-recovery quota | `pi_usage_limit_fatal_test.sh`, `pr_reviewer_quota_marker_test.sh`, `failed_recovery_test.sh`, `qa_run_codex_stage_test.sh` | PASS | `QUOTA_AWARE_ENABLED` semantics untouched |
+| NFR 2.1 | `model-preflight:` logs from adapters | operator-visible stderr/log | tests exercise adapter log-producing paths; shellcheck clean | stage-a-verify block: PASS | stable prefix reused |
+| NFR 2.2 | summary builder reused with model / action guidance | PR / failed-recovery comments | `pi_usage_limit_fatal_test.sh`, `pr_reviewer_quota_marker_test.sh`, `failed_recovery_test.sh` | PASS | recommended action remains `codex update` / model env check |
+
+#### Finding Closure Matrix
+
+| Target requirement | Category | Required Action | Fix commit | Test/assertion | Verification result | Notes / no-change reason |
+|--------------------|----------|-----------------|------------|----------------|---------------------|--------------------------|
+| なし | Task 4 | - | `feat(watcher): PR系のmodel config分類を接続する` | `pi_usage_limit_fatal_test.sh`; `pr_reviewer_quota_marker_test.sh`; `failed_recovery_test.sh`; `fr_terminate_idempotent_test.sh` | all PASS | 既存 `review-notes.md` は task 3 approve で、本 task に対する reject Finding は存在しない |
+
 ## 確認事項
 
 - `tasks.md` の task 1 は `_Requirements:_` に 4.3（model preflight が共有 semver helper を使うこと）を含むが、`model-preflight.sh` の作成と接続は task 2/3 に明示されている。本 task では共有 helper の提供と guard hook 接続までを実装し、model preflight 側の利用は後続 task に残した。

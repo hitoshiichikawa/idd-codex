@@ -993,6 +993,46 @@ $(build_recovery_hint "yes")"
   return 0
 }
 
+pi_maybe_handle_model_config_error() {
+  local pr_number="$1"
+  local kind="$2"
+  local round="$3"
+  local model_id="$4"
+  local codex_rc="$5"
+  local log_file="$6"
+  local usage_limit_observed="${7:-false}"
+  local overloaded_observed="${8:-false}"
+
+  if ! declare -F mp_classify_codex_failure >/dev/null; then
+    return 1
+  fi
+
+  if [ "$usage_limit_observed" = "true" ] || [ "$overloaded_observed" = "true" ]; then
+    mp_clear_last_config_error
+    return 1
+  fi
+
+  local _mp_rc=0
+  mp_classify_codex_failure "PR-iteration-${kind}-r${round}" "$model_id" "$codex_rc" "$log_file" || _mp_rc=$?
+  if [ "$_mp_rc" -ne 0 ]; then
+    return "$_mp_rc"
+  fi
+
+  local summary marker body
+  summary="$(mp_build_last_config_error_summary)"
+  marker="<!-- idd-codex:pr-iteration-model-config-error round=${round} -->"
+  body="## :warning: PR Iteration model 設定エラーの可能性
+${summary}
+
+${marker}"
+  if ! timeout "$PR_ITERATION_GIT_TIMEOUT" \
+      gh pr comment "$pr_number" --repo "$REPO" --body "$body" >/dev/null 2>&1; then
+    pi_warn "PR #${pr_number}: kind=${kind} round=${round} model 設定エラーコメントの投稿に失敗 (既存処理は継続)"
+  fi
+  pi_log "PR #${pr_number}: kind=${kind} round=${round} model-config-error action=comment"
+  return 0
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # pi_build_iteration_prompt: 指定 template に変数を注入
 #   入力: $1=pr_number, $2=pr_json, $3=round, $4=template_path（省略時は impl 用既定）
@@ -2069,6 +2109,7 @@ pi_run_iteration() {
     codex_rc="${_pi_pipestatus[0]:-0}"
 
     local usage_limit_fatal_observed=false
+    local overloaded_observed=false
     if [ "$codex_rc" -ne 0 ]; then
       pi_warn "PR #${pr_number}: kind=${kind} Codex 実行が失敗 (log: ${pi_log_file})"
       local _pi_usage_rc=0
@@ -2096,6 +2137,7 @@ pi_run_iteration() {
         case "$_pi_529_rc" in
           0)
             pi_log "PR #${pr_number}: kind=${kind} round=${next_round} 529-overloaded detected (log: ${pi_log_file})"
+            overloaded_observed=true
             local _pi_529_body
             _pi_529_body=":warning: **Codex API 一時混雑エラー (529 Overloaded)**: 混雑のため一時処理を中断しました。進捗（Round数等）は据え置かれ、次のポーリングサイクルで自動再試行します。
 
@@ -2113,6 +2155,10 @@ pi_run_iteration() {
             ;;
         esac
       fi
+
+      pi_maybe_handle_model_config_error \
+        "$pr_number" "$kind" "$next_round" "$PR_ITERATION_DEV_MODEL" "$codex_rc" "$pi_log_file" \
+        "$usage_limit_fatal_observed" "$overloaded_observed" || true
     else
       pi_log "PR #${pr_number}: kind=${kind} Codex 実行完了 (log: ${pi_log_file})"
     fi

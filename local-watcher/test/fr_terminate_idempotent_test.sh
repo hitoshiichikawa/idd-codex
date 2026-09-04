@@ -124,6 +124,7 @@ assert_eq "quota-wait → 未終端(1)"            "1" "$(rc_of fr_is_terminated
 assert_eq "max-attempts → 終端(0)"            "0" "$(rc_of fr_is_terminated '{"last_status":"max-attempts"}')"
 assert_eq "no-progress → 終端(0)"             "0" "$(rc_of fr_is_terminated '{"last_status":"no-progress"}')"
 assert_eq "immediate-failure-streak → 終端(0)" "0" "$(rc_of fr_is_terminated '{"last_status":"immediate-failure-streak"}')"
+assert_eq "model-config-error → 終端(0)"      "0" "$(rc_of fr_is_terminated '{"last_status":"model-config-error"}')"
 assert_eq "終端理由を stdout に出す"           "max-attempts" "$(fr_is_terminated '{"last_status":"max-attempts"}')"
 assert_eq "破損 JSON → 未終端(1) fail-open"    "1" "$(rc_of fr_is_terminated 'not json {{{')"
 
