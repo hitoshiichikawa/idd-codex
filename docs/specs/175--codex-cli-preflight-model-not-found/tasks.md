@@ -17,7 +17,7 @@
   - _Boundary: Model Preflight Module, Model Version Requirement Map, Model Preflight Gate, Model Preflight Regression Tests_
   - _Depends: 1_
 
-- [ ] 3. codex 起動経路へ preflight と model error classifier を接続する
+- [x] 3. codex 起動経路へ preflight と model error classifier を接続する
   - `REQUIRED_MODULES` に `model-preflight.sh` を追加し、module missing test の期待に新 module を反映する。
   - `codex_exec_prompt` の codex command 実行前に `mp_preflight_model "$stage_label" "$model"` を呼び、rc=78 では codex command を起動せず呼び出し側へ伝播する。
   - `mp_detect_model_error` を実装し、`model not found` / `unsupported model` / `unknown model` / account availability 系 pattern を sanitized reason として返す。
