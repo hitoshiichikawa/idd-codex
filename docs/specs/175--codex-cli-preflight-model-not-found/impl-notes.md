@@ -122,6 +122,35 @@
 |--------------------|----------|-----------------|------------|----------------|---------------------|--------------------------|
 | なし | Task 4 | - | `feat(watcher): PR系のmodel config分類を接続する` | `pi_usage_limit_fatal_test.sh`; `pr_reviewer_quota_marker_test.sh`; `failed_recovery_test.sh`; `fr_terminate_idempotent_test.sh` | all PASS | 既存 `review-notes.md` は task 3 approve で、本 task に対する reject Finding は存在しない |
 
+### Task 5
+- 採用方針: README の default ON 一覧、詳細節、Troubleshooting に model preflight / model-not-found 分類の運用手順を追加し、既存 regression verification を再実行して最終証跡を固定した。
+- 重要な判断: `MODEL_PREFLIGHT_ENABLED=false` は一時的な escape hatch として説明しつつ、通常復旧は `codex update` と各 `*_MODEL` / `MODEL_PREFLIGHT_MIN_VERSIONS` の確認へ誘導した。
+- 重要な判断: quota wait 優先、新 label 追加なし、failed-recovery の budget 非消費という後方互換境界を README に明記し、NFR 1.x の運用影響をドキュメント上でも追跡可能にした。
+- 残存課題: なし。
+
+#### AC Coverage Matrix
+
+| Requirement / AC | Implementation path | Production entrypoint / owning flow | Test / assertion | Verification result | Notes |
+|------------------|---------------------|-------------------------------------|------------------|---------------------|-------|
+| 5.3 | `README.md` / default ON 一覧と Model Preflight 詳細節 | watcher operator が env / label / model defaults の互換性を確認する運用導線 | `qa_run_codex_stage_test.sh`, `pr_reviewer_quota_marker_test.sh`, `failed_recovery_test.sh` の既存 label / rc / quota 優先 assertions | stage-a-verify block: PASS; 追加で `bash local-watcher/test/module_loader_missing_test.sh`: PASS | env var 名、label 名、cron invocation、branch naming、既存 exit code 意味は変更なし |
+| 5.4 | `README.md` / Model Preflight 詳細節、変更済み shell scripts | local watcher runtime | `shellcheck --severity=warning ...` | PASS | README 変更のみ。新しい runtime dependency / 外部 service 呼び出しは追加なし |
+| 5.5 | `README.md` / default ON 一覧、環境変数表、Troubleshooting | operator が `MODEL_PREFLIGHT_ENABLED=false` または map override を設定する運用導線 | `model_preflight_test.sh`: disabled preflight / default map / override assertions | `bash local-watcher/test/model_preflight_test.sh`: PASS (33 assertions) | default ON、`=false` 厳密一致のみ無効化を明記 |
+| 6.1 | `codex_exec_prompt` -> `mp_preflight_model`; `README.md` 復旧手順 | all watcher Codex stages using `codex_exec_prompt` | `model_preflight_exec_prompt_test.sh`: known model insufficient version returns rc 78 before exec / does not run codex exec | `bash local-watcher/test/model_preflight_exec_prompt_test.sh`: PASS (9 assertions) | README に fail-fast と `codex update` guidance を追記 |
+| 6.2 | `codex_exec_prompt` -> `mp_preflight_model`; `README.md` 詳細節 | unknown model pass-through to Codex CLI | `model_preflight_exec_prompt_test.sh`: unknown model reaches codex exec / does not call `--version`; `model_preflight_test.sh`: unknown model pass-through | PASS | 未知 model は preflight で拒否しない前方互換を README に明記 |
+| 6.3 | `model-preflight.sh` classifier adapters; `README.md` Model Preflight 詳細節 | standard stage / PR iteration / PR reviewer / failed-recovery non-quota failure flows | `model_preflight_test.sh`, `qa_run_codex_stage_test.sh`, `pi_usage_limit_fatal_test.sh`, `pr_reviewer_quota_marker_test.sh`, `failed_recovery_test.sh` | all PASS | `model not found` / `unsupported model` / account availability 系の分類と sanitized comment を記載 |
+| 6.4 | `model-preflight.sh` override parser; `README.md` 環境変数表 | operator-provided `MODEL_PREFLIGHT_MIN_VERSIONS` | `model_preflight_test.sh`: malformed override WARN / skip assertions | `bash local-watcher/test/model_preflight_test.sh`: PASS (33 assertions) | comma 区切り `pattern:version` と malformed entry WARN / skip を README に明記 |
+| 6.5 | changed shell scripts and regression tests | shell-level verification | `shellcheck --severity=warning local-watcher/bin/idd-codex-issue-watcher.sh ... local-watcher/test/failed_recovery_test.sh` | PASS | `tasks.md` の stage-a-verify block と同じ shellcheck 対象を実行 |
+| 6.6 | `README.md` / default ON 一覧、Model Preflight 詳細節、Troubleshooting | operator docs | documentation diff in `0d50d8c docs(readme): model preflight運用手順を追加する` | `git diff --check -- README.md`: PASS | model preflight / model-not-found classification behavior、env overrides、recovery guidance を追加 |
+| NFR 1.1 | `README.md`; existing label handlers | existing `codex-failed` / `codex-needs-quota-wait` label flows | `qa_run_codex_stage_test.sh`, `pr_reviewer_quota_marker_test.sh`, `failed_recovery_test.sh` | all PASS | 新 label 追加なし、quota label 優先を README に明記 |
+| NFR 1.2 | `README.md`; quota-aware / PR / failed-recovery adapters | quota wait owning flows | `qa_run_codex_stage_test.sh`: quota priority with model text; `pi_usage_limit_fatal_test.sh`; `pr_reviewer_quota_marker_test.sh`; `failed_recovery_test.sh` | all PASS | `QUOTA_AWARE_ENABLED` semantics は変更なし |
+| NFR 1.3 | `README.md` / 復旧手順と対象 model env var 一覧 | operator model env configuration | repository diff review | `git diff --stat main..HEAD`: default model files unchanged outside documented feature work | `TRIAGE_MODEL`, `DEV_MODEL`, `REVIEWER_MODEL`, `DEBUGGER_MODEL`, `PR_ITERATION_DEV_MODEL`, `FAILED_RECOVERY_DEV_MODEL` の既定値は変更していない |
+
+#### Finding Closure Matrix
+
+| Target requirement | Category | Required Action | Fix commit | Test/assertion | Verification result | Notes / no-change reason |
+|--------------------|----------|-----------------|------------|----------------|---------------------|--------------------------|
+| なし | Task 5 | - | `0d50d8c docs(readme): model preflight運用手順を追加する` | README diff check and stage-a-verify block | all PASS | 既存 `review-notes.md` は task 4 approve で、本 task に対する reject Finding は存在しない。`debugger-notes.md` は存在しない |
+
 ## 確認事項
 
 - `tasks.md` の task 1 は `_Requirements:_` に 4.3（model preflight が共有 semver helper を使うこと）を含むが、`model-preflight.sh` の作成と接続は task 2/3 に明示されている。本 task では共有 helper の提供と guard hook 接続までを実装し、model preflight 側の利用は後続 task に残した。
