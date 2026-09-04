@@ -35,7 +35,7 @@
   - _Boundary: PR Iteration Adapter, PR Reviewer Adapter, Failed Recovery Adapter, Model Error Classifier, Model Config Error Escalation_
   - _Depends: 3_
 
-- [ ] 5. README と regression verification を完成させる
+- [x] 5. README と regression verification を完成させる
   - README の Optional features / troubleshooting / model 設定周辺に `MODEL_PREFLIGHT_ENABLED`、`MODEL_PREFLIGHT_MIN_VERSIONS`、model-not-found 分類、`codex update` guidance を追加する。
   - `local-watcher/test/model_preflight_test.sh` で preflight / override / classifier の主要 case を固定する。
   - 変更 shell script と新規 tests を `shellcheck --severity=warning` で検証する。
