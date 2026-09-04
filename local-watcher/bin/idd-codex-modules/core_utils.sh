@@ -218,6 +218,21 @@ adj_error() {
   echo "[$(date '+%F %T')] [$REPO] pr-adjudicator: ERROR: $*" >&2
 }
 
+# Effort Guard 専用ロガー（Issue #174 / 既存 qa_log 系と同形式）。
+# `[YYYY-MM-DD HH:MM:SS] [$REPO] effort-guard:` prefix。eg_warn / eg_error は `>&2`。
+# codex_exec_prompt 内（stdout が codex JSON stream として tee される文脈）から呼ばれるため、
+# 判定ログは必ず stderr 系（eg_warn）で出し、stdout の stream を汚さない。
+# 関数本体は idd-codex-modules/effort-guard.sh に配置。
+eg_log() {
+  echo "[$(date '+%F %T')] [$REPO] effort-guard: $*"
+}
+eg_warn() {
+  echo "[$(date '+%F %T')] [$REPO] effort-guard: WARN: $*" >&2
+}
+eg_error() {
+  echo "[$(date '+%F %T')] [$REPO] effort-guard: ERROR: $*" >&2
+}
+
 # secure tempfile helper（Issue #52 Req 5）
 #
 # prompt / JSON / stderr / quota reset state などを置く一時ファイルを、repo ごとに
